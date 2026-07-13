@@ -1,5 +1,10 @@
 local SCRIPT_URL = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/refs/heads/main/gag2.lua'
 
+local GENV = getgenv()
+local WEATHER_REJOIN_BOOT = GENV.GG2_WeatherRejoinBoot == true
+GENV.GG2_WeatherRejoinBoot = nil
+
+local function bootstrap()
 local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
 local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
@@ -52,11 +57,9 @@ local BLOCKABLE_WEATHERS = {
     'Blood',
     'Mega',
 }
-local GENV = getgenv()
+
 local SCRIPT_CACHE_FILE = 'gg2_autofarm_cached.lua'
 local SCRIPT_URL_FILE = 'gg2_script_url.txt'
-local WEATHER_REJOIN_BOOT = GENV.GG2_WeatherRejoinBoot == true
-GENV.GG2_WeatherRejoinBoot = nil
 
 local Networking = require(ReplicatedStorage.SharedModules.Networking)
 local SprinklerData = require(ReplicatedStorage.SharedModules.SprinklerData)
@@ -101,6 +104,7 @@ local State = {
     HidingFromWeather = nil,
     WeatherMonitorStop = false,
     WeatherMonitorThread = nil,
+    LastBuy = 0,
 }
 
 local function abbreviate(n)
@@ -393,6 +397,197 @@ local function tryAutoSell(force)
             end
         end
         recordEarnings(earned)
+    end
+end
+
+local StockValues = ReplicatedStorage:WaitForChild('StockValues')
+
+local SeedData
+local GearShopData
+local CrateData
+
+pcall(function()
+    SeedData = require(ReplicatedStorage.SharedModules.SeedData)
+end)
+
+pcall(function()
+    GearShopData = require(ReplicatedStorage.SharedModules.GearShopData)
+end)
+
+pcall(function()
+    CrateData = require(ReplicatedStorage.SharedModules.CrateData)
+end)
+
+local SEED_SHOP_NAMES = {}
+local GEAR_SHOP_NAMES = {}
+local PROP_SHOP_NAMES = {}
+local SEED_PRICES = {}
+local GEAR_PRICES = {}
+local PROP_PRICES = {}
+
+local function addSortedName(list, name)
+    if name and not table.find(list, name) then
+        table.insert(list, name)
+    end
+end
+
+local function sortNameList(list)
+    table.sort(list)
+end
+
+pcall(function()
+    if SeedData then
+        for _, entry in SeedData do
+            if entry.RestockShop and entry.SeedName then
+                addSortedName(SEED_SHOP_NAMES, entry.SeedName)
+                SEED_PRICES[entry.SeedName] = tonumber(entry.PurchasePrice) or 0
+            end
+        end
+    end
+end)
+
+pcall(function()
+    if GearShopData and GearShopData.Data then
+        for _, entry in GearShopData.Data do
+            if entry.ItemName then
+                addSortedName(GEAR_SHOP_NAMES, entry.ItemName)
+                GEAR_PRICES[entry.ItemName] = tonumber(entry.Cost) or 0
+            end
+        end
+    end
+end)
+
+pcall(function()
+    if CrateData and CrateData.GetAllCrates then
+        for _, entry in CrateData.GetAllCrates() do
+            if entry.Name then
+                addSortedName(PROP_SHOP_NAMES, entry.Name)
+                PROP_PRICES[entry.Name] = tonumber(entry.Cost) or 0
+            end
+        end
+    end
+end)
+
+pcall(function()
+    local items = StockValues:FindFirstChild('SeedShop') and StockValues.SeedShop:FindFirstChild('Items')
+    if items then
+        for _, child in items:GetChildren() do
+            addSortedName(SEED_SHOP_NAMES, child.Name)
+        end
+    end
+
+    items = StockValues:FindFirstChild('GearShop') and StockValues.GearShop:FindFirstChild('Items')
+    if items then
+        for _, child in items:GetChildren() do
+            addSortedName(GEAR_SHOP_NAMES, child.Name)
+        end
+    end
+
+    items = StockValues:FindFirstChild('CrateShop') and StockValues.CrateShop:FindFirstChild('Items')
+    if items then
+        for _, child in items:GetChildren() do
+            addSortedName(PROP_SHOP_NAMES, child.Name)
+        end
+    end
+end)
+
+sortNameList(SEED_SHOP_NAMES)
+sortNameList(GEAR_SHOP_NAMES)
+sortNameList(PROP_SHOP_NAMES)
+
+local function getMultiSelect(optionKey)
+    local selected = {}
+    local value = Options and Options[optionKey] and Options[optionKey].Value
+
+    if typeof(value) == 'table' then
+        for key, enabled in value do
+            if enabled == true and typeof(key) == 'string' then
+                selected[key] = true
+            elseif typeof(enabled) == 'string' then
+                selected[enabled] = true
+            end
+        end
+    elseif typeof(value) == 'string' and value ~= '' then
+        selected[value] = true
+    end
+
+    return selected
+end
+
+local function getShopStock(shopName, itemName)
+    local shop = StockValues:FindFirstChild(shopName)
+    local items = shop and shop:FindFirstChild('Items')
+    local item = items and items:FindFirstChild(itemName)
+    return item and tonumber(item.Value) or 0
+end
+
+local function tryAutoBuy()
+    if Library.Unloaded or not (Toggles.AutoBuy and Toggles.AutoBuy.Value) then
+        return
+    end
+
+    if os.clock() - State.LastBuy < 1 then
+        return
+    end
+
+    local sheckles = getSheckles()
+    if not sheckles then
+        return
+    end
+
+    local buyGroups = {
+        {
+            enabled = Toggles.AutoBuySeeds and Toggles.AutoBuySeeds.Value,
+            shop = 'SeedShop',
+            selected = getMultiSelect('BuySeeds'),
+            prices = SEED_PRICES,
+            purchase = function(itemName)
+                Networking.SeedShop.PurchaseSeed:Fire(itemName, 1)
+            end,
+        },
+        {
+            enabled = Toggles.AutoBuyGear and Toggles.AutoBuyGear.Value,
+            shop = 'GearShop',
+            selected = getMultiSelect('BuyGear'),
+            prices = GEAR_PRICES,
+            purchase = function(itemName)
+                Networking.GearShop.PurchaseGear:Fire(itemName, 1)
+            end,
+        },
+        {
+            enabled = Toggles.AutoBuyProps and Toggles.AutoBuyProps.Value,
+            shop = 'CrateShop',
+            selected = getMultiSelect('BuyProps'),
+            prices = PROP_PRICES,
+            purchase = function(itemName)
+                Networking.CrateShop.PurchaseCrate:Fire(itemName, 1)
+            end,
+        },
+    }
+
+    for _, group in buyGroups do
+        if not group.enabled then
+            continue
+        end
+
+        for itemName, enabled in group.selected do
+            if not enabled then
+                continue
+            end
+
+            if getShopStock(group.shop, itemName) <= 0 then
+                continue
+            end
+
+            local price = group.prices[itemName]
+            if not price or sheckles < price then
+                continue
+            end
+
+            group.purchase(itemName)
+            State.LastBuy = os.clock()
+            return
+        end
     end
 end
 
@@ -800,7 +995,11 @@ local function runAutofarm()
 
     getgenv().GG2_AutoFarmRunning = false
     getgenv().GG2_WeatherRejoinBoot = true
-    loadstring(src)()
+    task.spawn(function()
+        repeat task.wait() until game.Players.LocalPlayer and game.Players.LocalPlayer:FindFirstChild('PlayerGui')
+        task.wait(3)
+        loadstring(src)()
+    end)
 end
 
 pcall(runAutofarm)
@@ -1184,6 +1383,7 @@ local Tabs = {
 }
 
 local GearBox = Tabs.Main:AddLeftGroupbox('Auto Gear')
+local BuyBox = Tabs.Main:AddLeftGroupbox('Auto Buy')
 local StatsBox = Tabs.Main:AddLeftGroupbox('Stats')
 local FarmBox = Tabs.Main:AddRightGroupbox('Auto Farm')
 local WeatherBox = Tabs.Main:AddRightGroupbox('Weather Dodge')
@@ -1226,6 +1426,47 @@ GearBox:AddToggle('AutoWateringCan', {
     Callback = function(value)
         setAutoWateringLoop(value)
     end,
+})
+
+BuyBox:AddToggle('AutoBuy', {
+    Text = 'Enable Auto Buy',
+    Default = false,
+})
+
+BuyBox:AddToggle('AutoBuySeeds', {
+    Text = 'Buy Seeds',
+    Default = false,
+})
+
+BuyBox:AddDropdown('BuySeeds', {
+    Text = 'Seeds',
+    Values = SEED_SHOP_NAMES,
+    Multi = true,
+    Default = {},
+})
+
+BuyBox:AddToggle('AutoBuyGear', {
+    Text = 'Buy Gear',
+    Default = false,
+})
+
+BuyBox:AddDropdown('BuyGear', {
+    Text = 'Gear',
+    Values = GEAR_SHOP_NAMES,
+    Multi = true,
+    Default = {},
+})
+
+BuyBox:AddToggle('AutoBuyProps', {
+    Text = 'Buy Props',
+    Default = false,
+})
+
+BuyBox:AddDropdown('BuyProps', {
+    Text = 'Props',
+    Values = PROP_SHOP_NAMES,
+    Multi = true,
+    Default = {},
 })
 
 FarmBox:AddToggle('AutoHarvest', {
@@ -1349,6 +1590,8 @@ task.spawn(function()
             tryAutoSell()
         end
 
+        tryAutoBuy()
+
         updateWeatherLabels()
 
         EarningsLabel:SetText('Earnings/min: ' .. abbreviate(getEarningsPerMinute()))
@@ -1371,3 +1614,21 @@ if State.WeatherHiding and nowUnix() < State.HideUntil then
 end
 
 GENV.GG2_AutoFarmRunning = true
+end
+
+task.spawn(function()
+    repeat task.wait() until game:IsLoaded()
+
+    local player = game.Players.LocalPlayer
+    if not player then
+        player = game.Players.PlayerAdded:Wait()
+    end
+
+    repeat task.wait() until player:FindFirstChild('PlayerGui')
+
+    if WEATHER_REJOIN_BOOT then
+        task.wait(3)
+    end
+
+    bootstrap()
+end)
