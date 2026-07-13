@@ -1,4 +1,4 @@
-local SCRIPT_URL = ''
+local SCRIPT_URL = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/refs/heads/main/gag2.lua'
 
 local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
 local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
