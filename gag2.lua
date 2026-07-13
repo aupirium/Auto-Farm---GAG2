@@ -4,11 +4,39 @@ local GENV = getgenv()
 local WEATHER_REJOIN_BOOT = GENV.GG2_WeatherRejoinBoot == true
 GENV.GG2_WeatherRejoinBoot = nil
 
-local function bootstrap()
+local function loadChunk(source, chunkName)
+    local fn, err = loadstring(source, chunkName)
+    if not fn then
+        error(err or 'Failed to compile chunk')
+    end
+
+    if getrenv and setfenv then
+        local env = getgenv()
+        local renv = getrenv()
+        setfenv(fn, setmetatable(env, {
+            __index = function(_, key)
+                local value = env[key]
+                if value ~= nil then
+                    return value
+                end
+                return renv[key]
+            end,
+        }))
+    end
+
+    return fn()
+end
+
+local function startBootstrap()
 local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
-local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
-local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
-local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+local librarySource = game:HttpGet(repo .. 'Library.lua')
+librarySource = librarySource:gsub(
+    'ScreenGui%.Parent = CoreGui;',
+    'ScreenGui.Parent = (gethui and gethui()) or (get_hidden_gui and get_hidden_gui()) or CoreGui;'
+)
+local Library = loadChunk(librarySource, 'LinoriaLib')
+local ThemeManager = loadChunk(game:HttpGet(repo .. 'addons/ThemeManager.lua'), 'ThemeManager')
+local SaveManager = loadChunk(game:HttpGet(repo .. 'addons/SaveManager.lua'), 'SaveManager')
 
 local Players = game:GetService('Players')
 local RunService = game:GetService('RunService')
@@ -998,7 +1026,7 @@ local function runAutofarm()
     task.spawn(function()
         repeat task.wait() until game.Players.LocalPlayer and game.Players.LocalPlayer:FindFirstChild('PlayerGui')
         task.wait(3)
-        loadstring(src)()
+        loadChunk(src, 'GG2_AutoFarm')
     end)
 end
 
@@ -1616,7 +1644,7 @@ end
 GENV.GG2_AutoFarmRunning = true
 end
 
-task.spawn(function()
+local function runBootstrap()
     repeat task.wait() until game:IsLoaded()
 
     local player = game.Players.LocalPlayer
@@ -1630,5 +1658,14 @@ task.spawn(function()
         task.wait(3)
     end
 
-    bootstrap()
-end)
+    local ok, err = pcall(startBootstrap)
+    if not ok then
+        warn('[GG2 AutoFarm] Failed to start:', err)
+    end
+end
+
+if WEATHER_REJOIN_BOOT then
+    task.spawn(runBootstrap)
+else
+    runBootstrap()
+end
