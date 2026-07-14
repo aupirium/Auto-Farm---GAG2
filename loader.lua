@@ -2,9 +2,12 @@
 -- loadstring(game:HttpGet('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/loader.lua', true))()
 
 local GENV = getgenv()
+local queuedAutoExec = GENV.GG2_FromAutoExec == true
 GENV.GG2_AutoFarmRunning = nil
 GENV.GG2_SkipRemoteUpdate = nil
-GENV.GG2_FromAutoExec = nil
+if not queuedAutoExec then
+    GENV.GG2_FromAutoExec = nil
+end
 
 local REPO = 'aupirium/Auto-Farm---GAG2'
 local SCRIPT_FILE = 'gag2.lua'
@@ -106,6 +109,9 @@ writefile('GG2/grow_garden_autofarm.lua', source)
 writefile('grow_garden_autofarm.lua', source)
 
 GENV.GG2_SkipRemoteUpdate = true
+if queuedAutoExec then
+    GENV.GG2_FromAutoExec = true
+end
 
 local func, err = loadstring(source, 'grow_garden_autofarm.lua')
 if not func then
