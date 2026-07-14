@@ -711,8 +711,10 @@ local State = {
     WeatherMonitorThread = nil,
     WeatherErrorReconnectConnection = nil,
     WeatherReconnectPending = false,
+    WeatherKickPending = false,
     WeatherReconnectAttempts = 0,
     LastWeatherReconnectAttempt = 0,
+    LastKickReconnectAttempt = 0,
     AutoBuyThread = nil,
     AutoBuyTracker = {},
     AutoAuctionThread = nil,
@@ -3969,6 +3971,41 @@ function teleportToAnyGameServer(placeId)
     return false
 end
 
+function isWeatherKickError(errorMessage)
+    if not errorMessage or errorMessage == '' then
+        return false
+    end
+
+    if string.find(errorMessage, '[AutoRejoin]', 1, true) then
+        return true
+    end
+
+    local saved = GENV.GG2_WeatherState or readWeatherStateFile()
+    return saved and saved.Hiding == true
+end
+
+function handleWeatherKickReconnect(errorMessage)
+    if not State.WeatherKickPending and not isWeatherKickError(errorMessage) then
+        return false
+    end
+
+    if os.clock() - (State.LastKickReconnectAttempt or 0) < 2 then
+        return false
+    end
+
+    State.LastKickReconnectAttempt = os.clock()
+    State.WeatherKickPending = false
+
+    queueTeleportScript()
+
+    task.wait(0.25)
+    pcall(function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end)
+
+    return true
+end
+
 function shouldHandleWeatherReconnectError()
     local saved = GENV.GG2_WeatherState or readWeatherStateFile()
     if not saved or saved.Hiding ~= true then
@@ -4030,16 +4067,23 @@ function setupWeatherErrorReconnect()
     end
 
     State.WeatherErrorReconnectConnection = GuiService.ErrorMessageChanged:Connect(function(errorMessage)
-        if State.WeatherReconnectPending or shouldHandleWeatherReconnectError() then
-            task.spawn(function()
+        task.spawn(function()
+            if handleWeatherKickReconnect(errorMessage) then
+                return
+            end
+
+            if State.WeatherReconnectPending or shouldHandleWeatherReconnectError() then
                 handleWeatherReconnectError(errorMessage)
-            end)
-        end
+            end
+        end)
     end)
 
     task.defer(function()
         local currentError = GuiService:GetErrorMessage()
         if currentError and currentError ~= '' then
+            if handleWeatherKickReconnect(currentError) then
+                return
+            end
             handleWeatherReconnectError(currentError)
         end
     end)
@@ -4259,6 +4303,7 @@ function leaveForWeather(weatherGameName, endTime)
     saveWeatherState()
     ensureCommitFile()
     queueTeleportScript()
+    State.WeatherKickPending = true
 
     local remaining = math.max(30, State.HideUntil - os.time())
     local kickMessage = string.format('[AutoRejoin] %s detected - auto rejoining in %ds.', weatherGameName, remaining)
@@ -4267,44 +4312,42 @@ function leaveForWeather(weatherGameName, endTime)
 
     if not writefile then
         clearWeatherState()
+        State.WeatherKickPending = false
         Library:Notify('Weather dodge needs writefile support to rejoin after kick')
         return
     end
 
     task.wait(0.5)
 
-    local kicked = pcall(function()
-        LocalPlayer:Kick(kickMessage)
+    State.WeatherReconnectPending = true
+    local failed = false
+    local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
+        if player == LocalPlayer then
+            failed = true
+        end
     end)
 
-    if not kicked then
-        State.WeatherReconnectPending = true
-        local failed = false
-        local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
-            if player == LocalPlayer then
-                failed = true
-            end
-        end)
+    local teleported = pcall(function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end)
 
-        pcall(function()
-            TeleportService:Teleport(game.PlaceId, LocalPlayer)
-        end)
-
-        for _ = 1, 12 do
-            if failed then
-                break
-            end
-            task.wait(0.5)
-        end
-
-        failConn:Disconnect()
-        State.WeatherReconnectPending = false
-
+    for _ = 1, 16 do
         if failed then
-            clearWeatherState()
-            Library:Notify('Weather dodge failed - could not leave server')
+            break
         end
+        task.wait(0.5)
     end
+
+    failConn:Disconnect()
+
+    if teleported and not failed then
+        State.WeatherReconnectPending = false
+        return
+    end
+
+    pcall(function()
+        LocalPlayer:Kick(kickMessage)
+    end)
 end
 
 function setWeatherDodge(enabled)
