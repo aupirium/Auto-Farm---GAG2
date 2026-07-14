@@ -524,6 +524,174 @@ table.sort(BUY_GEARS)
 table.sort(BUY_SEEDS)
 table.sort(BUY_PROPS)
 
+local AUCTION_SEEDS = {}
+local AUCTION_GEARS = {}
+local AUCTION_SEED_PACKS = {}
+local AUCTION_EGGS = {}
+
+function appendUniqueName(list, seen, value)
+    if type(value) ~= 'string' or value == '' or seen[value] then
+        return
+    end
+
+    seen[value] = true
+    table.insert(list, value)
+end
+
+function collectNamesFromDataTable(data, nameFields, list, seen)
+    if type(data) ~= 'table' then
+        return
+    end
+
+    local function readEntry(entry)
+        if type(entry) == 'string' then
+            appendUniqueName(list, seen, entry)
+            return
+        end
+
+        if type(entry) ~= 'table' then
+            return
+        end
+
+        for _, field in nameFields do
+            appendUniqueName(list, seen, entry[field])
+        end
+    end
+
+    if data[1] ~= nil then
+        for _, entry in data do
+            readEntry(entry)
+        end
+        return
+    end
+
+    for key, entry in data do
+        if type(key) == 'string' and not tonumber(key) and type(entry) ~= 'table' then
+            appendUniqueName(list, seen, key)
+        end
+        readEntry(entry)
+    end
+end
+
+function tryCollectAuctionNamesFromModule(moduleName, nameFields, list, seen)
+    local sharedModules = ReplicatedStorage:FindFirstChild('SharedModules')
+    local mod = sharedModules and sharedModules:FindFirstChild(moduleName)
+    if not mod then
+        return false
+    end
+
+    local ok, data = pcall(require, mod)
+    if not ok or type(data) ~= 'table' then
+        return false
+    end
+
+    local before = #list
+    if type(data.Data) == 'table' then
+        collectNamesFromDataTable(data.Data, nameFields, list, seen)
+    end
+    collectNamesFromDataTable(data, nameFields, list, seen)
+
+    return #list > before
+end
+
+function buildAuctionItemLists()
+    local seeds, seenSeeds = {}, {}
+    for _, entry in SeedData do
+        appendUniqueName(seeds, seenSeeds, entry.SeedName)
+    end
+    table.sort(seeds)
+
+    local gears = {}
+    for _, name in BUY_GEARS do
+        table.insert(gears, name)
+    end
+
+    local seedPacks, seenPacks = {}, {}
+    local eggs, seenEggs = {}, {}
+
+    for _, moduleName in {
+        'SeedPackData',
+        'SeedPacksData',
+        'PackData',
+        'PacksData',
+        'SeedPackShopData',
+    } do
+        tryCollectAuctionNamesFromModule(moduleName, {
+            'PackName',
+            'SeedPackName',
+            'ItemName',
+            'Name',
+            'DisplayName',
+        }, seedPacks, seenPacks)
+    end
+
+    for _, moduleName in {
+        'EggData',
+        'EggsData',
+        'PetEggData',
+        'PetEggsData',
+        'EggShopData',
+    } do
+        tryCollectAuctionNamesFromModule(moduleName, {
+            'EggName',
+            'ItemName',
+            'Name',
+            'DisplayName',
+        }, eggs, seenEggs)
+    end
+
+    local sharedModules = ReplicatedStorage:FindFirstChild('SharedModules')
+    if sharedModules then
+        for _, child in sharedModules:GetChildren() do
+            if not child:IsA('ModuleScript') then
+                continue
+            end
+
+            local lower = child.Name:lower()
+            if string.find(lower, 'egg') then
+                tryCollectAuctionNamesFromModule(child.Name, {
+                    'EggName',
+                    'ItemName',
+                    'Name',
+                    'DisplayName',
+                }, eggs, seenEggs)
+            elseif string.find(lower, 'seedpack') or (string.find(lower, 'pack') and not string.find(lower, 'backpack')) then
+                tryCollectAuctionNamesFromModule(child.Name, {
+                    'PackName',
+                    'SeedPackName',
+                    'ItemName',
+                    'Name',
+                    'DisplayName',
+                }, seedPacks, seenPacks)
+            end
+        end
+    end
+
+    pcall(function()
+        local exclusiveShop = StockValues:FindFirstChild('ExclusiveShop')
+        local items = exclusiveShop and exclusiveShop:FindFirstChild('Items')
+        if not items then
+            return
+        end
+
+        for _, item in items:GetChildren() do
+            local lower = item.Name:lower()
+            if string.find(lower, 'egg') then
+                appendUniqueName(eggs, seenEggs, item.Name)
+            elseif string.find(lower, 'pack') then
+                appendUniqueName(seedPacks, seenPacks, item.Name)
+            end
+        end
+    end)
+
+    table.sort(seedPacks)
+    table.sort(eggs)
+
+    return seeds, gears, seedPacks, eggs
+end
+
+AUCTION_SEEDS, AUCTION_GEARS, AUCTION_SEED_PACKS, AUCTION_EGGS = buildAuctionItemLists()
+
 local SUPER_SPRINKLER = 'Super Sprinkler'
 local SUPER_CAN = 'Super Watering Can'
 
@@ -577,6 +745,12 @@ local State = {
     AuctionPurchaseCooldowns = {},
     AuctionLastSnapshot = 0,
     AuctionNetworkingReady = false,
+    AuctionItemLists = {
+        Seeds = AUCTION_SEEDS,
+        Gears = AUCTION_GEARS,
+        SeedPacks = AUCTION_SEED_PACKS,
+        Eggs = AUCTION_EGGS,
+    },
     MailAutoClaimStop = false,
     MailAutoClaimThread = nil,
     MailTotals = { Claimed = 0, Failed = 0 },
@@ -2448,6 +2622,151 @@ function setAutoBuyLoop(enabled)
     end)
 end
 
+function normalizeAuctionCategory(category)
+    if type(category) ~= 'string' then
+        return nil
+    end
+
+    local normalized = category:lower():gsub('[%s_%-]', '')
+    if normalized == 'seeds' or normalized == 'seed' then
+        return 'Seeds'
+    end
+    if normalized == 'gears' or normalized == 'gear' then
+        return 'Gears'
+    end
+    if normalized == 'seedpacks' or normalized == 'seedpack' or normalized == 'packs' then
+        return 'SeedPacks'
+    end
+    if normalized == 'eggs' or normalized == 'egg' then
+        return 'Eggs'
+    end
+
+    return nil
+end
+
+function getAuctionLotItemName(lot)
+    return lot.item or lot.displayName or lot.name or lot.ItemName or ''
+end
+
+local AUCTION_OPTION_BY_CATEGORY = {
+    Seeds = 'AuctionBuySeeds',
+    Gears = 'AuctionBuyGears',
+    SeedPacks = 'AuctionBuySeedPacks',
+    Eggs = 'AuctionBuyEggs',
+}
+
+function mergeAuctionDropdownValues(category, names)
+    local optionKey = AUCTION_OPTION_BY_CATEGORY[category]
+    local baseList = State.AuctionItemLists and State.AuctionItemLists[category]
+    if not optionKey or not baseList then
+        return
+    end
+
+    local seen = {}
+    local merged = {}
+    for _, name in baseList do
+        appendUniqueName(merged, seen, name)
+    end
+    for _, name in names or {} do
+        appendUniqueName(merged, seen, name)
+    end
+
+    table.sort(merged)
+    State.AuctionItemLists[category] = merged
+
+    if Options and Options[optionKey] and Options[optionKey].SetValues then
+        Options[optionKey]:SetValues(merged)
+    end
+end
+
+function discoverAuctionItemsFromLots(lots)
+    local discovered = {
+        Seeds = {},
+        Gears = {},
+        SeedPacks = {},
+        Eggs = {},
+    }
+
+    for _, lot in lots or {} do
+        local category = normalizeAuctionCategory(lot.category)
+        local itemName = getAuctionLotItemName(lot)
+        if category and itemName ~= '' then
+            table.insert(discovered[category], itemName)
+        end
+    end
+
+    for category, names in discovered do
+        if #names > 0 then
+            mergeAuctionDropdownValues(category, names)
+        end
+    end
+end
+
+function isAuctionLotSelected(lot)
+    local category = normalizeAuctionCategory(lot.category)
+    local itemName = getAuctionLotItemName(lot)
+    if not category or itemName == '' then
+        return false
+    end
+
+    local optionKey = AUCTION_OPTION_BY_CATEGORY[category]
+    if not optionKey then
+        return false
+    end
+
+    local selected = getMultiSelect(optionKey)
+    return selected[itemName] == true
+end
+
+function refreshAuctionItemListsFromCatalog()
+    loadMailModules()
+    if not MailboxItemCatalog then
+        return
+    end
+
+    local catalogItems = MailboxItemCatalog.Items
+        or MailboxItemCatalog.DefaultItems
+        or MailboxItemCatalog.AllItems
+
+    if type(catalogItems) ~= 'table' then
+        return
+    end
+
+    local discovered = {
+        Seeds = {},
+        Gears = {},
+        SeedPacks = {},
+        Eggs = {},
+    }
+
+    for category, items in catalogItems do
+        local normalized = normalizeAuctionCategory(category)
+        if not normalized or type(items) ~= 'table' then
+            continue
+        end
+
+        if items[1] ~= nil then
+            for _, itemName in items do
+                if type(itemName) == 'string' and itemName ~= '' then
+                    table.insert(discovered[normalized], itemName)
+                end
+            end
+        else
+            for itemName in items do
+                if type(itemName) == 'string' and itemName ~= '' then
+                    table.insert(discovered[normalized], itemName)
+                end
+            end
+        end
+    end
+
+    for category, names in discovered do
+        if #names > 0 then
+            mergeAuctionDropdownValues(category, names)
+        end
+    end
+end
+
 function getAuctionServerNow()
     local ok, now = pcall(function()
         return workspace:GetServerTimeNow()
@@ -2484,6 +2803,7 @@ function applyAuctionSnapshot(snapshot)
     end
 
     State.AuctionLots = lots
+    discoverAuctionItemsFromLots(lots)
 
     if type(snapshot.stock) == 'table' then
         State.AuctionStock = snapshot.stock
@@ -2585,6 +2905,10 @@ end
 
 function tryPurchaseAuctionLot(lot, stock)
     if lot.robuxPrice ~= nil then
+        return
+    end
+
+    if not isAuctionLotSelected(lot) then
         return
     end
 
@@ -4279,6 +4603,35 @@ BuyBox:AddDropdown('AutoBuyProps', {
     Default = {},
 })
 
+AuctionBox:AddDropdown('AuctionBuySeeds', {
+    Text = 'Select Seed',
+    Values = #AUCTION_SEEDS > 0 and AUCTION_SEEDS or { 'No seeds found' },
+    Multi = true,
+    Default = {},
+    Tooltip = 'Auction lots to auto-buy when they appear',
+})
+
+AuctionBox:AddDropdown('AuctionBuyGears', {
+    Text = 'Select Gear',
+    Values = #AUCTION_GEARS > 0 and AUCTION_GEARS or { 'No gears found' },
+    Multi = true,
+    Default = {},
+})
+
+AuctionBox:AddDropdown('AuctionBuySeedPacks', {
+    Text = 'Select Seed Pack',
+    Values = #AUCTION_SEED_PACKS > 0 and AUCTION_SEED_PACKS or { 'No seed packs found' },
+    Multi = true,
+    Default = {},
+})
+
+AuctionBox:AddDropdown('AuctionBuyEggs', {
+    Text = 'Select Egg',
+    Values = #AUCTION_EGGS > 0 and AUCTION_EGGS or { 'No eggs found' },
+    Multi = true,
+    Default = {},
+})
+
 AuctionBox:AddDropdown('AuctionPriceMode', {
     Text = 'Auction Price Mode',
     Values = { 'Below', 'Above', 'At' },
@@ -4290,7 +4643,7 @@ AuctionBox:AddInput('AuctionPrice', {
     Text = 'Auction Price',
     Default = '0',
     Numeric = true,
-    Tooltip = 'Price filter in sheckles. Set 0 to buy any lot you can afford.',
+    Tooltip = "If you don't want to use this, just input '0'. Price filter in sheckles.",
 })
 
 AuctionBox:AddToggle('AutoBuyAuction', {
@@ -4635,6 +4988,9 @@ task.defer(function()
     if Toggles.AutoBuyAuction and Toggles.AutoBuyAuction.Value then
         setAutoAuctionLoop(true)
     end
+
+    task.defer(refreshAuctionItemListsFromCatalog)
+    task.defer(requestAuctionSnapshot)
     if Toggles.WeatherDodge and Toggles.WeatherDodge.Value then
         setWeatherDodge(true)
     elseif State.WeatherHiding and os.time() < State.HideUntil then
