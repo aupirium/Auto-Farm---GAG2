@@ -4,6 +4,7 @@
 local GENV = getgenv()
 GENV.GG2_AutoFarmRunning = nil
 GENV.GG2_SkipRemoteUpdate = nil
+GENV.GG2_FromAutoExec = nil
 
 local REPO = 'aupirium/Auto-Farm---GAG2'
 local SCRIPT_FILE = 'gag2.lua'
