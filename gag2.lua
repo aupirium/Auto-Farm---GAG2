@@ -2625,6 +2625,25 @@ function setAutoBuyLoop(enabled)
     end)
 end
 
+local AUCTION_GEAR_CATEGORIES = {
+    gears = true,
+    gear = true,
+    wateringcans = true,
+    wateringcan = true,
+    sprinklers = true,
+    sprinkler = true,
+    mushrooms = true,
+    mushroom = true,
+    gnomes = true,
+    gnome = true,
+    raccoons = true,
+    raccoon = true,
+    trowels = true,
+    trowel = true,
+    props = true,
+    prop = true,
+}
+
 function normalizeAuctionCategory(category)
     if type(category) ~= 'string' then
         return nil
@@ -2634,17 +2653,17 @@ function normalizeAuctionCategory(category)
     if normalized == 'seeds' or normalized == 'seed' then
         return 'Seeds'
     end
-    if normalized == 'gears' or normalized == 'gear' then
+    if AUCTION_GEAR_CATEGORIES[normalized] then
         return 'Gears'
     end
     if normalized == 'seedpacks' or normalized == 'seedpack' or normalized == 'packs' or normalized == 'crates' or normalized == 'crate' then
         return 'SeedPacks'
     end
-    if normalized == 'eggs' or normalized == 'egg' then
+    if normalized == 'eggs' or normalized == 'egg' or normalized == 'pets' or normalized == 'pet' then
         return 'Eggs'
     end
-    if normalized == 'wateringcans' or normalized == 'wateringcan' or normalized == 'sprinklers' or normalized == 'sprinkler' then
-        return 'Gears'
+    if normalized == 'harvestedfruits' or normalized == 'harvestedfruit' then
+        return 'Fruits'
     end
 
     return nil
@@ -2670,8 +2689,14 @@ function isAuctionNameSelected(selected, itemName)
 
     local lower = itemName:lower()
     for name, enabled in selected do
-        if enabled == true and type(name) == 'string' and name:lower() == lower then
-            return true
+        if enabled == true and type(name) == 'string' then
+            local selectedLower = name:lower()
+            if selectedLower == lower then
+                return true
+            end
+            if string.find(lower, selectedLower, 1, true) or string.find(selectedLower, lower, 1, true) then
+                return true
+            end
         end
     end
 
@@ -2753,34 +2778,80 @@ function discoverAuctionItemsFromLots(lots)
     end
 end
 
-function isAuctionLotSelected(lot)
-    local category = normalizeAuctionCategory(lot.category)
-    local itemName = getAuctionLotItemName(lot)
-    if not category or itemName == '' then
-        return false
+function hasAnyAuctionItemSelection()
+    for _, optionKey in AUCTION_OPTION_BY_CATEGORY do
+        if hasAuctionCategorySelection(optionKey) then
+            return true
+        end
     end
 
-    local optionKey = AUCTION_OPTION_BY_CATEGORY[category]
-    if not optionKey then
-        return false
+    return false
+end
+
+function getAuctionLotNameVariants(lot)
+    local names = {}
+    local seen = {}
+
+    local function add(name)
+        name = normalizeAuctionItemName(name)
+        if name == '' then
+            return
+        end
+
+        local lower = name:lower()
+        if seen[lower] then
+            return
+        end
+
+        seen[lower] = true
+        table.insert(names, name)
     end
 
-    local selected = getMultiSelect(optionKey)
-    if not hasAuctionCategorySelection(optionKey) then
-        return false
-    end
-
-    if isAuctionNameSelected(selected, itemName) then
-        return true
-    end
-
-    if lot.displayName and isAuctionNameSelected(selected, lot.displayName) then
-        return true
-    end
+    add(lot.displayName)
+    add(lot.item)
+    add(lot.name)
+    add(lot.ItemName)
 
     local ok, displayName = pcall(AuctioneerModule.DisplayName, lot)
-    if ok and displayName and isAuctionNameSelected(selected, displayName) then
+    if ok then
+        add(displayName)
+    end
+
+    if type(lot.category) == 'string' and type(lot.item) == 'string' then
+        pcall(function()
+            loadMailModules()
+            if MailboxItemCatalog and MailboxItemCatalog.Resolve then
+                add(MailboxItemCatalog.Resolve(lot.category, lot.item, {}))
+            end
+        end)
+    end
+
+    return names
+end
+
+function isAuctionLotSelected(lot)
+    if lot.robuxPrice ~= nil then
+        return false
+    end
+
+    if not hasAnyAuctionItemSelection() then
         return true
+    end
+
+    local variants = getAuctionLotNameVariants(lot)
+    if #variants == 0 then
+        return false
+    end
+
+    for _, optionKey in AUCTION_OPTION_BY_CATEGORY do
+        if hasAuctionCategorySelection(optionKey) then
+            local selected = getMultiSelect(optionKey)
+            for _, name in variants do
+                if isAuctionNameSelected(selected, name) then
+                    return true
+                end
+            end
+        end
     end
 
     return false
@@ -2918,6 +2989,16 @@ function setupAuctionNetworking()
         applyAuctionStockUpdate(update)
     end)
 
+    Networking.Auctioneer.PurchaseResult.OnClientEvent:Connect(function(lotId, success)
+        if success then
+            State.AuctionPurchaseTimes[lotId] = nil
+            return
+        end
+
+        State.AuctionPurchaseTimes[lotId] = nil
+        State.AuctionPurchaseCooldowns[lotId] = nil
+    end)
+
     task.defer(function()
         requestAuctionSnapshot()
     end)
@@ -2928,7 +3009,8 @@ function getAuctionPriceLimit()
         return 0
     end
 
-    return tonumber(Options.AuctionPrice.Value) or 0
+    local raw = tostring(Options.AuctionPrice.Value or '0'):gsub(',', ''):gsub('%s+', '')
+    return tonumber(raw) or 0
 end
 
 function getAuctionPriceMode()
@@ -2972,10 +3054,6 @@ function canPurchaseAuctionLot(lotId)
 end
 
 function tryPurchaseAuctionLot(lot, stock)
-    if lot.robuxPrice ~= nil then
-        return
-    end
-
     if not isAuctionLotSelected(lot) then
         return
     end
@@ -3051,22 +3129,14 @@ function setAutoAuctionLoop(enabled)
 
     setupAuctionNetworking()
 
-    local hasAnySelection = false
-    for _, optionKey in AUCTION_OPTION_BY_CATEGORY do
-        if hasAuctionCategorySelection(optionKey) then
-            hasAnySelection = true
-            break
-        end
-    end
-
-    if not hasAnySelection and Library and Library.Notify then
-        Library:Notify('Auto auction: select seeds/gears/packs/eggs to buy first')
+    if not hasAnyAuctionItemSelection() and getAuctionPriceLimit() <= 0 and Library and Library.Notify then
+        Library:Notify('Auto auction: set a price limit or select items to buy')
     end
 
     State.AutoAuctionThread = task.spawn(function()
         while isActiveSession() and Toggles.AutoBuyAuction and Toggles.AutoBuyAuction.Value do
             runAutoAuction()
-            task.wait(0.5)
+            task.wait(0.35)
         end
         State.AutoAuctionThread = nil
     end)
@@ -4822,13 +4892,13 @@ AuctionBox:AddInput('AuctionPrice', {
     Text = 'Auction Price',
     Default = '0',
     Numeric = true,
-    Tooltip = "If you don't want to use this, just input '0'. Price filter in sheckles.",
+    Tooltip = "Sheckles price filter. Leave at 0 to ignore price. With no items selected, buys any sheckle lot matching this filter.",
 })
 
 AuctionBox:AddToggle('AutoBuyAuction', {
     Text = 'Auto Buy Auction',
     Default = false,
-    Tooltip = 'Auto-buys auction lots with sheckles when stock is available and price matches your filter',
+    Tooltip = 'Buys auction lots with sheckles. Use price limit alone, or pick specific items in the dropdowns.',
     Callback = function(value)
         setAutoAuctionLoop(value)
     end,
@@ -5099,6 +5169,7 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 
 loadWeatherState()
 setupWeatherErrorReconnect()
+setupAuctionNetworking()
 
 if State.WeatherHiding then
     if os.time() < State.HideUntil then
