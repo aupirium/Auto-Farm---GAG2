@@ -562,21 +562,13 @@ function collectNamesFromDataTable(data, nameFields, list, seen)
         for _, entry in data do
             readEntry(entry)
         end
-        return
-    end
-
-    for key, entry in data do
-        if type(key) == 'string' and not tonumber(key) and type(entry) ~= 'table' then
-            appendUniqueName(list, seen, key)
-        end
-        readEntry(entry)
     end
 end
 
 function tryCollectAuctionNamesFromModule(moduleName, nameFields, list, seen)
     local sharedModules = ReplicatedStorage:FindFirstChild('SharedModules')
     local mod = sharedModules and sharedModules:FindFirstChild(moduleName)
-    if not mod then
+    if not mod or not mod:IsA('ModuleScript') then
         return false
     end
 
@@ -587,9 +579,8 @@ function tryCollectAuctionNamesFromModule(moduleName, nameFields, list, seen)
 
     local before = #list
     if type(data.Data) == 'table' then
-        collectNamesFromDataTable(data.Data, nameFields, list, seen)
+        pcall(collectNamesFromDataTable, data.Data, nameFields, list, seen)
     end
-    collectNamesFromDataTable(data, nameFields, list, seen)
 
     return #list > before
 end
@@ -616,7 +607,7 @@ function buildAuctionItemLists()
         'PacksData',
         'SeedPackShopData',
     } do
-        tryCollectAuctionNamesFromModule(moduleName, {
+        pcall(tryCollectAuctionNamesFromModule, moduleName, {
             'PackName',
             'SeedPackName',
             'ItemName',
@@ -632,39 +623,12 @@ function buildAuctionItemLists()
         'PetEggsData',
         'EggShopData',
     } do
-        tryCollectAuctionNamesFromModule(moduleName, {
+        pcall(tryCollectAuctionNamesFromModule, moduleName, {
             'EggName',
             'ItemName',
             'Name',
             'DisplayName',
         }, eggs, seenEggs)
-    end
-
-    local sharedModules = ReplicatedStorage:FindFirstChild('SharedModules')
-    if sharedModules then
-        for _, child in sharedModules:GetChildren() do
-            if not child:IsA('ModuleScript') then
-                continue
-            end
-
-            local lower = child.Name:lower()
-            if string.find(lower, 'egg') then
-                tryCollectAuctionNamesFromModule(child.Name, {
-                    'EggName',
-                    'ItemName',
-                    'Name',
-                    'DisplayName',
-                }, eggs, seenEggs)
-            elseif string.find(lower, 'seedpack') or (string.find(lower, 'pack') and not string.find(lower, 'backpack')) then
-                tryCollectAuctionNamesFromModule(child.Name, {
-                    'PackName',
-                    'SeedPackName',
-                    'ItemName',
-                    'Name',
-                    'DisplayName',
-                }, seedPacks, seenPacks)
-            end
-        end
     end
 
     pcall(function()
@@ -678,7 +642,7 @@ function buildAuctionItemLists()
             local lower = item.Name:lower()
             if string.find(lower, 'egg') then
                 appendUniqueName(eggs, seenEggs, item.Name)
-            elseif string.find(lower, 'pack') then
+            elseif string.find(lower, 'seedpack') or string.find(lower, ' pack') or string.find(lower, 'pack ') then
                 appendUniqueName(seedPacks, seenPacks, item.Name)
             end
         end
@@ -690,7 +654,20 @@ function buildAuctionItemLists()
     return seeds, gears, seedPacks, eggs
 end
 
-AUCTION_SEEDS, AUCTION_GEARS, AUCTION_SEED_PACKS, AUCTION_EGGS = buildAuctionItemLists()
+local buildAuctionOk, buildSeeds, buildGears, buildPacks, buildEggs = pcall(buildAuctionItemLists)
+if buildAuctionOk then
+    AUCTION_SEEDS, AUCTION_GEARS, AUCTION_SEED_PACKS, AUCTION_EGGS = buildSeeds, buildGears, buildPacks, buildEggs
+else
+    AUCTION_SEEDS, AUCTION_GEARS, AUCTION_SEED_PACKS, AUCTION_EGGS = {}, {}, {}, {}
+    local fallbackSeen = {}
+    for _, entry in SeedData do
+        appendUniqueName(AUCTION_SEEDS, fallbackSeen, entry.SeedName)
+    end
+    for _, name in BUY_GEARS do
+        table.insert(AUCTION_GEARS, name)
+    end
+    table.sort(AUCTION_SEEDS)
+end
 
 local SUPER_SPRINKLER = 'Super Sprinkler'
 local SUPER_CAN = 'Super Watering Can'
