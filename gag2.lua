@@ -2,9 +2,17 @@
 -- Auto Super Sprinkler / Watering Can at saved position, auto harvest, auto sell, earnings/min
 
 local GENV = getgenv()
+
+if GENV.GG2_AutoFarmShutdown then
+    pcall(GENV.GG2_AutoFarmShutdown)
+    task.wait(0.05)
+end
+
 if GENV.GG2_AutoFarmRunning then
     return
 end
+
+GENV.GG2_AutoFarmRunning = true
 
 repeat task.wait() until game:IsLoaded()
 
@@ -90,16 +98,27 @@ if not GENV.GG2_SkipRemoteUpdate and not GENV.GG2_FromAutoExec and type(writefil
 
         if localSrc and localSrc ~= remote then
             GENV.GG2_SkipRemoteUpdate = true
+            if GENV.GG2_AutoFarmShutdown then
+                pcall(GENV.GG2_AutoFarmShutdown)
+                task.wait(0.05)
+            end
+            GENV.GG2_AutoFarmRunning = false
             local func = loadstring(remote, 'grow_garden_autofarm.lua')
             if func then
                 func()
                 return
             end
+            GENV.GG2_AutoFarmRunning = true
         end
     end
 end
 
-GENV.GG2_AutoFarmRunning = true
+local SESSION_ID = (tonumber(GENV.GG2_SessionId) or 0) + 1
+GENV.GG2_SessionId = SESSION_ID
+
+function isActiveSession()
+    return GENV.GG2_SessionId == SESSION_ID and Library and not Library.Unloaded
+end
 
 local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
 local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
@@ -1123,6 +1142,10 @@ function hideWatchedPlantInstance(desc)
 end
 
 function hideWatchedPlantTree(root)
+    if typeof(root) ~= 'Instance' then
+        return
+    end
+
     hideWatchedPlantInstance(root)
     for _, desc in root:GetDescendants() do
         hideWatchedPlantInstance(desc)
@@ -2614,14 +2637,50 @@ function normalizeAuctionCategory(category)
     if normalized == 'gears' or normalized == 'gear' then
         return 'Gears'
     end
-    if normalized == 'seedpacks' or normalized == 'seedpack' or normalized == 'packs' then
+    if normalized == 'seedpacks' or normalized == 'seedpack' or normalized == 'packs' or normalized == 'crates' or normalized == 'crate' then
         return 'SeedPacks'
     end
     if normalized == 'eggs' or normalized == 'egg' then
         return 'Eggs'
     end
+    if normalized == 'wateringcans' or normalized == 'wateringcan' or normalized == 'sprinklers' or normalized == 'sprinkler' then
+        return 'Gears'
+    end
 
     return nil
+end
+
+function normalizeAuctionItemName(name)
+    if type(name) ~= 'string' then
+        return ''
+    end
+
+    return name:gsub('^%s+', ''):gsub('%s+$', '')
+end
+
+function isAuctionNameSelected(selected, itemName)
+    itemName = normalizeAuctionItemName(itemName)
+    if itemName == '' then
+        return false
+    end
+
+    if selected[itemName] == true then
+        return true
+    end
+
+    local lower = itemName:lower()
+    for name, enabled in selected do
+        if enabled == true and type(name) == 'string' and name:lower() == lower then
+            return true
+        end
+    end
+
+    return false
+end
+
+function hasAuctionCategorySelection(optionKey)
+    local selected = getMultiSelect(optionKey)
+    return selected and next(selected) ~= nil
 end
 
 function getAuctionLotItemName(lot)
@@ -2707,7 +2766,24 @@ function isAuctionLotSelected(lot)
     end
 
     local selected = getMultiSelect(optionKey)
-    return selected[itemName] == true
+    if not hasAuctionCategorySelection(optionKey) then
+        return false
+    end
+
+    if isAuctionNameSelected(selected, itemName) then
+        return true
+    end
+
+    if lot.displayName and isAuctionNameSelected(selected, lot.displayName) then
+        return true
+    end
+
+    local ok, displayName = pcall(AuctioneerModule.DisplayName, lot)
+    if ok and displayName and isAuctionNameSelected(selected, displayName) then
+        return true
+    end
+
+    return false
 end
 
 function refreshAuctionItemListsFromCatalog()
@@ -2910,7 +2986,12 @@ function tryPurchaseAuctionLot(lot, stock)
     end
 
     local now = getAuctionServerNow()
-    if not AuctioneerModule.IsActive(lot, now, stock) then
+    local stockCount = stock
+    if type(stock) == 'table' then
+        stockCount = stock[lotId]
+    end
+
+    if not AuctioneerModule.IsActive(lot, now, stockCount) then
         return
     end
 
@@ -2940,7 +3021,7 @@ function tryPurchaseAuctionLot(lot, stock)
 end
 
 function runAutoAuction()
-    if not isAuctionShopActive() then
+    if not isActiveSession() then
         return
     end
 
@@ -2948,8 +3029,12 @@ function runAutoAuction()
         requestAuctionSnapshot()
     end
 
+    if #State.AuctionLots == 0 then
+        return
+    end
+
     local stock = State.AuctionStock or {}
-    for _, lot in State.AuctionLots or {} do
+    for _, lot in State.AuctionLots do
         tryPurchaseAuctionLot(lot, stock[lot.lotId])
     end
 end
@@ -2966,8 +3051,20 @@ function setAutoAuctionLoop(enabled)
 
     setupAuctionNetworking()
 
+    local hasAnySelection = false
+    for _, optionKey in AUCTION_OPTION_BY_CATEGORY do
+        if hasAuctionCategorySelection(optionKey) then
+            hasAnySelection = true
+            break
+        end
+    end
+
+    if not hasAnySelection and Library and Library.Notify then
+        Library:Notify('Auto auction: select seeds/gears/packs/eggs to buy first')
+    end
+
     State.AutoAuctionThread = task.spawn(function()
-        while not Library.Unloaded and Toggles.AutoBuyAuction and Toggles.AutoBuyAuction.Value do
+        while isActiveSession() and Toggles.AutoBuyAuction and Toggles.AutoBuyAuction.Value do
             runAutoAuction()
             task.wait(0.5)
         end
@@ -3836,6 +3933,7 @@ function getAutoExecQueueScript()
     return [[
 getgenv().GG2_AutoFarmRunning = nil
 getgenv().GG2_FromAutoExec = true
+getgenv().GG2_SkipRemoteUpdate = true
 loadstring(game:HttpGet('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/'..readfile('GG2/commit.txt')..'/loader.lua', true))()
 ]]
 end
@@ -4779,8 +4877,16 @@ function shutdownScript()
         State.LoadingDismissThread = nil
     end
 
+    pcall(function()
+        Library:Unload()
+    end)
+
     GENV.GG2_AutoFarmRunning = false
+    GENV.GG2_Library = nil
 end
+
+GENV.GG2_AutoFarmShutdown = shutdownScript
+GENV.GG2_Library = Library
 
 MenuBox:AddToggle('AntiAfk', {
     Text = 'Anti AFK',
