@@ -7,14 +7,11 @@ if GENV.GG2_AutoFarmRunning then
 end
 
 local DEFAULT_REMOTE_SCRIPT_URL = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/gag2.lua'
-local REMOTE_SCRIPT_CDN_URL = 'https://cdn.jsdelivr.net/gh/aupirium/Auto-Farm---GAG2@main/gag2.lua'
 local REMOTE_SCRIPT_URL = (type(GENV.GG2_ScriptUrl) == 'string' and GENV.GG2_ScriptUrl ~= '')
     and GENV.GG2_ScriptUrl
     or DEFAULT_REMOTE_SCRIPT_URL
 
-if not GENV.GG2_SkipRemoteUpdate and type(writefile) == 'function' and REMOTE_SCRIPT_URL ~= '' then
-    local HttpServiceEarly = game:GetService('HttpService')
-
+if not GENV.GG2_SkipRemoteUpdate and not GENV.GG2_FromAutoExec and type(writefile) == 'function' and REMOTE_SCRIPT_URL ~= '' then
     local function stripBomEarly(source)
         if type(source) ~= 'string' or source == '' then
             return source
@@ -28,53 +25,37 @@ if not GENV.GG2_SkipRemoteUpdate and type(writefile) == 'function' and REMOTE_SC
     end
 
     local function httpGetEarly(url)
-        local req = (syn and syn.request)
-            or http_request
-            or request
-            or (fluxus and fluxus.request)
-
-        if req then
-            local ok, res = pcall(function()
-                return req({
-                    Url = url,
-                    Method = 'GET',
-                })
-            end)
-            local body = ok and res and (res.Body or res.body)
-            local code = ok and res and (res.StatusCode or res.Status or res.status)
-            if body and body ~= '' and (not code or code == 200) and not body:find('404: Not Found', 1, true) then
-                return body
-            end
-        end
-
         local ok, body = pcall(function()
-            return HttpServiceEarly:GetAsync(url, true)
+            return game:HttpGet(url, true)
         end)
-        if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
-            return body
-        end
-
-        ok, body = pcall(function()
-            return game:HttpGet(url)
-        end)
-        if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
+        if ok and body and body ~= '' and body ~= '404: Not Found' then
             return body
         end
 
         return nil
     end
 
-    local remote = nil
-    for _, baseUrl in { REMOTE_SCRIPT_URL, REMOTE_SCRIPT_CDN_URL } do
-        for _, url in { baseUrl, baseUrl .. '?t=' .. tostring(os.time()) } do
-            remote = httpGetEarly(url)
-            if remote then
-                break
+    local function getCommitEarly()
+        local commit = 'main'
+        local ok, html = pcall(function()
+            return game:HttpGet('https://github.com/aupirium/Auto-Farm---GAG2', true)
+        end)
+        if ok and type(html) == 'string' then
+            local idx = html:find('currentOid')
+            if idx then
+                local hash = html:sub(idx + 13, idx + 52)
+                if hash and #hash == 40 then
+                    commit = hash
+                end
             end
         end
-        if remote then
-            break
-        end
+        return commit
+    end
+
+    local commit = getCommitEarly()
+    local remote = httpGetEarly('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/' .. commit .. '/gag2.lua')
+    if not remote then
+        remote = httpGetEarly('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/gag2.lua')
     end
 
     if remote then
@@ -214,55 +195,45 @@ function ensureGg2Folders()
 end
 
 function httpGet(url)
-    local req = (syn and syn.request)
-        or http_request
-        or request
-        or (fluxus and fluxus.request)
-
-    if req then
-        local ok, res = pcall(function()
-            return req({
-                Url = url,
-                Method = 'GET',
-            })
-        end)
-        local body = ok and res and (res.Body or res.body)
-        local code = ok and res and (res.StatusCode or res.Status or res.status)
-        if body and body ~= '' and (not code or code == 200) and not body:find('404: Not Found', 1, true) then
-            return body
-        end
-    end
-
     local ok, body = pcall(function()
-        return game:GetService('HttpService'):GetAsync(url, true)
+        return game:HttpGet(url, true)
     end)
-    if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
+    if ok and body and body ~= '' and body ~= '404: Not Found' then
         return body
     end
-
-    ok, body = pcall(function()
-        return game:HttpGet(url)
-    end)
-    if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
-        return body
-    end
-
     return nil
 end
 
-function fetchRemoteScriptSource()
-    if not REMOTE_SCRIPT_URL or REMOTE_SCRIPT_URL == '' then
-        return nil
-    end
-
-    for _, baseUrl in { REMOTE_SCRIPT_URL, REMOTE_SCRIPT_CDN_URL } do
-        for _, url in { baseUrl, baseUrl .. '?t=' .. tostring(os.time()) } do
-            local ok, body = pcall(function()
-                return httpGet(url)
-            end)
-            if ok and type(body) == 'string' and body ~= '' and not body:find('404: Not Found', 1, true) then
-                return stripBom(body)
+function getRemoteCommit()
+    local commit = 'main'
+    local ok, html = pcall(function()
+        return game:HttpGet('https://github.com/aupirium/Auto-Farm---GAG2', true)
+    end)
+    if ok and type(html) == 'string' then
+        local idx = html:find('currentOid')
+        if idx then
+            local hash = html:sub(idx + 13, idx + 52)
+            if hash and #hash == 40 then
+                commit = hash
             end
+        end
+    end
+    return commit
+end
+
+function fetchRemoteScriptSource()
+    local commit = getRemoteCommit()
+    local urls = {
+        'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/' .. commit .. '/gag2.lua',
+        'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/gag2.lua',
+    }
+
+    for _, url in urls do
+        local ok, body = pcall(function()
+            return httpGet(url)
+        end)
+        if ok and type(body) == 'string' and body ~= '' and body ~= '404: Not Found' then
+            return stripBom(body)
         end
     end
 
@@ -316,11 +287,6 @@ function persistAutoFarmScript()
         return false
     end
 
-    local synced = syncWorkspaceFromRemote()
-    if synced then
-        return true
-    end
-
     ensureGg2Folders()
 
     for _, path in {
@@ -343,6 +309,14 @@ function persistAutoFarmScript()
     end
 
     return false
+end
+
+function tryUpdateFromRemote()
+    if GENV.GG2_SkipRemoteUpdate or GENV.GG2_FromAutoExec then
+        return false, 'skipped'
+    end
+
+    return syncWorkspaceFromRemote()
 end
 
 function saveConfigBeforeTeleport()
@@ -3339,44 +3313,33 @@ local function stripBom(src)
     return src
 end
 
-local REMOTE_URL = %q
-local REMOTE_CDN_URL = %q
+local REPO = %q
 
 local function httpGet(url)
-    local req = (syn and syn.request)
-        or http_request
-        or request
-        or (fluxus and fluxus.request)
+    local ok, body = pcall(function()
+        return game:HttpGet(url, true)
+    end)
+    if ok and body and body ~= '' and body ~= '404: Not Found' then
+        return body
+    end
+    return nil
+end
 
-    if req then
-        local ok, res = pcall(function()
-            return req({
-                Url = url,
-                Method = 'GET',
-            })
-        end)
-        local body = ok and res and (res.Body or res.body)
-        local code = ok and res and (res.StatusCode or res.Status or res.status)
-        if body and body ~= '' and (not code or code == 200) and not body:find('404: Not Found', 1, true) then
-            return body
+local function getCommit()
+    local commit = 'main'
+    local ok, html = pcall(function()
+        return game:HttpGet('https://github.com/' .. REPO, true)
+    end)
+    if ok and type(html) == 'string' then
+        local idx = html:find('currentOid')
+        if idx then
+            local hash = html:sub(idx + 13, idx + 52)
+            if hash and #hash == 40 then
+                commit = hash
+            end
         end
     end
-
-    local ok, body = pcall(function()
-        return game:GetService('HttpService'):GetAsync(url, true)
-    end)
-    if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
-        return body
-    end
-
-    ok, body = pcall(function()
-        return game:HttpGet(url)
-    end)
-    if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
-        return body
-    end
-
-    return nil
+    return commit
 end
 
 local function fetchLatestFarm()
@@ -3384,20 +3347,10 @@ local function fetchLatestFarm()
         return
     end
 
-    local src = nil
-    for _, baseUrl in { REMOTE_URL, REMOTE_CDN_URL } do
-        for _, url in { baseUrl, baseUrl .. '?t=' .. tostring(os.time()) } do
-            local ok, body = pcall(function()
-                return httpGet(url)
-            end)
-            if ok and type(body) == 'string' and body ~= '' and not body:find('404: Not Found', 1, true) then
-                src = body
-                break
-            end
-        end
-        if src then
-            break
-        end
+    local commit = getCommit()
+    local src = httpGet('https://raw.githubusercontent.com/' .. REPO .. '/' .. commit .. '/gag2.lua')
+    if not src then
+        src = httpGet('https://raw.githubusercontent.com/' .. REPO .. '/main/gag2.lua')
     end
 
     if not src then
@@ -3415,12 +3368,17 @@ local function fetchLatestFarm()
 end
 
 local function loadFarm()
+    getgenv().GG2_AutoFarmRunning = nil
+    getgenv().GG2_SkipRemoteUpdate = true
+    getgenv().GG2_FromAutoExec = true
+
     fetchLatestFarm()
     task.wait(2)
+
     if getgenv().GG2_AutoFarmRunning then
         return
     end
-    getgenv().GG2_FromAutoExec = true
+
     for _, path in ipairs({ 'GG2/grow_garden_autofarm.lua', %q }) do
         if isfile(path) then
             local ok, src = pcall(readfile, path)
@@ -3504,7 +3462,7 @@ if saved and saved.ReturnPlaceId then
 end
 
 loadFarm()
-]], WEATHER_STATE_FILE, REMOTE_SCRIPT_URL, REMOTE_SCRIPT_CDN_URL, AUTO_FARM_SCRIPT, AUTO_FARM_SCRIPT)
+]], WEATHER_STATE_FILE, 'aupirium/Auto-Farm---GAG2', AUTO_FARM_SCRIPT, AUTO_FARM_SCRIPT)
 end
 
 function writeTeleportScript()
@@ -4530,9 +4488,16 @@ end
 
 setupAutoExecute()
 startLoadingScreenAutoDismiss()
+persistAutoFarmScript()
 
-local remoteOk, remoteStatus = syncWorkspaceFromRemote()
-State.RemoteSyncStatus = remoteStatus
+task.spawn(function()
+    local remoteOk, remoteStatus = tryUpdateFromRemote()
+    State.RemoteSyncStatus = remoteStatus
+
+    if remoteStatus == 'updated' and Library and Library.Notify then
+        Library:Notify('Script updated from GitHub')
+    end
+end)
 
 if not getQueueOnTeleport() then
     task.defer(function()
@@ -4540,10 +4505,10 @@ if not getQueueOnTeleport() then
             Library:Notify('Auto-exec needs queue_on_teleport (Potassium supports this)')
         end
     end)
-elseif not remoteOk and not persistAutoFarmScript() then
+elseif not isfile(GG2_SCRIPT_PATH) and not isfile(AUTO_FARM_SCRIPT) and not persistAutoFarmScript() then
     task.defer(function()
         if Library and Library.Notify then
-            Library:Notify('Could not sync script to workspace. Check GitHub URL or run loader.lua')
+            Library:Notify('Run loader.lua first so auto-exec can save the script to workspace')
         end
     end)
 end
@@ -4552,9 +4517,6 @@ task.defer(function()
     SaveManager:LoadAutoloadConfig()
     if Options.MenuKeybind then
         Library.ToggleKeybind = Options.MenuKeybind
-    end
-    if remoteStatus == 'updated' and Library and Library.Notify then
-        Library:Notify('Script updated from GitHub')
     end
     if Toggles.AntiAfk and Toggles.AntiAfk.Value then
         setAntiAfk(true)
