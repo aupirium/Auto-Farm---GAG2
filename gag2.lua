@@ -7,11 +7,14 @@ if GENV.GG2_AutoFarmRunning then
 end
 
 local DEFAULT_REMOTE_SCRIPT_URL = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/gag2.lua'
+local REMOTE_SCRIPT_CDN_URL = 'https://cdn.jsdelivr.net/gh/aupirium/Auto-Farm---GAG2@main/gag2.lua'
 local REMOTE_SCRIPT_URL = (type(GENV.GG2_ScriptUrl) == 'string' and GENV.GG2_ScriptUrl ~= '')
     and GENV.GG2_ScriptUrl
     or DEFAULT_REMOTE_SCRIPT_URL
 
 if not GENV.GG2_SkipRemoteUpdate and type(writefile) == 'function' and REMOTE_SCRIPT_URL ~= '' then
+    local HttpServiceEarly = game:GetService('HttpService')
+
     local function stripBomEarly(source)
         if type(source) ~= 'string' or source == '' then
             return source
@@ -37,19 +40,44 @@ if not GENV.GG2_SkipRemoteUpdate and type(writefile) == 'function' and REMOTE_SC
                     Method = 'GET',
                 })
             end)
-            if ok and res and res.Body and (not res.StatusCode or res.StatusCode == 200) then
-                return res.Body
+            local body = ok and res and (res.Body or res.body)
+            local code = ok and res and (res.StatusCode or res.Status or res.status)
+            if body and body ~= '' and (not code or code == 200) and not body:find('404: Not Found', 1, true) then
+                return body
             end
         end
 
-        return game:HttpGet(url)
+        local ok, body = pcall(function()
+            return HttpServiceEarly:GetAsync(url, true)
+        end)
+        if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
+            return body
+        end
+
+        ok, body = pcall(function()
+            return game:HttpGet(url)
+        end)
+        if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
+            return body
+        end
+
+        return nil
     end
 
-    local okFetch, remote = pcall(function()
-        return httpGetEarly(REMOTE_SCRIPT_URL .. '?t=' .. tostring(os.time()))
-    end)
+    local remote = nil
+    for _, baseUrl in { REMOTE_SCRIPT_URL, REMOTE_SCRIPT_CDN_URL } do
+        for _, url in { baseUrl, baseUrl .. '?t=' .. tostring(os.time()) } do
+            remote = httpGetEarly(url)
+            if remote then
+                break
+            end
+        end
+        if remote then
+            break
+        end
+    end
 
-    if okFetch and type(remote) == 'string' and remote ~= '' and not remote:find('404: Not Found', 1, true) then
+    if remote then
         remote = stripBomEarly(remote)
         local localSrc = nil
 
@@ -198,12 +226,28 @@ function httpGet(url)
                 Method = 'GET',
             })
         end)
-        if ok and res and res.Body and (not res.StatusCode or res.StatusCode == 200) then
-            return res.Body
+        local body = ok and res and (res.Body or res.body)
+        local code = ok and res and (res.StatusCode or res.Status or res.status)
+        if body and body ~= '' and (not code or code == 200) and not body:find('404: Not Found', 1, true) then
+            return body
         end
     end
 
-    return game:HttpGet(url)
+    local ok, body = pcall(function()
+        return game:GetService('HttpService'):GetAsync(url, true)
+    end)
+    if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
+        return body
+    end
+
+    ok, body = pcall(function()
+        return game:HttpGet(url)
+    end)
+    if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
+        return body
+    end
+
+    return nil
 end
 
 function fetchRemoteScriptSource()
@@ -211,15 +255,18 @@ function fetchRemoteScriptSource()
         return nil
     end
 
-    local ok, body = pcall(function()
-        return httpGet(REMOTE_SCRIPT_URL .. '?t=' .. tostring(os.time()))
-    end)
-
-    if not ok or type(body) ~= 'string' or body == '' or body:find('404: Not Found', 1, true) then
-        return nil
+    for _, baseUrl in { REMOTE_SCRIPT_URL, REMOTE_SCRIPT_CDN_URL } do
+        for _, url in { baseUrl, baseUrl .. '?t=' .. tostring(os.time()) } do
+            local ok, body = pcall(function()
+                return httpGet(url)
+            end)
+            if ok and type(body) == 'string' and body ~= '' and not body:find('404: Not Found', 1, true) then
+                return stripBom(body)
+            end
+        end
     end
 
-    return stripBom(body)
+    return nil
 end
 
 function writeScriptToWorkspace(source)
@@ -3293,6 +3340,7 @@ local function stripBom(src)
 end
 
 local REMOTE_URL = %q
+local REMOTE_CDN_URL = %q
 
 local function httpGet(url)
     local req = (syn and syn.request)
@@ -3307,24 +3355,52 @@ local function httpGet(url)
                 Method = 'GET',
             })
         end)
-        if ok and res and res.Body and (not res.StatusCode or res.StatusCode == 200) then
-            return res.Body
+        local body = ok and res and (res.Body or res.body)
+        local code = ok and res and (res.StatusCode or res.Status or res.status)
+        if body and body ~= '' and (not code or code == 200) and not body:find('404: Not Found', 1, true) then
+            return body
         end
     end
 
-    return game:HttpGet(url)
+    local ok, body = pcall(function()
+        return game:GetService('HttpService'):GetAsync(url, true)
+    end)
+    if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
+        return body
+    end
+
+    ok, body = pcall(function()
+        return game:HttpGet(url)
+    end)
+    if ok and body and body ~= '' and not body:find('404: Not Found', 1, true) then
+        return body
+    end
+
+    return nil
 end
 
 local function fetchLatestFarm()
-    if not writefile or not REMOTE_URL or REMOTE_URL == '' then
+    if not writefile then
         return
     end
 
-    local ok, src = pcall(function()
-        return httpGet(REMOTE_URL .. '?t=' .. tostring(os.time()))
-    end)
+    local src = nil
+    for _, baseUrl in { REMOTE_URL, REMOTE_CDN_URL } do
+        for _, url in { baseUrl, baseUrl .. '?t=' .. tostring(os.time()) } do
+            local ok, body = pcall(function()
+                return httpGet(url)
+            end)
+            if ok and type(body) == 'string' and body ~= '' and not body:find('404: Not Found', 1, true) then
+                src = body
+                break
+            end
+        end
+        if src then
+            break
+        end
+    end
 
-    if not ok or type(src) ~= 'string' or src == '' or src:find('404: Not Found', 1, true) then
+    if not src then
         return
     end
 
@@ -3428,7 +3504,7 @@ if saved and saved.ReturnPlaceId then
 end
 
 loadFarm()
-]], WEATHER_STATE_FILE, REMOTE_SCRIPT_URL, AUTO_FARM_SCRIPT, AUTO_FARM_SCRIPT)
+]], WEATHER_STATE_FILE, REMOTE_SCRIPT_URL, REMOTE_SCRIPT_CDN_URL, AUTO_FARM_SCRIPT, AUTO_FARM_SCRIPT)
 end
 
 function writeTeleportScript()
