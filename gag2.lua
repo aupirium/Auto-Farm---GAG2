@@ -1,15 +1,3247 @@
---[[
- .____                  ________ ___.    _____                           __                
- |    |    __ _______   \_____  \\_ |___/ ____\_ __  ______ ____ _____ _/  |_  ___________ 
- |    |   |  |  \__  \   /   |   \| __ \   __\  |  \/  ___// ___\\__  \\   __\/  _ \_  __ \
- |    |___|  |  // __ \_/    |    \ \_\ \  | |  |  /\___ \\  \___ / __ \|  | (  <_> )  | \/
- |_______ \____/(____  /\_______  /___  /__| |____//____  >\___  >____  /__|  \____/|__|   
-         \/          \/         \/    \/                \/     \/     \/                   
-          \_Welcome to LuaObfuscator.com   (Alpha 0.10.9) ~  Much Love, Ferib 
+﻿-- Grow a Garden 2 - Auto Farm (LinoriaLib)
+-- Auto Super Sprinkler / Watering Can at saved position, auto harvest, auto sell, earnings/min
 
-]]--
+local GENV = getgenv()
+if GENV.GG2_AutoFarmRunning then
+    return
+end
 
-local v0="https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/";local v1=loadstring(game:HttpGet(v0   .. "Library.lua" ))();local v2=loadstring(game:HttpGet(v0   .. "addons/ThemeManager.lua" ))();local v3=loadstring(game:HttpGet(v0   .. "addons/SaveManager.lua" ))();local v4=game:GetService("Players");local v5=game:GetService("RunService");local v6=game:GetService("UserInputService");local v7=game:GetService("CollectionService");local v8=game:GetService("TeleportService");local v9=game:GetService("GuiService");local v10=game:GetService("VirtualUser");local v11=v4.LocalPlayer;local v12=v11:WaitForChild("PlayerScripts");local v13=game:GetService("ReplicatedStorage");local v14=workspace:WaitForChild("Gardens");local v15=v13:WaitForChild("WeatherValues");local v16=v13:WaitForChild("StockValues");local v17=game:GetService("Lighting");local v18={"Lightning","Rainbow","Snowfall","Starfall","Aurora","Sunburst","Eclipse"};local v19={Goldmoon=true,["Rainbow Moon"]=true,Bloodmoon=true,["Mega Moon"]=true};local v20={Goldmoon="Gold",Bloodmoon="Blood",["Mega Moon"]="Mega",["Rainbow Moon"]="Rainbow"};local v21={"Lightning","Rainbow","Snowfall","Starfall","Aurora","Sunburst","Eclipse","Gold","Blood","Mega"};local v22=getgenv();local v23="GG2_WeatherState.json";local v24="grow_garden_autofarm.lua";local v25="GG2/grow_garden_autofarm.lua";local v26="GG2/teleport.lua";isfile=isfile or function(v80) local v81,v82=pcall(function() return readfile(v80);end);return v81 and (v82~=nil) and (v82~="") ;end ;isfolder=isfolder or function(v83) local v84,v85=pcall(listfiles,v83);return v84 and (type(v85)=="table") ;end ;makefolder=makefolder or function() end ;function stripBom(v86) if ((type(v86)~="string") or (v86=="")) then return v86;end while (v86:byte(1)==239) and (v86:byte(2)==187) and (v86:byte(3)==191)  do v86=v86:sub(4);end if (v86:sub(1,1)=="\239\187\191") then v86=v86:sub(4);end return v86;end function ensureGg2Folders() pcall(function() if  not isfolder("GG2") then makefolder("GG2");end end);end function persistAutoFarmScript() if  not writefile then return false;end ensureGg2Folders();for v503,v504 in {v24,v25,"workspace/"   .. v24 ,"scripts/"   .. v24 } do if isfile(v504) then local v811,v812=pcall(readfile,v504);if (v811 and v812 and (v812~="")) then local v919=stripBom(v812);pcall(function() writefile(v25,v919);writefile(v24,v919);end);return true;end end end return false;end function saveConfigBeforeTeleport() pcall(function() if ( not v3 or  not isfile) then return;end local v505="GrowGarden2AutoFarm/settings/autoload.txt";if isfile(v505) then local v813=readfile(v505):gsub("%s+","");if (v813~="") then v3:Save(v813);end end end);end local v27;pcall(function() v27=game:GetService("HttpService");end);function encodeWeatherState(v87) if v27 then return v27:JSONEncode(v87);end return string.format("%s|%s|%s|%s|%s",tostring(v87.Hiding),tostring(v87.ReturnJobId or "" ),tostring(v87.ReturnPlaceId or "" ),tostring(v87.HideUntil or 0 ),tostring(v87.HidingFromWeather or "" ));end function decodeWeatherState(v88) if ( not v88 or (v88=="")) then return nil;end if v27 then local v703,v704=pcall(function() return v27:JSONDecode(v88);end);if (v703 and (typeof(v704)=="table")) then return v704;end end local v89,v90,v91,v92,v93=v88:match("([^|]+)|([^|]*)|([^|]*)|([^|]*)|(.*)");if  not v89 then return nil;end return {Hiding=v89=="true" ,ReturnJobId=((v90~="") and v90) or nil ,ReturnPlaceId=tonumber(v91),HideUntil=tonumber(v92) or 0 ,HidingFromWeather=((v93~="") and v93) or nil };end function readWeatherStateFile() if  not (readfile and isfile and isfile(v23)) then return nil;end local v94,v95=pcall(readfile,v23);if  not v94 then return nil;end return decodeWeatherState(v95);end function writeWeatherStateFile(v96) if  not writefile then return false;end local v97=pcall(function() writefile(v23,encodeWeatherState(v96));end);return v97;end function clearWeatherStateFile() if (delfile and isfile and isfile(v23)) then pcall(delfile,v23);end end local v28=require(v13.SharedModules.Networking);local v29=require(v13.SharedModules.SprinklerData);local v30=require(v13.SharedModules.GearShopData);local v31=require(v13.SharedModules.SeedData);local v32=require(v13.SharedModules.SellValueData);local v33=require(v13.SharedModules.MutationData);local v34=require(v12.Controllers.GardenSyncController);local v35=require(v12.Controllers.FruitVisualizerController);local v36;pcall(function() v36=require(v12.Controllers.HarvestedFruitHandleController);end);local v37;pcall(function() v37=require(v13.SharedModules.NumberUtils);end);local v38;local v39;function loadMailModules() if (v38 and v39) then return true;end local v98,v99=pcall(function() v38=require(v13.ClientModules.PlayerStateClient);v39=require(v12.Controllers.MailboxController.MailboxItemCatalog);end);return v98,v99;end function getReplica() local v100=loadMailModules();if  not v100 then return nil;end return v38:GetLocalReplica() or v38:WaitForLocalReplica(5) ;end local v40={};local v41={};local v42={};local v43={};local v44={};for v101,v102 in v30.Data do v43[v102.ItemName]=v102.Cost;if  not v102.PriceInRobux then table.insert(v40,v102.ItemName);end end for v105,v106 in v31 do if (v106.SeedName and (v106.RestockShop~=false)) then table.insert(v41,v106.SeedName);v44[v106.SeedName]=v106.PurchasePrice;end end pcall(function() local v107=v16:WaitForChild("CrateShop"):WaitForChild("Items");for v506,v507 in v107:GetChildren() do table.insert(v42,v507.Name);end end);table.sort(v40);table.sort(v41);table.sort(v42);local v45="Super Sprinkler";local v46="Super Watering Can";local v47=120;for v108,v109 in v29 do if (v109.SprinklerName==v45) then v47=v109.Lifetime or v47 ;break;end end local v48={SavedPosition=nil,LastSprinklerPlace=0,LastWatering=0,LastSell=0,EarningsWindow={},NoclipConnection=nil,NoclipPlantState={},NoclipPlantConnection=nil,HarvestConnection=nil,HarvestThread=nil,WateringConnection=nil,WateringStop=false,SprinklerPlacePending=false,WeatherHiding=false,ReturnJobId=nil,ReturnPlaceId=nil,HideUntil=0,HidingFromWeather=nil,PendingWalkBack=false,ReturnPosX=nil,ReturnPosY=nil,ReturnPosZ=nil,PendingWalkToSaved=false,AutoExecTeleportConnection=nil,WeatherMonitorStop=false,WeatherMonitorThread=nil,WeatherErrorReconnectConnection=nil,WeatherReconnectPending=false,WeatherReconnectAttempts=0,LastWeatherReconnectAttempt=0,AutoBuyThread=nil,AutoBuyTracker={},MailAutoClaimStop=false,MailAutoClaimThread=nil,MailTotals={Claimed=0,Failed=0},OptimizerEnabled=false,OptimizerOriginal=nil,OptimizerChanged=nil,OptimizerApplyToken=0,OptimizerScanThread=nil,OptimizerBoostConnection=nil,OptimizerElitePartCache={},OptimizerEliteBoostCache={},OptimizerEliteEffectCache={},AntiAfkConnection=nil,AutoSellThread=nil,LastHarvest=0,NoclipPlantApplyToken=0,PlantEffectMaintainConnection=nil,PlantEmitterClearConnection=nil,PlantEmitterCache={},PlantEmitterCacheAt=0,PlantWatchConnections={},GardensWatchConnection=nil,FruitsFolderConnections={},PlantChildConnections={},NoclipCharConnection=nil,GardenFruits={},FruitLabelMap={},OptimizerPlantRecordCache={}};function killPlantEmitter(v110) v110.Enabled=false;v110.Rate=0;pcall(function() v110.Lifetime=NumberRange.new(0,0);end);pcall(function() v110:Clear();end);pcall(function() v110.Transparency=NumberSequence.new(1);end);end function rehidePlantInstance(v113) if v113:IsA("BasePart") then if ((v113.Transparency<1) or (v113.LocalTransparencyModifier<1) or v113.CanCollide) then v113.CanCollide=false;v113.Transparency=1;v113.LocalTransparencyModifier=1;end elseif (v113:IsA("Decal") or v113:IsA("Texture")) then if (v113.Transparency<1) then v113.Transparency=1;end elseif (v113:IsA("BillboardGui") or v113:IsA("SurfaceGui") or v113:IsA("Highlight") or v113:IsA("SelectionBox") or v113:IsA("ProximityPrompt")) then if v113.Enabled then v113.Enabled=false;end elseif v113:IsA("ParticleEmitter") then killPlantEmitter(v113);elseif (v113:IsA("Trail") or v113:IsA("Beam") or v113:IsA("Fire") or v113:IsA("Smoke") or v113:IsA("Sparkles")) then if v113.Enabled then v113.Enabled=false;end elseif (v113:IsA("PointLight") or v113:IsA("SpotLight") or v113:IsA("Light")) then if v113.Enabled then v113.Enabled=false;end end end function getWatchedPlantsFolders() local v114={};if v48.OptimizerEnabled then for v814,v815 in v14:GetChildren() do local v816=v815:FindFirstChild("Plants");if v816 then table.insert(v114,v816);end end elseif (Toggles.Noclip and Toggles.Noclip.Value) then local v864=v11:GetAttribute("PlotId");if v864 then local v943=v14:FindFirstChild("Plot"   .. v864 );local v944=v943 and v943:FindFirstChild("Plants") ;if v944 then table.insert(v114,v944);end end end return v114;end function isPlantInstance(v115) local v116=v115;while v116 and (v116~=workspace)  do if ((v116.Name=="Plants") and v116.Parent and (v116.Parent.Parent==v14)) then return true;end v116=v116.Parent;end return false;end function refreshPlantEmitterCache() local v117={};for v511,v512 in getWatchedPlantsFolders() do for v707,v708 in v512:GetDescendants() do if v708:IsA("ParticleEmitter") then table.insert(v117,v708);end end end v48.PlantEmitterCache=v117;v48.PlantEmitterCacheAt=os.clock();end function trackPlantEmitter(v120) if  not v120:IsA("ParticleEmitter") then return;end for v513,v514 in v48.PlantEmitterCache do if (v514==v120) then return;end end table.insert(v48.PlantEmitterCache,v120);killPlantEmitter(v120);end function clearCachedPlantEmitters() for v515,v516 in v48.PlantEmitterCache do if (v516 and v516.Parent) then killPlantEmitter(v516);end end end function suppressPlantVisual(v121,v122,v123) local v124=v122[v121];if v121:IsA("ParticleEmitter") then if  not v124 then v124={Enabled=v121.Enabled,Rate=v121.Rate,Lifetime=v121.Lifetime};v122[v121]=v124;if v123 then v123(v121,v124);end end killPlantEmitter(v121);elseif (v121:IsA("Trail") or v121:IsA("Beam")) then if  not v124 then v124={Enabled=v121.Enabled};v122[v121]=v124;if v123 then v123(v121,v124);end end v121.Enabled=false;elseif (v121:IsA("Fire") or v121:IsA("Smoke") or v121:IsA("Sparkles") or v121:IsA("Light")) then if  not v124 then v124={Enabled=v121.Enabled};v122[v121]=v124;if v123 then v123(v121,v124);end end v121.Enabled=false;elseif (v121:IsA("Decal") or v121:IsA("Texture")) then if  not v124 then v124={Transparency=v121.Transparency};v122[v121]=v124;if v123 then v123(v121,v124);end end v121.Transparency=1;elseif (v121:IsA("BillboardGui") or v121:IsA("SurfaceGui") or v121:IsA("Highlight") or v121:IsA("SelectionBox") or v121:IsA("ProximityPrompt")) then if  not v124 then v124={Enabled=v121.Enabled};v122[v121]=v124;if v123 then v123(v121,v124);end end v121.Enabled=false;elseif (v121:IsA("PointLight") or v121:IsA("SpotLight")) then if  not v124 then v124={Enabled=v121.Enabled};v122[v121]=v124;if v123 then v123(v121,v124);end end v121.Enabled=false;elseif v121:IsA("BasePart") then if  not v124 then v124={CanCollide=v121.CanCollide,LocalTransparencyModifier=v121.LocalTransparencyModifier,Transparency=v121.Transparency,CastShadow=v121.CastShadow,Material=v121.Material,Reflectance=v121.Reflectance};v122[v121]=v124;if v123 then v123(v121,v124);end end v121.CanCollide=false;v121.LocalTransparencyModifier=1;v121.Transparency=1;v121.CastShadow=false;if v48.OptimizerEnabled then v121.Material=Enum.Material.SmoothPlastic;v121.Reflectance=0;end end end function stopPlantEffectMaintain() if v48.PlantEffectMaintainConnection then v48.PlantEffectMaintainConnection:Disconnect();v48.PlantEffectMaintainConnection=nil;end if v48.PlantEmitterClearConnection then v48.PlantEmitterClearConnection:Disconnect();v48.PlantEmitterClearConnection=nil;end stopPlantWatchers();stopFruitsFolderWatchers();v48.PlantEmitterCache={};v48.PlantEmitterCacheAt=0;end function shouldMaintainPlantEffects() if v1.Unloaded then return false;end if v48.OptimizerEnabled then return true;end return Toggles.Noclip and (Toggles.Noclip.Value==true) ;end function forceSuppressPlantEffect(v127) if v127:IsA("ParticleEmitter") then killPlantEmitter(v127);elseif (v127:IsA("Trail") or v127:IsA("Beam") or v127:IsA("Fire") or v127:IsA("Smoke") or v127:IsA("Sparkles") or v127:IsA("Light")) then v127.Enabled=false;end end function stopFruitsFolderWatchers() for v517,v518 in v48.FruitsFolderConnections do v518:Disconnect();end v48.FruitsFolderConnections={};for v519,v520 in v48.PlantChildConnections do v520:Disconnect();end v48.PlantChildConnections={};end function stopPlantWatchers() for v521,v522 in v48.PlantWatchConnections do v522:Disconnect();end v48.PlantWatchConnections={};if v48.GardensWatchConnection then v48.GardensWatchConnection:Disconnect();v48.GardensWatchConnection=nil;end end function hideWatchedPlantInstance(v131) if (v48.OptimizerEnabled and isPlantInstance(v131)) then suppressPlantVisual(v131,v48.OptimizerPlantRecordCache,(v48.OptimizerChanged and function(v817,v818) table.insert(v48.OptimizerChanged,{inst=v817,props=v818});end) or nil );trackPlantEmitter(v131);end if (Toggles.Noclip and Toggles.Noclip.Value) then local v712=v11:GetAttribute("PlotId");local v713=v712 and v14:FindFirstChild("Plot"   .. v712 ) ;local v714=v713 and v713:FindFirstChild("Plants") ;if (v714 and v131:IsDescendantOf(v714)) then suppressPlantVisual(v131,v48.NoclipPlantState);trackPlantEmitter(v131);end end end function hideWatchedPlantTree(v132) hideWatchedPlantInstance(v132);for v523,v524 in v132:GetDescendants() do hideWatchedPlantInstance(v524);end end function onPlantDescendantAdded(v133) task.defer(function() hideWatchedPlantInstance(v133);end);end function ensureFruitsFolderWatchers() if  not shouldMaintainPlantEffects() then stopFruitsFolderWatchers();return;end for v525,v526 in getWatchedPlantsFolders() do if  not v48.PlantChildConnections[v526] then v48.PlantChildConnections[v526]=v526.ChildAdded:Connect(function(v868) task.defer(function() hideWatchedPlantTree(v868);ensureFruitsFolderWatchers();end);end);end for v715,v716 in v526:GetChildren() do local v717=v716:FindFirstChild("Fruits");if (v717 and  not v48.FruitsFolderConnections[v717]) then v48.FruitsFolderConnections[v717]=v717.ChildAdded:Connect(function(v920) task.defer(function() hideWatchedPlantTree(v920);end);end);end end end end function ensurePlantWatchers() if  not shouldMaintainPlantEffects() then stopPlantWatchers();return;end for v527,v528 in getWatchedPlantsFolders() do if  not v48.PlantWatchConnections[v528] then v48.PlantWatchConnections[v528]=v528.DescendantAdded:Connect(onPlantDescendantAdded);end end if  not v48.GardensWatchConnection then v48.GardensWatchConnection=v14.ChildAdded:Connect(function(v821) if v821:FindFirstChild("Plants") then task.defer(ensurePlantWatchers);end end);end end function clearCachedPlantEmittersBatch(v134) local v135=v48.PlantEmitterCache;local v136= #v135;if (v136==0) then return;end v134=v134 or 12 ;local v137=v48.PlantEmitterClearIndex or 1 ;for v529=1,math.min(v134,v136) do local v530=(((v137 + v529) -2)%v136) + 1 ;local v531=v135[v530];if (v531 and v531.Parent) then killPlantEmitter(v531);end end v48.PlantEmitterClearIndex=(((v137 + v134) -1)%v136) + 1 ;end function updatePlantEffectMaintain() if  not shouldMaintainPlantEffects() then stopPlantEffectMaintain();return;end if  not v48.PlantEffectMaintainConnection then local v719=0;v48.PlantEffectMaintainConnection=v5.Heartbeat:Connect(function() if  not shouldMaintainPlantEffects() then stopPlantEffectMaintain();return;end local v822=os.clock();if ((v822-v719)>=3) then v719=v822;clearCachedPlantEmittersBatch(12);end end);end ensurePlantWatchers();ensureFruitsFolderWatchers();end function scanOptimizerPlants(v139) local v140={};for v532,v533 in v14:GetChildren() do local v534=v533:FindFirstChild("Plants");if v534 then for v870,v871 in v534:GetChildren() do table.insert(v140,v871);end end end local v141=1;while v141<= #v140  do if ((v139~=v48.OptimizerApplyToken) or  not v48.OptimizerEnabled) then return;end for v721=1,5 do local v722=v140[v141];if  not v722 then break;end hideWatchedPlantTree(v722);v141+=1 end task.wait(0.02);end end function eliteOptimizeInstance(v142) if  not v48.OptimizerEnabled then return;end if (v142:IsA("BasePart") and  not v142:IsA("MeshPart")) then if  not v48.OptimizerElitePartCache[v142] then v48.OptimizerElitePartCache[v142]={Material=v142.Material};end v142.Material=Enum.Material.SmoothPlastic;elseif (v142:IsA("Texture") or v142:IsA("Decal")) then if  not v48.OptimizerElitePartCache[v142] then v48.OptimizerElitePartCache[v142]={Transparency=v142.Transparency};end v142.Transparency=1;end end function eliteBoostInstance(v143) if  not v48.OptimizerEnabled then return;end if (v143:IsA("ParticleEmitter") or v143:IsA("Trail") or v143:IsA("Explosion")) then if  not v48.OptimizerEliteBoostCache[v143] then v48.OptimizerEliteBoostCache[v143]=v143.Enabled;end v143.Enabled=false;end end function eliteScanWorldGraphics() local v144=workspace:GetDescendants();for v535,v536 in v144 do if  not v48.OptimizerEnabled then return;end eliteOptimizeInstance(v536);if ((v535%500)==0) then task.wait();end end end function eliteScanWorldBoost() local v145=workspace:GetDescendants();for v537,v538 in v145 do if ( not v48.OptimizerEnabled or  not _G.ExtremeBoost) then return;end eliteBoostInstance(v538);if ((v537%500)==0) then task.wait();end end end function applyEliteOptimizer() local v146;pcall(function() v146=workspace.Terrain.Decoration;end);local v147;local v148;local v149;pcall(function() v147=settings().Rendering.QualityLevel;end);pcall(function() v148=settings().Physics.PhysicsEnvironmentalThrottle;end);pcall(function() v149=(getfpscap and getfpscap()) or 60 ;end);v48.OptimizerOriginal={Brightness=v17.Brightness,GlobalShadows=v17.GlobalShadows,FogEnd=v17.FogEnd,TerrainDecoration=v146,RenderQuality=v147,PhysicsThrottle=v148,FpsCap=v149};pcall(function() settings().Physics.PhysicsEnvironmentalThrottle=Enum.EnviromentalPhysicsThrottle.Always;end);pcall(function() settings().Rendering.QualityLevel=Enum.QualityLevel.Level01;end);v17.GlobalShadows=false;v17.FogEnd=9000000000;v17.Brightness=2;for v546,v547 in v17:GetChildren() do if (v547:IsA("PostEffect") or v547:IsA("BloomEffect") or v547:IsA("BlurEffect") or v547:IsA("DepthOfFieldEffect") or v547:IsA("SunRaysEffect")) then if (v48.OptimizerEliteEffectCache[v547]==nil) then v48.OptimizerEliteEffectCache[v547]=v547.Enabled;end v547.Enabled=false;end end pcall(function() sethiddenproperty(workspace.Terrain,"Decoration",false);end);pcall(function() if setfpscap then setfpscap(9999);end end);_G.ExtremeBoost=true;if v48.OptimizerBoostConnection then v48.OptimizerBoostConnection:Disconnect();v48.OptimizerBoostConnection=nil;end v48.OptimizerBoostConnection=workspace.DescendantAdded:Connect(function(v548) if v48.OptimizerEnabled then eliteOptimizeInstance(v548);if _G.ExtremeBoost then eliteBoostInstance(v548);end end end);task.spawn(eliteScanWorldGraphics);task.spawn(eliteScanWorldBoost);end function restoreEliteOptimizer() if v48.OptimizerBoostConnection then v48.OptimizerBoostConnection:Disconnect();v48.OptimizerBoostConnection=nil;end _G.ExtremeBoost=false;if v48.OptimizerOriginal then local v728=v48.OptimizerOriginal;pcall(function() v17.Brightness=v728.Brightness;v17.GlobalShadows=v728.GlobalShadows;v17.FogEnd=v728.FogEnd;end);pcall(function() if v728.PhysicsThrottle then settings().Physics.PhysicsEnvironmentalThrottle=v728.PhysicsThrottle;end end);pcall(function() if v728.RenderQuality then settings().Rendering.QualityLevel=v728.RenderQuality;end end);pcall(function() if (v728.TerrainDecoration~=nil) then sethiddenproperty(workspace.Terrain,"Decoration",v728.TerrainDecoration);else workspace.Terrain.Decoration=true;end end);pcall(function() if setfpscap then setfpscap(v728.FpsCap or 60 );end end);end for v549,v550 in v48.OptimizerEliteEffectCache do if (v549 and v549.Parent) then pcall(function() v549.Enabled=v550;end);end end for v551,v552 in v48.OptimizerElitePartCache do if (v551 and v551.Parent) then for v877,v878 in v552 do pcall(function() v551[v877]=v878;end);end end end for v553,v554 in v48.OptimizerEliteBoostCache do if (v553 and v553.Parent) then pcall(function() v553.Enabled=v554;end);end end v48.OptimizerElitePartCache={};v48.OptimizerEliteBoostCache={};v48.OptimizerEliteEffectCache={};end function restoreOptimizer() if v48.OptimizerScanThread then pcall(task.cancel,v48.OptimizerScanThread);v48.OptimizerScanThread=nil;end stopPlantEffectMaintain();if v48.OptimizerChanged then for v830,v831 in ipairs(v48.OptimizerChanged) do local v832=v831.inst;if (v832 and v832.Parent) then for v948,v949 in v831.props do pcall(function() v832[v948]=v949;end);end end end end for v555,v556 in v48.OptimizerPlantRecordCache do if (v555 and v555.Parent) then for v880,v881 in v556 do pcall(function() v555[v880]=v881;end);end end end restoreEliteOptimizer();v48.OptimizerEnabled=false;v48.OptimizerOriginal=nil;v48.OptimizerChanged=nil;v48.OptimizerPlantRecordCache={};end function setOptimizer(v162) v162=v162==true ;v48.OptimizerApplyToken+=1 local v163=v48.OptimizerApplyToken;if  not v162 then restoreOptimizer();return;end local v164= not v48.OptimizerEnabled;v48.OptimizerEnabled=true;v48.OptimizerPlantRecordCache={};if v164 then v48.OptimizerChanged={};v48.OptimizerElitePartCache={};v48.OptimizerEliteBoostCache={};v48.OptimizerEliteEffectCache={};applyEliteOptimizer();end updatePlantEffectMaintain();if v48.OptimizerScanThread then pcall(task.cancel,v48.OptimizerScanThread);v48.OptimizerScanThread=nil;end v48.OptimizerScanThread=task.spawn(function() scanOptimizerPlants(v163);if ((v163~=v48.OptimizerApplyToken) or  not v48.OptimizerEnabled) then return;end ensurePlantWatchers();ensureFruitsFolderWatchers();refreshPlantEmitterCache();v48.OptimizerScanThread=nil;end);end function abbreviate(v168) if (v37 and v37.Abbreviate) then return v37.Abbreviate(v168)   .. "¢" ;end return tostring(math.floor(v168))   .. "¢" ;end function resolveRecipientId(v169) local v170=tostring(v169 or "" ):gsub("^%s*(.-)%s*$","%1");if (v170=="") then return nil,"Enter a username or UserId";end local v171=tonumber(v170);if v171 then return v171;end local v172,v173=pcall(function() return v28.Mailbox.LookupPlayer:Fire(v170);end);if (v172 and (typeof(v173)=="number") and (v173>0)) then return v173;end local v174=v170:lower();for v558,v559 in v4:GetPlayers() do if ((v559.Name:lower()==v174) or (v559.DisplayName:lower()==v174)) then return v559.UserId;end end return nil,"Player not found";end function isGiftableEntry(v175,v176,v177) if (typeof(v177)=="number") then return v177>0 ;end if ((typeof(v177)=="table") and (v177.Id~=nil)) then if (v177.Equipped==true) then return false;end return true;end return false;end function getGiftableInventory() local v178=loadMailModules();if  not v178 then return {};end local v179=getReplica();if  not v179 then return {};end local v180=v179.Data and v179.Data.Inventory ;if (typeof(v180)~="table") then return {};end local v181={};local function v182(v560) if (v560=="HarvestedFruits") then return "Fruits";end if (v560=="WateringCans") then return "Cans";end return v560;end local v183={};local v184={};local v185=v39 and v39.Categories ;if (typeof(v185)=="table") then for v833,v834 in ipairs(v185) do if ((typeof(v834)=="string") and  not v184[v834]) then v184[v834]=true;table.insert(v183,v834);end end end for v561 in v180 do if ((typeof(v561)=="string") and  not v184[v561]) then v184[v561]=true;table.insert(v183,v561);end end table.sort(v183);for v562,v563 in ipairs(v183) do local v564=v180[v563];if (typeof(v564)=="table") then for v882,v883 in v564 do if isGiftableEntry(v563,v882,v883) then local v950=((typeof(v883)=="number") and v883) or 1 ;table.insert(v181,{category=v563,key=tostring(v882),count=v950,label=string.format("%s / %s (%d)",v182(v563),tostring(v882),v950)});end end end end pcall(function() local v565=v11:FindFirstChild("Backpack");local v566=v11.Character;for v735,v736 in {v565,v566} do if v736 then for v931,v932 in v736:GetChildren() do if (v932:IsA("Tool") and (v932:GetAttribute("HarvestedFruit")==true)) then local v965=v932:GetAttribute("Id");local v966=v932:GetAttribute("FruitName") or v932:GetAttribute("Fruit") or v932.Name ;local v967=v932:GetAttribute("Weight");local v968=v966;if (typeof(v967)=="number") then v968=string.format("%s (%.2fkg)",tostring(v966),v967);end table.insert(v181,{category="HarvestedFruits",key=((typeof(v965)=="string") and v965) or v932.Name ,count=1,label=string.format("%s / %s",v182("HarvestedFruits"),v968)});end end end end end);table.sort(v181,function(v567,v568) if (v567.category==v568.category) then return v567.key<v568.key ;end return v567.category<v568.category ;end);return v181;end function getInbox() local v186,v187=pcall(function() return v28.Mailbox.OpenInbox:Fire();end);if ( not v186 or (typeof(v187)~="table")) then return nil,v187;end return v187;end function claimGift(v188,v189) v189=tonumber(v189) or 2 ;for v569=1,v189 do local v570,v571,v572=pcall(function() return v28.Mailbox.Claim:Fire(v188);end);if (v570 and v571) then return true;end if (v569<v189) then task.wait(0.5);else return false,v572;end end return false;end function claimAllInbox(v190,v191,v192) local v193,v194=getInbox();if  not v193 then return 0,v194;end local v195={};for v573 in v193 do table.insert(v195,v573);end table.sort(v195);local v196=0;for v574,v575 in ipairs(v195) do if v48.MailAutoClaimStop then break;end local v576=v193[v575];local v577=((typeof(v576)=="table") and v576.FromName) or "Unknown" ;local v578=claimGift(v575,v192);if v578 then v196+=1 v48.MailTotals.Claimed+=1 else v48.MailTotals.Failed+=1 end if v190 then pcall(v190,v574, #v195,v577,v578);end task.wait(v191 or 0.35 );end return v196;end function sendGiftBatch(v197,v198,v199,v200) if  not v198 then return false,"Select an item";end v199=tonumber(v199) or 0 ;if (v199<=0) then return false,"Amount must be greater than 0";end if (v199>(v198.count or 0)) then return false,string.format("You only have %d",v198.count or 0 );end local v201={{Category=v198.category,ItemKey=v198.key,Count=v199}};local v202,v203,v204=pcall(function() return v28.Mailbox.SendBatch:Fire(v197,v201,v200 or "" );end);if  not v202 then return false,tostring(v203);end if  not v203 then return false,((v204~="") and v204) or "Send failed" ;end return true,((v204~="") and v204) or "Gift sent" ;end function getCharacter() return v11.Character;end function walkToPosition(v205,v206) local v207=getCharacter() or v11.CharacterAdded:Wait() ;local v208=v207:WaitForChild("Humanoid",10);local v209=v207:WaitForChild("HumanoidRootPart",10);if ( not v208 or  not v209) then return false;end v206=v206 or 90 ;local v210=os.clock() + v206 ;while os.clock()<v210  do if ((v209.Position-v205).Magnitude<=6) then return true;end v208:MoveTo(v205);local v579=false;local v580=false;local v581=v208.MoveToFinished:Connect(function(v737) v579=true;v580=v737;end);local v582=os.clock() + 4 ;while (os.clock()<v582) and  not v579  do if ((v209.Position-v205).Magnitude<=6) then v581:Disconnect();return true;end task.wait(0.1);end v581:Disconnect();if (v580 and ((v209.Position-v205).Magnitude<=8)) then return true;end task.wait(0.15);end return (v209.Position-v205).Magnitude<=10 ;end function getHumanoid() local v211=getCharacter();return v211 and v211:FindFirstChildOfClass("Humanoid") ;end function getPlot() local v212=v11:GetAttribute("PlotId");if v212 then return v14:FindFirstChild("Plot"   .. v212 );end return nil;end function hidePlantVisual(v213) suppressPlantVisual(v213,v48.NoclipPlantState);trackPlantEmitter(v213);end function restorePlantNoclip() if v48.NoclipPlantConnection then v48.NoclipPlantConnection:Disconnect();v48.NoclipPlantConnection=nil;end for v583,v584 in v48.NoclipPlantState do if (v583 and v583.Parent) then for v884,v885 in v584 do pcall(function() v583[v884]=v885;end);end end end v48.NoclipPlantState={};updatePlantEffectMaintain();end function applyPlantNoclip(v215) v48.NoclipPlantApplyToken+=1 local v216=v48.NoclipPlantApplyToken;restorePlantNoclip();if  not v215 then return;end task.spawn(function() local v585;local v586=os.clock() + 30 ;while  not v585 and (os.clock()<v586)  do if (v216~=v48.NoclipPlantApplyToken) then return;end local v739=getPlot();v585=v739 and v739:FindFirstChild("Plants") ;if  not v585 then task.wait(0.25);end end if ( not v585 or (v216~=v48.NoclipPlantApplyToken)) then return;end for v740,v741 in v585:GetChildren() do if (v216~=v48.NoclipPlantApplyToken) then return;end hideWatchedPlantTree(v741);task.wait(0.06);end updatePlantEffectMaintain();end);end function setCharacterNoclip(v217) if  not v217 then return;end for v587,v588 in v217:GetDescendants() do if v588:IsA("BasePart") then v588.CanCollide=false;end end end function bindNoclipCharacter(v218) if v48.NoclipCharConnection then v48.NoclipCharConnection:Disconnect();v48.NoclipCharConnection=nil;end if  not v218 then return;end setCharacterNoclip(v218);v48.NoclipCharConnection=v218.DescendantAdded:Connect(function(v589) if v589:IsA("BasePart") then v589.CanCollide=false;end end);end function setNoclip(v220) if v48.NoclipConnection then v48.NoclipConnection:Disconnect();v48.NoclipConnection=nil;end if v48.NoclipCharConnection then v48.NoclipCharConnection:Disconnect();v48.NoclipCharConnection=nil;end applyPlantNoclip(v220);updatePlantEffectMaintain();if  not v220 then return;end bindNoclipCharacter(getCharacter());v48.NoclipConnection=v11.CharacterAdded:Connect(bindNoclipCharacter);end function getPlotIdNumber(v222) return tonumber(v222.Name:match("%d+"));end function findTool(v223,v224) for v590,v591 in {v11:FindFirstChild("Backpack"),getCharacter()} do if v591 then for v886,v887 in v591:GetChildren() do if (v887:IsA("Tool") and (v887:GetAttribute(v223)==v224)) then return v887;end end end end return nil;end function equipTool(v225) if  not v225 then return false;end local v226=getHumanoid();if  not v226 then return false;end if (v225.Parent~=getCharacter()) then v226:EquipTool(v225);task.wait(0.15);end return getCharacter() and (getCharacter():FindFirstChild(v225.Name)~=nil) ;end function getPlacementPosition(v227) local v228=RaycastParams.new();v228.FilterType=Enum.RaycastFilterType.Include;v228.FilterDescendantsInstances={v14};local v232=Vector3.new(v227.X,v227.Y + 50 ,v227.Z);local v233=workspace:Raycast(v232,Vector3.new(0, -200,0),v228);if (v233 and v7:HasTag(v233.Instance,"PlantArea")) then return v233.Position;end return Vector3.new(v227.X,142.602,v227.Z);end function getActiveSuperSprinkler() if v48.SprinklerPlacePending then return true,"pending",nil,v47;end local v234=v34:GetSprinklers(v11.UserId);local v235=os.time();for v592,v593 in v234 do if (v593 and (v593.SprinklerName==v45)) then local v838=tonumber(v593.PlacedAt) or 0 ;local v839=v47-(v235-v838) ;if (v839>0) then return true,v592,v593,v839;end end end return false;end function placeSuperSprinkler() if  not v48.SavedPosition then return false;end if ((os.clock() -v48.LastSprinklerPlace)<5) then return false;end local v236=getActiveSuperSprinkler();if v236 then return false;end local v237=findTool("Sprinkler",v45);if  not v237 then return false;end local v238=getPlot();if  not v238 then return false;end local v239=getPlotIdNumber(v238);if  not v239 then return false;end if  not equipTool(v237) then return false;end local v240=getPlacementPosition(v48.SavedPosition);v28.Place.PlaceSprinkler:Fire(v240,v45,v237,v239);v48.LastSprinklerPlace=os.clock();v48.SprinklerPlacePending=true;task.delay(5,function() v48.SprinklerPlacePending=false;end);return true;end function getWateringInterval() local v243=tonumber(Options.WateringCanInterval and Options.WateringCanInterval.Value ) or 10 ;return math.clamp(v243,1,300);end function useSuperWateringCan() if ( not v48.SavedPosition or v48.WateringBusy) then return false;end local v244=findTool("WateringCan",v46);if  not v244 then return false;end v48.WateringBusy=true;v48.LastWatering=os.clock();local v247=getHumanoid();if (v247 and (v244.Parent~=getCharacter())) then v247:EquipTool(v244);task.wait(0.05);end local v248=getPlacementPosition(v48.SavedPosition);v28.WateringCan.UseWateringCan:Fire(v248-Vector3.new(0,0.3,0) ,v46,v244);v48.WateringBusy=false;return true;end function setAutoWateringLoop(v249) v48.WateringStop=true;if v48.WateringConnection then pcall(task.cancel,v48.WateringConnection);v48.WateringConnection=nil;end if  not v249 then return;end v48.WateringStop=false;v48.WateringConnection=task.spawn(function() while  not v48.WateringStop and  not v1.Unloaded  do if (Toggles.AutoWateringCan and Toggles.AutoWateringCan.Value) then useSuperWateringCan();end task.wait(getWateringInterval());end end);end function isFruitTool(v252) if ( not v252 or  not v252:IsA("Tool")) then return false;end if (v252:GetAttribute("HarvestedFruit")==true) then return true;end return (typeof(v252:GetAttribute("FruitName"))=="string") and (v252:GetAttribute("FruitName")~="") ;end function countHarvestedFruits() local v253=tonumber(v11:GetAttribute("FruitCount"));if v253 then return v253;end local v254=0;for v595,v596 in {v11:FindFirstChild("Backpack"),getCharacter()} do if v596 then for v888,v889 in v596:GetChildren() do if isFruitTool(v889) then v254+=1 end end end end return v254;end function getInventoryCapacity() local v255=tonumber(v11:GetAttribute("MaxFruitCapacity"));if v255 then return v255;end local v256=tonumber(v11:GetAttribute("BackpackSpaceUpgradesPurchased")) or 0 ;local v257=v11:FindFirstChild("SkillData");local v258=v257 and v257:FindFirstChild("MaxBackpack") ;local v259=(v258 and tonumber(v258.Value)) or 1 ;return math.max(1,5 + v256 + math.max(0,v259-1 ) );end function isInventoryFull() return countHarvestedFruits()>=getInventoryCapacity() ;end function normalizeWeightKg(v260) v260=tonumber(v260);if  not v260 then return nil;end if (v260>5000) then v260=v260/1000 ;end return v260;end function getMaxHarvestKg() local v261=tonumber(Options and Options.MaxHarvestKg and Options.MaxHarvestKg.Value ) or 50 ;return math.clamp(v261,0.01,1000);end function getHarvestedFruitTools() local v262={};for v597,v598 in {v11:FindFirstChild("Backpack"),getCharacter()} do if v598 then for v890,v891 in v598:GetChildren() do if isFruitTool(v891) then table.insert(v262,v891);end end end end return v262;end function getFruitToolId(v263) for v599,v600 in {"Id","FruitId","ItemId","UUID"} do local v601=v263:GetAttribute(v600);if ((typeof(v601)=="string") and (v601~="")) then return v601;end end local v264=v263:FindFirstChild("Id");if (v264 and v264:IsA("StringValue") and (v264.Value~="")) then return v264.Value;end return nil;end function getToolWeightKg(v265) local v266=v265:GetAttribute("Weight") or v265:GetAttribute("WeightKg") or v265:GetAttribute("FruitWeight") ;if  not v266 then local v746=v265:FindFirstChild("Weight");if (v746 and v746:IsA("NumberValue")) then v266=v746.Value;end end return normalizeWeightKg(v266);end function sellResultSucceeded(v267) if (v267==nil) then return false;end if (typeof(v267)=="table") then if (v267.Success==false) then return false;end if ((tonumber(v267.SoldCount) or 0)>0) then return true;end return (v267.Success==true) or (v267.SellPrice~=nil) or (v267.Price~=nil) ;end return (typeof(v267)=="number") and (v267>0) ;end function getSellEarnings(v268,v269) local v270=0;if (typeof(v268)=="table") then v270=tonumber(v268.SellPrice) or tonumber(v268.Price) or 0 ;elseif (typeof(v268)=="number") then v270=v268;end if ((v270<=0) and v269) then task.wait(0.25);local v747=getSheckles();if (v747 and (v747>v269)) then v270=v747-v269 ;end end return v270;end function restoreTempFavorites(v271) for v602,v603 in v271 do pcall(function() v28.Backpack.SetFruitFavorite:Fire(v603.id,false);end);if (v603.tool and v603.tool.Parent) then v603.tool:SetAttribute("IsFavorite",false);end end end function hasAnyInventoryFruit() local v272=tonumber(v11:GetAttribute("FruitCount"));if (v272 and (v272>0)) then return true;end return  #getHarvestedFruitTools()>0 ;end function tryAutoSell() if ((os.clock() -v48.LastSell)<0.85) then return;end if  not hasAnyInventoryFruit() then return;end local v273=getMaxHarvestKg();local v274=getHarvestedFruitTools();local v275={};for v604,v605 in v274 do if v605:GetAttribute("IsFavorite") then continue;end local v606=getToolWeightKg(v605);if ( not v606 or (v606<v273)) then continue;end local v607=getFruitToolId(v605);if  not v607 then continue;end pcall(function() v28.Backpack.SetFruitFavorite:Fire(v607,true);end);v605:SetAttribute("IsFavorite",true);table.insert(v275,{id=v607,tool=v605});end if ( #v275>0) then task.wait(0.35);end local v276=getSheckles();local v277,v278=pcall(function() return v28.NPCS.SellAll:Fire();end);v48.LastSell=os.clock();if ( #v275>0) then task.wait(0.2);end restoreTempFavorites(v275);if  not v277 then return;end local v280=getSellEarnings(v278,v276);if (sellResultSucceeded(v278) or (v280>0)) then pcall(function() if (v36 and v36.DisconnectAllFruitTools) then v36:DisconnectAllFruitTools();end end);if (v280>0) then recordEarnings(v280);end end end function getSheckles() local v281=v11:FindFirstChild("leaderstats");local v282=v281 and v281:FindFirstChild("Sheckles") ;return (v282 and tonumber(v282.Value)) or nil ;end function getMultiSelect(v283) local v284={};local v285=Options and Options[v283] and Options[v283].Value ;if (typeof(v285)=="table") then for v840,v841 in v285 do if ((v841==true) and (typeof(v840)=="string")) then v284[v840]=true;elseif (typeof(v841)=="string") then v284[v841]=true;end end elseif ((typeof(v285)=="string") and (v285~="")) then v284[v285]=true;end return v284;end function getShopStock(v286,v287) local v288=v16:FindFirstChild(v286);local v289=v288 and v288:FindFirstChild("Items") ;local v290=v289 and v289:FindFirstChild(v287) ;return (v290 and v290.Value) or 0 ;end function canAfford(v291) if  not v291 then return true;end local v292=getSheckles();return (v292~=nil) and (v292>=v291) ;end function getAutoBuyKey(v293,v294) return v293   .. ":"   .. v294 ;end function getAutoBuyTracker(v295,v296) local v297=getAutoBuyKey(v295,v296);local v298=getShopStock(v295,v296);local v299=v48.AutoBuyTracker[v297];if  not v299 then v299={exhausted=v298<=0 ,lastStock=v298,pending=false,pendingAt=0};v48.AutoBuyTracker[v297]=v299;return v299,v298;end if (v298>v299.lastStock) then v299.exhausted=false;v299.pending=false;end if (v298<=0) then v299.exhausted=true;v299.pending=false;end return v299,v298;end function tryPurchaseItem(v300,v301,v302,v303) local v304,v305=getAutoBuyTracker(v300,v301);if v304.exhausted then v304.lastStock=v305;return;end if (v305<=0) then v304.exhausted=true;v304.lastStock=0;v304.pending=false;return;end if v304.pending then if (v305<v304.lastStock) then v304.pending=false;v304.lastStock=v305;elseif ((os.clock() -v304.pendingAt)>1.5) then v304.pending=false;v304.exhausted=true;v304.lastStock=v305;end if (v305<=0) then v304.exhausted=true;v304.pending=false;v304.lastStock=0;end return;end if  not canAfford(v302) then v304.lastStock=v305;return;end v304.pending=true;v304.pendingAt=os.clock();v304.lastStock=v305;v303();end function tryPurchaseGear(v309) tryPurchaseItem("GearShop",v309,v43[v309],function() v28.GearShop.PurchaseGear:Fire(v309);end);end function tryPurchaseSeed(v310) tryPurchaseItem("SeedShop",v310,v44[v310],function() v28.SeedShop.PurchaseSeed:Fire(v310);end);end function tryPurchaseProp(v311) tryPurchaseItem("CrateShop",v311,nil,function() v28.CrateShop.PurchaseCrate:Fire(v311);end);end function runAutoBuy() for v608 in getMultiSelect("AutoBuyGears") do tryPurchaseGear(v608);end for v609 in getMultiSelect("AutoBuySeeds") do tryPurchaseSeed(v609);end for v610 in getMultiSelect("AutoBuyProps") do tryPurchaseProp(v610);end end function setAutoBuyLoop(v312) if v48.AutoBuyThread then pcall(task.cancel,v48.AutoBuyThread);v48.AutoBuyThread=nil;end if  not v312 then v48.AutoBuyTracker={};return;end v48.AutoBuyTracker={};v48.AutoBuyThread=task.spawn(function() while  not v1.Unloaded and Toggles.AutoBuy and Toggles.AutoBuy.Value  do runAutoBuy();task.wait(2);end v48.AutoBuyThread=nil;end);end function recordEarnings(v315) if ( not v315 or (v315<=0)) then return;end table.insert(v48.EarningsWindow,{t=os.clock(),amount=v315});local v316=os.clock();while ( #v48.EarningsWindow>0) and ((v316-v48.EarningsWindow[1].t)>60)  do table.remove(v48.EarningsWindow,1);end end function getEarningsPerMinute() local v317=0;local v318=os.clock();for v612,v613 in v48.EarningsWindow do if ((v318-v613.t)<=60) then v317+=v613.amount end end return v317;end function isFruitRipe(v319,v320) if v320 then if (v320:GetAttribute("IsRipe")==true) then return true;end local v760=v320:GetAttribute("Age");local v761=v320:GetAttribute("MaxAge");if ((typeof(v760)=="number") and (typeof(v761)=="number")) then return v760>=v761 ;end end if v319 then return (v319.Age or 0)>=(v319.MaxAge or 1) ;end return v320~=nil ;end function getFruitWeightKg(v321,v322) local v323;if v321 then local v762,v763=pcall(function() return v35:CalculateFruitWeight(v321);end);if (v762 and v763) then v323=v763;end if  not v323 then pcall(function() if v35.CalculatePlantWeight then v323=v35:CalculatePlantWeight(v321);end end);end if  not v323 then v323=v321:GetAttribute("Weight") or v321:GetAttribute("WeightKg") or v321:GetAttribute("FruitWeight") ;end end if ( not v323 and v322) then v323=v322.Weight or v322.FruitWeight or v322.Kg or v322.WeightKg ;end return normalizeWeightKg(v323);end function getFruitToolIdSet() local v324={};for v614,v615 in getHarvestedFruitTools() do local v616=getFruitToolId(v615);if v616 then v324[v616]=true;end end return v324;end function favoriteFruitTool(v325) if ( not v325 or v325:GetAttribute("IsFavorite")) then return false;end local v326=getFruitToolId(v325);if  not v326 then return false;end pcall(function() v28.Backpack.SetFruitFavorite:Fire(v326,true);end);v325:SetAttribute("IsFavorite",true);return true;end function waitAndFavoriteNewFruit(v327) for v617=1,25 do for v764,v765 in getHarvestedFruitTools() do local v766=getFruitToolId(v765);if (v766 and  not v327[v766]) then favoriteFruitTool(v765);v327[v766]=true;return true;end end task.wait(0.05);end return false;end function getGardenFruitData(v328,v329,v330) local v331=v328[v329];if  not v331 then return nil;end if (v330 and (v330~="")) then return v331.Fruits and v331.Fruits[v330] ;end return v331;end function findFruitModel(v332,v333,v334) if  not v332 then return nil;end for v618,v619 in v332:GetChildren() do local v620=v619:FindFirstChild("Fruits");if v620 then for v900,v901 in v620:GetChildren() do if ((v901:GetAttribute("PlantId")==v333) and (v901:GetAttribute("FruitId")==v334)) then return v901;end end elseif (v619:GetAttribute("PlantId")==v333) then return v619;end end for v621,v622 in v332:GetChildren() do if v622.Name:find(v333,1,true) then local v843=v622:FindFirstChild("Fruits");if (v843 and v334) then for v954,v955 in v843:GetChildren() do if (v955:GetAttribute("FruitId")==v334) then return v955;end end else return v622;end end end return nil;end function shouldHarvestFruit(v335,v336) v336=tonumber(v336);if  not v336 then return false;end if  not v335 then return false;end return v335<=v336 ;end function abbreviateNumber(v337) v337=tonumber(v337) or 0 ;if (v37 and v37.Abbreviate) then return v37.Abbreviate(v337);end return tostring(v337);end function getFruitMutation(v338,v339,v340) if v338 then local v767=v338:GetAttribute("Mutation");if (v767 and (v767~="")) then return v767;end end if (v339 and v339.Mutation and (v339.Mutation~="")) then return v339.Mutation;end if (v340 and v340.Mutation and (v340.Mutation~="")) then return v340.Mutation;end if (v340 and v340.Variant and (v340.Variant~="") and (v340.Variant~="Normal")) then return v340.Variant;end return "None";end function getFruitSellValue(v341,v342,v343) local v344=(v341 and v341:GetAttribute("CorePartName")) or (v343 and v343.PlantName) or "Unknown" ;local v345=getFruitMutation(v341,v342,v343);local v346=(v341 and v341:GetAttribute("SizeMulti")) or (v342 and v342.SizeMultiplier) or 1 ;local v347=v32[v344] or 100 ;local v348=((v345~="None") and v33.ReturnPriceMultiplier(v345)) or 1 ;return math.floor(v347 * (v346^3) * v348 );end local v49;function formatFruitLabel(v349) local v350="?kg";if (v349.weightKg and (v349.weightKg>0)) then v350=string.format("~%.2fkg",v349.weightKg);end return string.format("%s | %s | %s | $%s",v349.plantName,v349.mutation,v350,abbreviateNumber(v349.value));end function scanGardenFruits() local v351={};local v352={};local v353=getPlot();local v354=v353 and v353:FindFirstChild("Plants") ;local v355=v34:GetGarden(v11.UserId) or {} ;if  not v354 then return v351;end local function v356(v623,v624,v625,v626) if  not v623 then return;end local v627=v623   .. "_"   .. (v624 or "") ;if v352[v627] then return;end local v628=(v624 and (v624~="") and getGardenFruitData(v355,v623,v624)) or v626 ;if  not isFruitRipe(v628,v625) then return;end v352[v627]=true;local v630=(v625 and v625:GetAttribute("CorePartName")) or (v626 and v626.PlantName) or "Plant" ;local v631=getFruitMutation(v625,v628,v626);local v632=getFruitWeightKg(v625,v628);local v633=getMaxHarvestKg();if (v632 and (v632<v633)) then return;end local v634=getFruitSellValue(v625,v628,v626);table.insert(v351,{key=v627,plantId=v623,fruitId=v624 or "" ,plantName=v630,mutation=v631,weightKg=v632,value=v634});end for v635,v636 in v354:GetChildren() do local v637=v636:FindFirstChild("Fruits");if v637 then for v902,v903 in v637:GetChildren() do local v904=v903:GetAttribute("PlantId") or v636:GetAttribute("PlantId") ;local v905=v903:GetAttribute("FruitId") or v903.Name ;if v904 then v356(v904,v905,v903,v355[v904]);end end else local v844=v636:GetAttribute("PlantId");if v844 then v356(v844,"",v636,v355[v844]);end end end for v638,v639 in v355 do if v639.Fruits then for v906,v907 in v639.Fruits do if  not v352[v638   .. "_"   .. v906 ] then v356(v638,v906,findFruitModel(v354,v638,v906),v639);end end elseif  not v352[v638   .. "_" ] then v356(v638,"",findFruitModel(v354,v638,""),v639);end end table.sort(v351,function(v640,v641) if (v640.value==v641.value) then return v640.weightKg>v641.weightKg ;end return v640.value>v641.value ;end);return v351;end function refreshFruitsList() v48.GardenFruits=scanGardenFruits();v48.FruitLabelMap={};local v359={};local v360={};local v361=Options and Options.GardenFruitList and Options.GardenFruitList.Value ;for v642,v643 in v48.GardenFruits do local v644=formatFruitLabel(v643);local v645=v644;local v646=2;while v48.FruitLabelMap[v645] do v645=v644   .. " #"   .. v646 ;v646+=1 end v644=v645;v643.label=v644;v48.FruitLabelMap[v644]=v643;table.insert(v359,v644);if ((typeof(v361)=="table") and (v361[v644]==true)) then v360[v644]=true;end end local v362= #v359;local v363=getMaxHarvestKg();task.defer(function() if (Options and Options.GardenFruitList) then if (v362==0) then Options.GardenFruitList:SetValues({"No fruits at or above Max KG"});Options.GardenFruitList:SetValue({});else Options.GardenFruitList:SetValues(v359);Options.GardenFruitList:SetValue(v360);end end if v49 then v49:SetText(string.format("%d fruits at or above %.0fkg — select from dropdown",v362,v363));end end);return v362;end function claimSelectedGardenFruits() local v364=Options and Options.GardenFruitList and Options.GardenFruitList.Value ;if (typeof(v364)~="table") then v1:Notify("Select fruits from the dropdown first");return;end local v365=0;for v649,v650 in v364 do if (v650==true) then local v846=v48.FruitLabelMap[v649];if v846 then local v935=getFruitToolIdSet();v28.Garden.CollectFruit:Fire(v846.plantId,v846.fruitId or "" );waitAndFavoriteNewFruit(v935);v365+=1 task.wait(0.1);end end end if (v365==0) then v1:Notify("Select fruits from the dropdown first");return;end v1:Notify(string.format("Claimed & favorited %d fruit(s)",v365));task.wait(0.25);refreshFruitsList();end function hookFruitsTabAutoScan(v366) if ( not v366 or v366._GG2ScanHooked) then return;end v366._GG2ScanHooked=true;local v368=v366.ShowTab;v366.ShowTab=function(...) v368(...);task.defer(refreshFruitsList);end;end function collectFruit(v370,v371) v28.Garden.CollectFruit:Fire(v370,v371 or "" );end function harvestFruits(v372) local v373=getPlot();local v374=v373 and v373:FindFirstChild("Plants") ;if  not v374 then return;end local v372=tonumber(v372) or 999 ;local v375=v34:GetGarden(v11.UserId);local v376={};for v651,v652 in v374:GetChildren() do local v653=v652:FindFirstChild("Fruits");if v653 then for v908,v909 in v653:GetChildren() do if isFruitRipe(nil,v909) then local v956=v909:GetAttribute("PlantId");local v957=v909:GetAttribute("FruitId");if (v956 and v957) then local v976=v956   .. "_"   .. v957 ;if  not v376[v976] then v376[v976]=true;local v980=getGardenFruitData(v375,v956,v957);local v981=getFruitWeightKg(v909,v980);if shouldHarvestFruit(v981,v372) then collectFruit(v956,v957);end end end end end else local v847=v652:GetAttribute("PlantId");if (v847 and isFruitRipe(nil,v652)) then local v936=v847   .. "_" ;if  not v376[v936] then v376[v936]=true;local v971=getGardenFruitData(v375,v847,"");local v972=getFruitWeightKg(v652,v971);if shouldHarvestFruit(v972,v372) then collectFruit(v847,"");end end end end end for v654,v655 in v375 do if v655.Fruits then for v910,v911 in v655.Fruits do local v912=v654   .. "_"   .. v910 ;if ( not v376[v912] and isFruitRipe(v911,findFruitModel(v374,v654,v910))) then v376[v912]=true;local v959=findFruitModel(v374,v654,v910);local v960=getFruitWeightKg(v959,v911);if shouldHarvestFruit(v960,v372) then collectFruit(v654,v910);end end end else local v848=v654   .. "_" ;if ( not v376[v848] and isFruitRipe(v655,findFruitModel(v374,v654,""))) then v376[v848]=true;local v938=findFruitModel(v374,v654,"");local v939=getFruitWeightKg(v938,v655);if shouldHarvestFruit(v939,v372) then collectFruit(v654,"");end end end end end function setAntiAfk(v377) if v48.AntiAfkConnection then v48.AntiAfkConnection:Disconnect();v48.AntiAfkConnection=nil;end if  not v377 then return;end v48.AntiAfkConnection=v11.Idled:Connect(function() pcall(function() v10:CaptureController();v10:ClickButton2(Vector2.new());end);end);end function setAutoSellLoop(v379) if v48.AutoSellThread then pcall(task.cancel,v48.AutoSellThread);v48.AutoSellThread=nil;end if  not v379 then return;end v48.AutoSellThread=task.spawn(function() while  not v1.Unloaded and Toggles.AutoSell and Toggles.AutoSell.Value  do tryAutoSell();task.wait(1);end v48.AutoSellThread=nil;end);end function waitForHarvestReady(v381) v381=v381 or 90 ;local v382=os.clock() + v381 ;repeat task.wait();until game:IsLoaded() while os.clock()<v382  do if  not (Toggles.AutoHarvest and Toggles.AutoHarvest.Value) then return false;end local v657=v11.Character;if  not v657 then v657=v11.CharacterAdded:Wait();end local v658=v657:FindFirstChild("HumanoidRootPart");local v659=v11:GetAttribute("PlotId");local v660=v659 and v14:FindFirstChild("Plot"   .. v659 ) ;local v661=v660 and v660:FindFirstChild("Plants") ;if (v658 and v661) then local v849,v850=pcall(function() return v34:GetGarden(v11.UserId);end);if (v849 and v850) then return true;end end task.wait(0.25);end return false;end function setAutoHarvestLoop(v383) if v48.HarvestConnection then v48.HarvestConnection:Disconnect();v48.HarvestConnection=nil;end if v48.HarvestThread then pcall(task.cancel,v48.HarvestThread);v48.HarvestThread=nil;end if  not v383 then return;end v48.HarvestThread=task.spawn(function() local v662=waitForHarvestReady(90);if  not v662 then if (v1 and v1.Notify) then v1:Notify("Auto harvest waiting for garden to load...");end v662=waitForHarvestReady(60);end while  not v1.Unloaded and Toggles.AutoHarvest and Toggles.AutoHarvest.Value  do if  not v662 then v662=waitForHarvestReady(5);end if v662 then local v913=getMaxHarvestKg();harvestFruits(v913);end task.wait(0);end v48.HarvestThread=nil;end);end local v50;local v51;function getQueueOnTeleport() return queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport) or getgenv().queueteleport or getgenv().queueonteleport ;end function getOutsideWalkTarget(v385,v386) v386=v386 or 10 ;if  not v385 then return nil;end local v387=getCharacter();local v388=v387 and v387:FindFirstChild("HumanoidRootPart") ;if v388 then local v772=Vector3.new(v385.X-v388.Position.X ,0,v385.Z-v388.Position.Z );local v773=v772.Magnitude;if (v773>(v386 + 2)) then local v914=v388.Position + (v772.Unit * (v773-v386)) ;return Vector3.new(v914.X,v385.Y,v914.Z);end end local v389=getPlot();if v389 then local v774=v389:GetPivot().Position;local v775=Vector3.new(v385.X-v774.X ,0,v385.Z-v774.Z );if (v775.Magnitude>0.5) then local v915=v774 + (v775.Unit * (v775.Magnitude + v386)) ;return Vector3.new(v915.X,v385.Y,v915.Z);end end return Vector3.new(v385.X + v386 ,v385.Y,v385.Z);end function saveWeatherState() local v390=v48.SavedPosition;local v391={Hiding=v48.WeatherHiding,ReturnJobId=v48.ReturnJobId,ReturnPlaceId=v48.ReturnPlaceId,HideUntil=v48.HideUntil,HidingFromWeather=v48.HidingFromWeather,PendingWalkBack=v48.PendingWalkBack==true ,PendingWalkToSaved=v48.PendingWalkToSaved==true ,ReturnPosX=v48.ReturnPosX,ReturnPosY=v48.ReturnPosY,ReturnPosZ=v48.ReturnPosZ,SavedPosX=v390 and v390.X ,SavedPosY=v390 and v390.Y ,SavedPosZ=v390 and v390.Z };v22.GG2_WeatherState=v391;writeWeatherStateFile(v391);end function loadWeatherState() local v393=v22.GG2_WeatherState or readWeatherStateFile() ;if  not v393 then return;end v48.WeatherHiding=v393.Hiding==true ;v48.ReturnJobId=v393.ReturnJobId;v48.ReturnPlaceId=v393.ReturnPlaceId;v48.HideUntil=v393.HideUntil or 0 ;v48.HidingFromWeather=v393.HidingFromWeather;v48.PendingWalkBack=v393.PendingWalkBack==true ;v48.PendingWalkToSaved=v393.PendingWalkToSaved==true ;v48.ReturnPosX=tonumber(v393.ReturnPosX);v48.ReturnPosY=tonumber(v393.ReturnPosY);v48.ReturnPosZ=tonumber(v393.ReturnPosZ);local v407=tonumber(v393.SavedPosX);local v408=tonumber(v393.SavedPosY);local v409=tonumber(v393.SavedPosZ);if (v407 and v408 and v409 and  not v48.SavedPosition) then v48.SavedPosition=Vector3.new(v407,v408,v409);end v22.GG2_WeatherState=v393;end function clearRejoinTarget() v48.ReturnJobId=nil;v48.ReturnPlaceId=nil;v48.HideUntil=0;v48.WeatherHiding=false;v48.HidingFromWeather=nil;saveWeatherState();end function clearWeatherState(v416) v416=v416 or {} ;v48.WeatherHiding=false;v48.HidingFromWeather=nil;if  not v416.keepWalkBack then v48.ReturnJobId=nil;v48.ReturnPlaceId=nil;v48.HideUntil=0;v48.PendingWalkBack=false;v48.PendingWalkToSaved=false;v48.ReturnPosX=nil;v48.ReturnPosY=nil;v48.ReturnPosZ=nil;v22.GG2_WeatherState=nil;clearWeatherStateFile();else saveWeatherState();end end function saveAutoExecWalkState() if v48.SavedPosition then v48.PendingWalkToSaved=true;end saveWeatherState();end function saveWeatherReturnPosition() local v419=getCharacter() and getCharacter():FindFirstChild("HumanoidRootPart") ;local v420=(v419 and v419.Position) or v48.SavedPosition ;if  not v420 then return false;end v48.ReturnPosX=v420.X;v48.ReturnPosY=v420.Y;v48.ReturnPosZ=v420.Z;v48.PendingWalkBack=true;return true;end function handlePendingWalkback() local v428=v48.PendingWalkBack or (v48.PendingWalkToSaved and (v22.GG2_FromAutoExec==true)) ;if  not v428 then return;end task.spawn(function() local v664=getCharacter() or v11.CharacterAdded:Wait() ;v664:WaitForChild("HumanoidRootPart",15);task.wait(1.5);loadPositionFromConfig();local v665;if (v48.PendingWalkBack and v48.ReturnPosX and v48.ReturnPosY and v48.ReturnPosZ) then v665=Vector3.new(v48.ReturnPosX,v48.ReturnPosY,v48.ReturnPosZ);elseif v48.SavedPosition then v665=v48.SavedPosition;end if  not v665 then v48.PendingWalkBack=false;v48.PendingWalkToSaved=false;clearWeatherState();return;end local v666=getOutsideWalkTarget(v665,10);local v667=walkToPosition(v666,90);if  not v667 then local v853=getCharacter() and getCharacter():FindFirstChild("HumanoidRootPart") ;if (v853 and v666) then v853.CFrame=CFrame.new(v666 + Vector3.new(0,3,0) );end end v48.PendingWalkBack=false;v48.PendingWalkToSaved=false;v48.ReturnPosX=nil;v48.ReturnPosY=nil;v48.ReturnPosZ=nil;v22.GG2_FromAutoExec=nil;clearWeatherState();if (v1 and v1.Notify) then v1:Notify((v667 and "Walked near your saved spot") or "Teleported near your saved spot" );end end);end function getTeleportScriptSource() return string.format([[
+local DEFAULT_REMOTE_SCRIPT_URL = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/gag2.lua'
+local REMOTE_SCRIPT_URL = (type(GENV.GG2_ScriptUrl) == 'string' and GENV.GG2_ScriptUrl ~= '')
+    and GENV.GG2_ScriptUrl
+    or DEFAULT_REMOTE_SCRIPT_URL
+
+if not GENV.GG2_SkipRemoteUpdate and type(writefile) == 'function' and REMOTE_SCRIPT_URL ~= '' then
+    local function stripBomEarly(source)
+        if type(source) ~= 'string' or source == '' then
+            return source
+        end
+
+        while source:byte(1) == 0xEF and source:byte(2) == 0xBB and source:byte(3) == 0xBF do
+            source = source:sub(4)
+        end
+
+        return source
+    end
+
+    local function httpGetEarly(url)
+        local req = (syn and syn.request)
+            or http_request
+            or request
+            or (fluxus and fluxus.request)
+
+        if req then
+            local ok, res = pcall(function()
+                return req({
+                    Url = url,
+                    Method = 'GET',
+                })
+            end)
+            if ok and res and res.Body and (not res.StatusCode or res.StatusCode == 200) then
+                return res.Body
+            end
+        end
+
+        return game:HttpGet(url)
+    end
+
+    local okFetch, remote = pcall(function()
+        return httpGetEarly(REMOTE_SCRIPT_URL .. '?t=' .. tostring(os.time()))
+    end)
+
+    if okFetch and type(remote) == 'string' and remote ~= '' and not remote:find('404: Not Found', 1, true) then
+        remote = stripBomEarly(remote)
+        local localSrc = nil
+
+        for _, path in { 'GG2/grow_garden_autofarm.lua', 'grow_garden_autofarm.lua' } do
+            local readOk, content = pcall(function()
+                return readfile(path)
+            end)
+            if readOk and type(content) == 'string' and content ~= '' then
+                localSrc = stripBomEarly(content)
+                break
+            end
+        end
+
+        pcall(function()
+            if makefolder and (not isfolder or not isfolder('GG2')) then
+                makefolder('GG2')
+            end
+            writefile('GG2/grow_garden_autofarm.lua', remote)
+            writefile('grow_garden_autofarm.lua', remote)
+        end)
+
+        if localSrc and localSrc ~= remote then
+            GENV.GG2_SkipRemoteUpdate = true
+            local func = loadstring(remote, 'grow_garden_autofarm.lua')
+            if func then
+                func()
+                return
+            end
+        end
+    end
+end
+
+GENV.GG2_AutoFarmRunning = true
+
+local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
+local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
+local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
+local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+
+local Players = game:GetService('Players')
+local RunService = game:GetService('RunService')
+local UserInputService = game:GetService('UserInputService')
+local CollectionService = game:GetService('CollectionService')
+local TeleportService = game:GetService('TeleportService')
+local GuiService = game:GetService('GuiService')
+local VirtualUser = game:GetService('VirtualUser')
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerScripts = LocalPlayer:WaitForChild('PlayerScripts')
+local ReplicatedStorage = game:GetService('ReplicatedStorage')
+local Gardens = workspace:WaitForChild('Gardens')
+local WeatherValues = ReplicatedStorage:WaitForChild('WeatherValues')
+local StockValues = ReplicatedStorage:WaitForChild('StockValues')
+local Lighting = game:GetService('Lighting')
+
+local EVENT_WEATHERS = {
+    'Lightning',
+    'Rainbow',
+    'Snowfall',
+    'Starfall',
+    'Aurora',
+    'Sunburst',
+    'Eclipse',
+}
+
+local NIGHT_MOON_GAME_NAMES = {
+    Goldmoon = true,
+    ['Rainbow Moon'] = true,
+    Bloodmoon = true,
+    ['Mega Moon'] = true,
+}
+
+local NIGHT_MOON_LABELS = {
+    Goldmoon = 'Gold',
+    Bloodmoon = 'Blood',
+    ['Mega Moon'] = 'Mega',
+    ['Rainbow Moon'] = 'Rainbow',
+}
+
+local BLOCKABLE_WEATHERS = {
+    'Lightning',
+    'Rainbow',
+    'Snowfall',
+    'Starfall',
+    'Aurora',
+    'Sunburst',
+    'Eclipse',
+    'Gold',
+    'Blood',
+    'Mega',
+}
+
+local WEATHER_STATE_FILE = 'GG2_WeatherState.json'
+local AUTO_FARM_SCRIPT = 'grow_garden_autofarm.lua'
+local GG2_SCRIPT_PATH = 'GG2/grow_garden_autofarm.lua'
+local GG2_TELEPORT_SCRIPT = 'GG2/teleport.lua'
+
+isfile = isfile or function(file)
+    local suc, res = pcall(function()
+        return readfile(file)
+    end)
+    return suc and res ~= nil and res ~= ''
+end
+
+isfolder = isfolder or function(path)
+    local ok, files = pcall(listfiles, path)
+    return ok and type(files) == 'table'
+end
+
+makefolder = makefolder or function() end
+
+function stripBom(source)
+    if type(source) ~= 'string' or source == '' then
+        return source
+    end
+
+    while source:byte(1) == 0xEF and source:byte(2) == 0xBB and source:byte(3) == 0xBF do
+        source = source:sub(4)
+    end
+
+    if source:sub(1, 1) == '\239\187\191' then
+        source = source:sub(4)
+    end
+
+    return source
+end
+
+function ensureGg2Folders()
+    pcall(function()
+        if not isfolder('GG2') then
+            makefolder('GG2')
+        end
+    end)
+end
+
+function httpGet(url)
+    local req = (syn and syn.request)
+        or http_request
+        or request
+        or (fluxus and fluxus.request)
+
+    if req then
+        local ok, res = pcall(function()
+            return req({
+                Url = url,
+                Method = 'GET',
+            })
+        end)
+        if ok and res and res.Body and (not res.StatusCode or res.StatusCode == 200) then
+            return res.Body
+        end
+    end
+
+    return game:HttpGet(url)
+end
+
+function fetchRemoteScriptSource()
+    if not REMOTE_SCRIPT_URL or REMOTE_SCRIPT_URL == '' then
+        return nil
+    end
+
+    local ok, body = pcall(function()
+        return httpGet(REMOTE_SCRIPT_URL .. '?t=' .. tostring(os.time()))
+    end)
+
+    if not ok or type(body) ~= 'string' or body == '' or body:find('404: Not Found', 1, true) then
+        return nil
+    end
+
+    return stripBom(body)
+end
+
+function writeScriptToWorkspace(source)
+    if not writefile or type(source) ~= 'string' or source == '' then
+        return false
+    end
+
+    ensureGg2Folders()
+    local cleaned = stripBom(source)
+
+    return pcall(function()
+        writefile(GG2_SCRIPT_PATH, cleaned)
+        writefile(AUTO_FARM_SCRIPT, cleaned)
+    end)
+end
+
+function syncWorkspaceFromRemote()
+    local remote = fetchRemoteScriptSource()
+    if not remote then
+        return false, 'fetch_failed'
+    end
+
+    local localSource = nil
+    for _, path in { GG2_SCRIPT_PATH, AUTO_FARM_SCRIPT } do
+        if isfile(path) then
+            local ok, source = pcall(readfile, path)
+            if ok and source and source ~= '' then
+                localSource = stripBom(source)
+                break
+            end
+        end
+    end
+
+    if localSource == remote then
+        return true, 'latest'
+    end
+
+    if writeScriptToWorkspace(remote) then
+        return true, 'updated'
+    end
+
+    return false, 'write_failed'
+end
+
+function persistAutoFarmScript()
+    if not writefile then
+        return false
+    end
+
+    local synced = syncWorkspaceFromRemote()
+    if synced then
+        return true
+    end
+
+    ensureGg2Folders()
+
+    for _, path in {
+        AUTO_FARM_SCRIPT,
+        GG2_SCRIPT_PATH,
+        'workspace/' .. AUTO_FARM_SCRIPT,
+        'scripts/' .. AUTO_FARM_SCRIPT,
+    } do
+        if isfile(path) then
+            local ok, source = pcall(readfile, path)
+            if ok and source and source ~= '' then
+                local cleaned = stripBom(source)
+                pcall(function()
+                    writefile(GG2_SCRIPT_PATH, cleaned)
+                    writefile(AUTO_FARM_SCRIPT, cleaned)
+                end)
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+function saveConfigBeforeTeleport()
+    pcall(function()
+        if not SaveManager or not isfile then
+            return
+        end
+
+        local autoloadPath = 'GrowGarden2AutoFarm/settings/autoload.txt'
+        if isfile(autoloadPath) then
+            local name = readfile(autoloadPath):gsub('%s+', '')
+            if name ~= '' then
+                SaveManager:Save(name)
+            end
+        end
+    end)
+end
+
+local HttpService
+pcall(function()
+    HttpService = game:GetService('HttpService')
+end)
+
+function encodeWeatherState(data)
+    if HttpService then
+        return HttpService:JSONEncode(data)
+    end
+
+    return string.format(
+        '%s|%s|%s|%s|%s',
+        tostring(data.Hiding),
+        tostring(data.ReturnJobId or ''),
+        tostring(data.ReturnPlaceId or ''),
+        tostring(data.HideUntil or 0),
+        tostring(data.HidingFromWeather or '')
+    )
+end
+
+function decodeWeatherState(raw)
+    if not raw or raw == '' then
+        return nil
+    end
+
+    if HttpService then
+        local ok, decoded = pcall(function()
+            return HttpService:JSONDecode(raw)
+        end)
+        if ok and typeof(decoded) == 'table' then
+            return decoded
+        end
+    end
+
+    local hiding, returnJobId, returnPlaceId, hideUntil, hidingFromWeather = raw:match('([^|]+)|([^|]*)|([^|]*)|([^|]*)|(.*)')
+    if not hiding then
+        return nil
+    end
+
+    return {
+        Hiding = hiding == 'true',
+        ReturnJobId = returnJobId ~= '' and returnJobId or nil,
+        ReturnPlaceId = tonumber(returnPlaceId),
+        HideUntil = tonumber(hideUntil) or 0,
+        HidingFromWeather = hidingFromWeather ~= '' and hidingFromWeather or nil,
+    }
+end
+
+function readWeatherStateFile()
+    if not (readfile and isfile and isfile(WEATHER_STATE_FILE)) then
+        return nil
+    end
+
+    local ok, raw = pcall(readfile, WEATHER_STATE_FILE)
+    if not ok then
+        return nil
+    end
+
+    return decodeWeatherState(raw)
+end
+
+function writeWeatherStateFile(data)
+    if not writefile then
+        return false
+    end
+
+    local ok = pcall(function()
+        writefile(WEATHER_STATE_FILE, encodeWeatherState(data))
+    end)
+
+    return ok
+end
+
+function clearWeatherStateFile()
+    if delfile and isfile and isfile(WEATHER_STATE_FILE) then
+        pcall(delfile, WEATHER_STATE_FILE)
+    end
+end
+
+local Networking = require(ReplicatedStorage.SharedModules.Networking)
+local SprinklerData = require(ReplicatedStorage.SharedModules.SprinklerData)
+local GearShopData = require(ReplicatedStorage.SharedModules.GearShopData)
+local SeedData = require(ReplicatedStorage.SharedModules.SeedData)
+local SellValueData = require(ReplicatedStorage.SharedModules.SellValueData)
+local MutationData = require(ReplicatedStorage.SharedModules.MutationData)
+
+local GardenSync = require(PlayerScripts.Controllers.GardenSyncController)
+local FruitVisualizer = require(PlayerScripts.Controllers.FruitVisualizerController)
+
+local HarvestedFruitHandleController
+pcall(function()
+    HarvestedFruitHandleController = require(PlayerScripts.Controllers.HarvestedFruitHandleController)
+end)
+
+local NumberUtils
+pcall(function()
+    NumberUtils = require(ReplicatedStorage.SharedModules.NumberUtils)
+end)
+
+-- Mail / gifts
+local PlayerStateClient
+local MailboxItemCatalog
+
+function loadMailModules()
+    if PlayerStateClient and MailboxItemCatalog then
+        return true
+    end
+
+    local ok, err = pcall(function()
+        PlayerStateClient = require(ReplicatedStorage.ClientModules.PlayerStateClient)
+        MailboxItemCatalog = require(PlayerScripts.Controllers.MailboxController.MailboxItemCatalog)
+    end)
+
+    return ok, err
+end
+
+function getReplica()
+    local ok = loadMailModules()
+    if not ok then
+        return nil
+    end
+    return PlayerStateClient:GetLocalReplica() or PlayerStateClient:WaitForLocalReplica(5)
+end
+
+local BUY_GEARS = {}
+local BUY_SEEDS = {}
+local BUY_PROPS = {}
+local GearPrices = {}
+local SeedPrices = {}
+
+for _, entry in GearShopData.Data do
+    GearPrices[entry.ItemName] = entry.Cost
+
+    -- Only include George shop (sheckles) gear items.
+    -- Robux-only items have PriceInRobux set (e.g. Pet Teleporters).
+    if not entry.PriceInRobux then
+        table.insert(BUY_GEARS, entry.ItemName)
+    end
+end
+
+for _, entry in SeedData do
+    if entry.SeedName and entry.RestockShop ~= false then
+        table.insert(BUY_SEEDS, entry.SeedName)
+        SeedPrices[entry.SeedName] = entry.PurchasePrice
+    end
+end
+
+pcall(function()
+    local items = StockValues:WaitForChild('CrateShop'):WaitForChild('Items')
+    for _, item in items:GetChildren() do
+        table.insert(BUY_PROPS, item.Name)
+    end
+end)
+
+table.sort(BUY_GEARS)
+table.sort(BUY_SEEDS)
+table.sort(BUY_PROPS)
+
+local SUPER_SPRINKLER = 'Super Sprinkler'
+local SUPER_CAN = 'Super Watering Can'
+
+local sprinklerLifetime = 120
+
+for _, entry in SprinklerData do
+    if entry.SprinklerName == SUPER_SPRINKLER then
+        sprinklerLifetime = entry.Lifetime or sprinklerLifetime
+        break
+    end
+end
+
+local State = {
+    SavedPosition = nil,
+    LastSprinklerPlace = 0,
+    LastWatering = 0,
+    LastSell = 0,
+    EarningsWindow = {},
+    NoclipConnection = nil,
+    NoclipPlantState = {},
+    NoclipPlantConnection = nil,
+    HarvestConnection = nil,
+    HarvestThread = nil,
+    WateringConnection = nil,
+    WateringStop = false,
+    SprinklerPlacePending = false,
+    WeatherHiding = false,
+    ReturnJobId = nil,
+    ReturnPlaceId = nil,
+    HideUntil = 0,
+    HidingFromWeather = nil,
+    PendingWalkBack = false,
+    ReturnPosX = nil,
+    ReturnPosY = nil,
+    ReturnPosZ = nil,
+    PendingWalkToSaved = false,
+    StartupWalkDone = false,
+    AutoExecTeleportConnection = nil,
+    WeatherMonitorStop = false,
+    WeatherMonitorThread = nil,
+    WeatherErrorReconnectConnection = nil,
+    WeatherReconnectPending = false,
+    WeatherReconnectAttempts = 0,
+    LastWeatherReconnectAttempt = 0,
+    AutoBuyThread = nil,
+    AutoBuyTracker = {},
+    MailAutoClaimStop = false,
+    MailAutoClaimThread = nil,
+    MailTotals = { Claimed = 0, Failed = 0 },
+    OptimizerEnabled = false,
+    OptimizerOriginal = nil,
+    OptimizerChanged = nil,
+    OptimizerApplyToken = 0,
+    OptimizerScanThread = nil,
+    OptimizerBoostConnection = nil,
+    OptimizerElitePartCache = {},
+    OptimizerEliteBoostCache = {},
+    OptimizerEliteEffectCache = {},
+    AntiAfkConnection = nil,
+    AutoSellThread = nil,
+    LastHarvest = 0,
+    NoclipPlantApplyToken = 0,
+    PlantEffectMaintainConnection = nil,
+    PlantEmitterClearConnection = nil,
+    PlantEmitterCache = {},
+    PlantEmitterCacheAt = 0,
+    PlantWatchConnections = {},
+    GardensWatchConnection = nil,
+    FruitsFolderConnections = {},
+    PlantChildConnections = {},
+    NoclipCharConnection = nil,
+    GardenFruits = {},
+    FruitLabelMap = {},
+    OptimizerPlantRecordCache = {},
+    LoadingDismissThread = nil,
+    RemoteSyncStatus = nil,
+}
+
+function isLoadingScreenBlocking()
+    return LocalPlayer:GetAttribute('LoadingScreenDone') ~= true
+end
+
+function tryDismissLoadingScreen()
+    if LocalPlayer:GetAttribute('LoadingScreenDone') == true then
+        return true
+    end
+
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton1(Vector2.new())
+    end)
+
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end)
+
+    if type(keypress) == 'function' then
+        pcall(keypress, 0x20)
+        pcall(keypress, 0x0D)
+    end
+
+    if type(mouse1click) == 'function' then
+        pcall(mouse1click)
+    end
+
+    if type(firesignal) == 'function' then
+        pcall(function()
+            firesignal(UserInputService.InputBegan, {
+                UserInputType = Enum.UserInputType.Keyboard,
+                KeyCode = Enum.KeyCode.Space,
+            }, false)
+        end)
+        pcall(function()
+            firesignal(UserInputService.InputBegan, {
+                UserInputType = Enum.UserInputType.MouseButton1,
+            }, false)
+        end)
+    end
+
+    return LocalPlayer:GetAttribute('LoadingScreenDone') == true
+end
+
+function waitForLoadingScreenDismiss(timeout)
+    timeout = timeout or 120
+    local deadline = os.clock() + timeout
+
+    while os.clock() < deadline and not Library.Unloaded do
+        if LocalPlayer:GetAttribute('LoadingScreenDone') == true then
+            return true
+        end
+
+        tryDismissLoadingScreen()
+        task.wait(0.35)
+    end
+
+    return LocalPlayer:GetAttribute('LoadingScreenDone') == true
+end
+
+function startLoadingScreenAutoDismiss()
+    if State.LoadingDismissThread then
+        return
+    end
+
+    State.LoadingDismissThread = task.spawn(function()
+        waitForLoadingScreenDismiss(180)
+        State.LoadingDismissThread = nil
+    end)
+end
+
+function killPlantEmitter(emitter)
+    emitter.Enabled = false
+    emitter.Rate = 0
+    pcall(function()
+        emitter.Lifetime = NumberRange.new(0, 0)
+    end)
+    pcall(function()
+        emitter:Clear()
+    end)
+    pcall(function()
+        emitter.Transparency = NumberSequence.new(1)
+    end)
+end
+
+function rehidePlantInstance(inst)
+    if inst:IsA('BasePart') then
+        if inst.Transparency < 1 or inst.LocalTransparencyModifier < 1 or inst.CanCollide then
+            inst.CanCollide = false
+            inst.Transparency = 1
+            inst.LocalTransparencyModifier = 1
+        end
+    elseif inst:IsA('Decal') or inst:IsA('Texture') then
+        if inst.Transparency < 1 then
+            inst.Transparency = 1
+        end
+    elseif inst:IsA('BillboardGui') or inst:IsA('SurfaceGui') or inst:IsA('Highlight')
+        or inst:IsA('SelectionBox') or inst:IsA('ProximityPrompt') then
+        if inst.Enabled then
+            inst.Enabled = false
+        end
+    elseif inst:IsA('ParticleEmitter') then
+        killPlantEmitter(inst)
+    elseif inst:IsA('Trail') or inst:IsA('Beam') or inst:IsA('Fire') or inst:IsA('Smoke')
+        or inst:IsA('Sparkles') then
+        if inst.Enabled then
+            inst.Enabled = false
+        end
+    elseif inst:IsA('PointLight') or inst:IsA('SpotLight') or inst:IsA('Light') then
+        if inst.Enabled then
+            inst.Enabled = false
+        end
+    end
+end
+
+function getWatchedPlantsFolders()
+    local folders = {}
+
+    if State.OptimizerEnabled then
+        for _, plot in Gardens:GetChildren() do
+            local plants = plot:FindFirstChild('Plants')
+            if plants then
+                table.insert(folders, plants)
+            end
+        end
+    elseif Toggles.Noclip and Toggles.Noclip.Value then
+        local plotId = LocalPlayer:GetAttribute('PlotId')
+        if plotId then
+            local plot = Gardens:FindFirstChild('Plot' .. plotId)
+            local plants = plot and plot:FindFirstChild('Plants')
+            if plants then
+                table.insert(folders, plants)
+            end
+        end
+    end
+
+    return folders
+end
+
+function isPlantInstance(inst)
+    local current = inst
+    while current and current ~= workspace do
+        if current.Name == 'Plants' and current.Parent and current.Parent.Parent == Gardens then
+            return true
+        end
+        current = current.Parent
+    end
+    return false
+end
+
+function refreshPlantEmitterCache()
+    local cache = {}
+
+    for _, plants in getWatchedPlantsFolders() do
+        for _, desc in plants:GetDescendants() do
+            if desc:IsA('ParticleEmitter') then
+                table.insert(cache, desc)
+            end
+        end
+    end
+
+    State.PlantEmitterCache = cache
+    State.PlantEmitterCacheAt = os.clock()
+end
+
+function trackPlantEmitter(emitter)
+    if not emitter:IsA('ParticleEmitter') then
+        return
+    end
+
+    for _, cached in State.PlantEmitterCache do
+        if cached == emitter then
+            return
+        end
+    end
+
+    table.insert(State.PlantEmitterCache, emitter)
+    killPlantEmitter(emitter)
+end
+
+function clearCachedPlantEmitters()
+    for _, emitter in State.PlantEmitterCache do
+        if emitter and emitter.Parent then
+            killPlantEmitter(emitter)
+        end
+    end
+end
+
+function suppressPlantVisual(inst, savedState, record)
+    local props = savedState[inst]
+
+    if inst:IsA('ParticleEmitter') then
+        if not props then
+            props = {
+                Enabled = inst.Enabled,
+                Rate = inst.Rate,
+                Lifetime = inst.Lifetime,
+            }
+            savedState[inst] = props
+            if record then
+                record(inst, props)
+            end
+        end
+        killPlantEmitter(inst)
+    elseif inst:IsA('Trail') or inst:IsA('Beam') then
+        if not props then
+            props = { Enabled = inst.Enabled }
+            savedState[inst] = props
+            if record then
+                record(inst, props)
+            end
+        end
+        inst.Enabled = false
+    elseif inst:IsA('Fire') or inst:IsA('Smoke') or inst:IsA('Sparkles') or inst:IsA('Light') then
+        if not props then
+            props = { Enabled = inst.Enabled }
+            savedState[inst] = props
+            if record then
+                record(inst, props)
+            end
+        end
+        inst.Enabled = false
+    elseif inst:IsA('Decal') or inst:IsA('Texture') then
+        if not props then
+            props = { Transparency = inst.Transparency }
+            savedState[inst] = props
+            if record then
+                record(inst, props)
+            end
+        end
+        inst.Transparency = 1
+    elseif inst:IsA('BillboardGui') or inst:IsA('SurfaceGui') or inst:IsA('Highlight')
+        or inst:IsA('SelectionBox') or inst:IsA('ProximityPrompt') then
+        if not props then
+            props = { Enabled = inst.Enabled }
+            savedState[inst] = props
+            if record then
+                record(inst, props)
+            end
+        end
+        inst.Enabled = false
+    elseif inst:IsA('PointLight') or inst:IsA('SpotLight') then
+        if not props then
+            props = { Enabled = inst.Enabled }
+            savedState[inst] = props
+            if record then
+                record(inst, props)
+            end
+        end
+        inst.Enabled = false
+    elseif inst:IsA('BasePart') then
+        if not props then
+            props = {
+                CanCollide = inst.CanCollide,
+                LocalTransparencyModifier = inst.LocalTransparencyModifier,
+                Transparency = inst.Transparency,
+                CastShadow = inst.CastShadow,
+                Material = inst.Material,
+                Reflectance = inst.Reflectance,
+            }
+            savedState[inst] = props
+            if record then
+                record(inst, props)
+            end
+        end
+        inst.CanCollide = false
+        inst.LocalTransparencyModifier = 1
+        inst.Transparency = 1
+        inst.CastShadow = false
+        if State.OptimizerEnabled then
+            inst.Material = Enum.Material.SmoothPlastic
+            inst.Reflectance = 0
+        end
+    end
+end
+
+function stopPlantEffectMaintain()
+    if State.PlantEffectMaintainConnection then
+        State.PlantEffectMaintainConnection:Disconnect()
+        State.PlantEffectMaintainConnection = nil
+    end
+
+    if State.PlantEmitterClearConnection then
+        State.PlantEmitterClearConnection:Disconnect()
+        State.PlantEmitterClearConnection = nil
+    end
+
+    stopPlantWatchers()
+    stopFruitsFolderWatchers()
+
+    State.PlantEmitterCache = {}
+    State.PlantEmitterCacheAt = 0
+end
+
+function shouldMaintainPlantEffects()
+    if Library.Unloaded then
+        return false
+    end
+
+    if State.OptimizerEnabled then
+        return true
+    end
+
+    return Toggles.Noclip and Toggles.Noclip.Value == true
+end
+
+function forceSuppressPlantEffect(inst)
+    if inst:IsA('ParticleEmitter') then
+        killPlantEmitter(inst)
+    elseif inst:IsA('Trail') or inst:IsA('Beam') or inst:IsA('Fire') or inst:IsA('Smoke')
+        or inst:IsA('Sparkles') or inst:IsA('Light') then
+        inst.Enabled = false
+    end
+end
+
+function stopFruitsFolderWatchers()
+    for _, connection in State.FruitsFolderConnections do
+        connection:Disconnect()
+    end
+    State.FruitsFolderConnections = {}
+
+    for _, connection in State.PlantChildConnections do
+        connection:Disconnect()
+    end
+    State.PlantChildConnections = {}
+end
+
+function stopPlantWatchers()
+    for _, connection in State.PlantWatchConnections do
+        connection:Disconnect()
+    end
+    State.PlantWatchConnections = {}
+
+    if State.GardensWatchConnection then
+        State.GardensWatchConnection:Disconnect()
+        State.GardensWatchConnection = nil
+    end
+end
+
+function hideWatchedPlantInstance(desc)
+    if State.OptimizerEnabled and isPlantInstance(desc) then
+        suppressPlantVisual(desc, State.OptimizerPlantRecordCache, State.OptimizerChanged and function(inst, props)
+            table.insert(State.OptimizerChanged, { inst = inst, props = props })
+        end or nil)
+        trackPlantEmitter(desc)
+    end
+
+    if Toggles.Noclip and Toggles.Noclip.Value then
+        local plotId = LocalPlayer:GetAttribute('PlotId')
+        local plot = plotId and Gardens:FindFirstChild('Plot' .. plotId)
+        local plants = plot and plot:FindFirstChild('Plants')
+        if plants and desc:IsDescendantOf(plants) then
+            suppressPlantVisual(desc, State.NoclipPlantState)
+            trackPlantEmitter(desc)
+        end
+    end
+end
+
+function hideWatchedPlantTree(root)
+    hideWatchedPlantInstance(root)
+    for _, desc in root:GetDescendants() do
+        hideWatchedPlantInstance(desc)
+    end
+end
+
+function onPlantDescendantAdded(desc)
+    task.defer(function()
+        hideWatchedPlantInstance(desc)
+    end)
+end
+
+function ensureFruitsFolderWatchers()
+    if not shouldMaintainPlantEffects() then
+        stopFruitsFolderWatchers()
+        return
+    end
+
+    for _, plants in getWatchedPlantsFolders() do
+        if not State.PlantChildConnections[plants] then
+            State.PlantChildConnections[plants] = plants.ChildAdded:Connect(function(plantModel)
+                task.defer(function()
+                    hideWatchedPlantTree(plantModel)
+                    ensureFruitsFolderWatchers()
+                end)
+            end)
+        end
+
+        for _, plantModel in plants:GetChildren() do
+            local fruitsFolder = plantModel:FindFirstChild('Fruits')
+            if fruitsFolder and not State.FruitsFolderConnections[fruitsFolder] then
+                State.FruitsFolderConnections[fruitsFolder] = fruitsFolder.ChildAdded:Connect(function(fruitModel)
+                    task.defer(function()
+                        hideWatchedPlantTree(fruitModel)
+                    end)
+                end)
+            end
+        end
+    end
+end
+
+function ensurePlantWatchers()
+    if not shouldMaintainPlantEffects() then
+        stopPlantWatchers()
+        return
+    end
+
+    for _, plants in getWatchedPlantsFolders() do
+        if not State.PlantWatchConnections[plants] then
+            State.PlantWatchConnections[plants] = plants.DescendantAdded:Connect(onPlantDescendantAdded)
+        end
+    end
+
+    if not State.GardensWatchConnection then
+        State.GardensWatchConnection = Gardens.ChildAdded:Connect(function(child)
+            if child:FindFirstChild('Plants') then
+                task.defer(ensurePlantWatchers)
+            end
+        end)
+    end
+end
+
+function clearCachedPlantEmittersBatch(batchSize)
+    local cache = State.PlantEmitterCache
+    local count = #cache
+    if count == 0 then
+        return
+    end
+
+    batchSize = batchSize or 12
+    local startIndex = State.PlantEmitterClearIndex or 1
+
+    for i = 1, math.min(batchSize, count) do
+        local index = ((startIndex + i - 2) % count) + 1
+        local emitter = cache[index]
+        if emitter and emitter.Parent then
+            killPlantEmitter(emitter)
+        end
+    end
+
+    State.PlantEmitterClearIndex = (startIndex + batchSize - 1) % count + 1
+end
+
+function updatePlantEffectMaintain()
+    if not shouldMaintainPlantEffects() then
+        stopPlantEffectMaintain()
+        return
+    end
+
+    if not State.PlantEffectMaintainConnection then
+        local lastEmitterClear = 0
+
+        State.PlantEffectMaintainConnection = RunService.Heartbeat:Connect(function()
+            if not shouldMaintainPlantEffects() then
+                stopPlantEffectMaintain()
+                return
+            end
+
+            local now = os.clock()
+            if now - lastEmitterClear >= 3 then
+                lastEmitterClear = now
+                clearCachedPlantEmittersBatch(12)
+            end
+        end)
+    end
+
+    ensurePlantWatchers()
+    ensureFruitsFolderWatchers()
+end
+
+function scanOptimizerPlants(applyToken)
+    local queue = {}
+
+    for _, plot in Gardens:GetChildren() do
+        local plants = plot:FindFirstChild('Plants')
+        if plants then
+            for _, plantModel in plants:GetChildren() do
+                table.insert(queue, plantModel)
+            end
+        end
+    end
+
+    local index = 1
+    while index <= #queue do
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+
+        for _ = 1, 5 do
+            local plantModel = queue[index]
+            if not plantModel then
+                break
+            end
+
+            hideWatchedPlantTree(plantModel)
+            index += 1
+        end
+
+        task.wait(0.02)
+    end
+end
+
+function eliteOptimizeInstance(inst)
+    if not State.OptimizerEnabled then
+        return
+    end
+
+    if inst:IsA('BasePart') and not inst:IsA('MeshPart') then
+        if not State.OptimizerElitePartCache[inst] then
+            State.OptimizerElitePartCache[inst] = {
+                Material = inst.Material,
+            }
+        end
+        inst.Material = Enum.Material.SmoothPlastic
+    elseif inst:IsA('Texture') or inst:IsA('Decal') then
+        if not State.OptimizerElitePartCache[inst] then
+            State.OptimizerElitePartCache[inst] = {
+                Transparency = inst.Transparency,
+            }
+        end
+        inst.Transparency = 1
+    end
+end
+
+function eliteBoostInstance(inst)
+    if not State.OptimizerEnabled then
+        return
+    end
+
+    if inst:IsA('ParticleEmitter') or inst:IsA('Trail') or inst:IsA('Explosion') then
+        if not State.OptimizerEliteBoostCache[inst] then
+            State.OptimizerEliteBoostCache[inst] = inst.Enabled
+        end
+        inst.Enabled = false
+    end
+end
+
+function eliteScanWorldGraphics()
+    local descendants = workspace:GetDescendants()
+
+    for index, desc in descendants do
+        if not State.OptimizerEnabled then
+            return
+        end
+
+        eliteOptimizeInstance(desc)
+
+        if index % 500 == 0 then
+            task.wait()
+        end
+    end
+end
+
+function eliteScanWorldBoost()
+    local descendants = workspace:GetDescendants()
+
+    for index, desc in descendants do
+        if not State.OptimizerEnabled or not _G.ExtremeBoost then
+            return
+        end
+
+        eliteBoostInstance(desc)
+
+        if index % 500 == 0 then
+            task.wait()
+        end
+    end
+end
+
+function applyEliteOptimizer()
+    local terrainDecoration
+    pcall(function()
+        terrainDecoration = workspace.Terrain.Decoration
+    end)
+
+    local renderQuality
+    local physicsThrottle
+    local fpsCap
+
+    pcall(function()
+        renderQuality = settings().Rendering.QualityLevel
+    end)
+    pcall(function()
+        physicsThrottle = settings().Physics.PhysicsEnvironmentalThrottle
+    end)
+    pcall(function()
+        fpsCap = getfpscap and getfpscap() or 60
+    end)
+
+    State.OptimizerOriginal = {
+        Brightness = Lighting.Brightness,
+        GlobalShadows = Lighting.GlobalShadows,
+        FogEnd = Lighting.FogEnd,
+        TerrainDecoration = terrainDecoration,
+        RenderQuality = renderQuality,
+        PhysicsThrottle = physicsThrottle,
+        FpsCap = fpsCap,
+    }
+
+    pcall(function()
+        settings().Physics.PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.Always
+    end)
+    pcall(function()
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    end)
+
+    Lighting.GlobalShadows = false
+    Lighting.FogEnd = 9000000000
+    Lighting.Brightness = 2
+
+    for _, child in Lighting:GetChildren() do
+        if child:IsA('PostEffect') or child:IsA('BloomEffect') or child:IsA('BlurEffect')
+            or child:IsA('DepthOfFieldEffect') or child:IsA('SunRaysEffect') then
+            if State.OptimizerEliteEffectCache[child] == nil then
+                State.OptimizerEliteEffectCache[child] = child.Enabled
+            end
+            child.Enabled = false
+        end
+    end
+
+    pcall(function()
+        sethiddenproperty(workspace.Terrain, 'Decoration', false)
+    end)
+
+    pcall(function()
+        if setfpscap then
+            setfpscap(9999)
+        end
+    end)
+
+    _G.ExtremeBoost = true
+
+    if State.OptimizerBoostConnection then
+        State.OptimizerBoostConnection:Disconnect()
+        State.OptimizerBoostConnection = nil
+    end
+
+    State.OptimizerBoostConnection = workspace.DescendantAdded:Connect(function(desc)
+        if State.OptimizerEnabled then
+            eliteOptimizeInstance(desc)
+            if _G.ExtremeBoost then
+                eliteBoostInstance(desc)
+            end
+        end
+    end)
+
+    task.spawn(eliteScanWorldGraphics)
+    task.spawn(eliteScanWorldBoost)
+end
+
+function restoreEliteOptimizer()
+    if State.OptimizerBoostConnection then
+        State.OptimizerBoostConnection:Disconnect()
+        State.OptimizerBoostConnection = nil
+    end
+
+    _G.ExtremeBoost = false
+
+    if State.OptimizerOriginal then
+        local o = State.OptimizerOriginal
+
+        pcall(function()
+            Lighting.Brightness = o.Brightness
+            Lighting.GlobalShadows = o.GlobalShadows
+            Lighting.FogEnd = o.FogEnd
+        end)
+
+        pcall(function()
+            if o.PhysicsThrottle then
+                settings().Physics.PhysicsEnvironmentalThrottle = o.PhysicsThrottle
+            end
+        end)
+
+        pcall(function()
+            if o.RenderQuality then
+                settings().Rendering.QualityLevel = o.RenderQuality
+            end
+        end)
+
+        pcall(function()
+            if o.TerrainDecoration ~= nil then
+                sethiddenproperty(workspace.Terrain, 'Decoration', o.TerrainDecoration)
+            else
+                workspace.Terrain.Decoration = true
+            end
+        end)
+
+        pcall(function()
+            if setfpscap then
+                setfpscap(o.FpsCap or 60)
+            end
+        end)
+    end
+
+    for inst, enabled in State.OptimizerEliteEffectCache do
+        if inst and inst.Parent then
+            pcall(function()
+                inst.Enabled = enabled
+            end)
+        end
+    end
+
+    for inst, props in State.OptimizerElitePartCache do
+        if inst and inst.Parent then
+            for prop, val in props do
+                pcall(function()
+                    inst[prop] = val
+                end)
+            end
+        end
+    end
+
+    for inst, enabled in State.OptimizerEliteBoostCache do
+        if inst and inst.Parent then
+            pcall(function()
+                inst.Enabled = enabled
+            end)
+        end
+    end
+
+    State.OptimizerElitePartCache = {}
+    State.OptimizerEliteBoostCache = {}
+    State.OptimizerEliteEffectCache = {}
+end
+
+function restoreOptimizer()
+    if State.OptimizerScanThread then
+        pcall(task.cancel, State.OptimizerScanThread)
+        State.OptimizerScanThread = nil
+    end
+
+    stopPlantEffectMaintain()
+
+    if State.OptimizerChanged then
+        for _, entry in ipairs(State.OptimizerChanged) do
+            local inst = entry.inst
+            if inst and inst.Parent then
+                for prop, val in entry.props do
+                    pcall(function()
+                        inst[prop] = val
+                    end)
+                end
+            end
+        end
+    end
+
+    for inst, props in State.OptimizerPlantRecordCache do
+        if inst and inst.Parent then
+            for prop, val in props do
+                pcall(function()
+                    inst[prop] = val
+                end)
+            end
+        end
+    end
+
+    restoreEliteOptimizer()
+
+    State.OptimizerEnabled = false
+    State.OptimizerOriginal = nil
+    State.OptimizerChanged = nil
+    State.OptimizerPlantRecordCache = {}
+end
+
+function setOptimizer(enabled)
+    enabled = enabled == true
+
+    State.OptimizerApplyToken += 1
+    local applyToken = State.OptimizerApplyToken
+
+    if not enabled then
+        restoreOptimizer()
+        return
+    end
+
+    local startingFresh = not State.OptimizerEnabled
+    State.OptimizerEnabled = true
+    State.OptimizerPlantRecordCache = {}
+
+    if startingFresh then
+        State.OptimizerChanged = {}
+        State.OptimizerElitePartCache = {}
+        State.OptimizerEliteBoostCache = {}
+        State.OptimizerEliteEffectCache = {}
+        applyEliteOptimizer()
+    end
+
+    updatePlantEffectMaintain()
+
+    if State.OptimizerScanThread then
+        pcall(task.cancel, State.OptimizerScanThread)
+        State.OptimizerScanThread = nil
+    end
+
+    State.OptimizerScanThread = task.spawn(function()
+        scanOptimizerPlants(applyToken)
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+
+        ensurePlantWatchers()
+        ensureFruitsFolderWatchers()
+        refreshPlantEmitterCache()
+        State.OptimizerScanThread = nil
+    end)
+end
+
+function abbreviate(n)
+    if NumberUtils and NumberUtils.Abbreviate then
+        return NumberUtils.Abbreviate(n) .. '¢'
+    end
+    return tostring(math.floor(n)) .. '¢'
+end
+
+function resolveRecipientId(input)
+    local trimmed = tostring(input or ''):gsub('^%s*(.-)%s*$', '%1')
+    if trimmed == '' then
+        return nil, 'Enter a username or UserId'
+    end
+
+    local asNumber = tonumber(trimmed)
+    if asNumber then
+        return asNumber
+    end
+
+    local ok, userId = pcall(function()
+        return Networking.Mailbox.LookupPlayer:Fire(trimmed)
+    end)
+    if ok and typeof(userId) == 'number' and userId > 0 then
+        return userId
+    end
+
+    local lower = trimmed:lower()
+    for _, player in Players:GetPlayers() do
+        if player.Name:lower() == lower or player.DisplayName:lower() == lower then
+            return player.UserId
+        end
+    end
+
+    return nil, 'Player not found'
+end
+
+function isGiftableEntry(category, key, value)
+    -- Many categories are stored as number counts.
+    if typeof(value) == 'number' then
+        return value > 0
+    end
+
+    -- Some categories (fruits, pets, possibly eggs/other uniques) are stored as tables with an Id.
+    if typeof(value) == 'table' and value.Id ~= nil then
+        -- Pets/uniques should not send equipped ones.
+        if value.Equipped == true then
+            return false
+        end
+        return true
+    end
+
+    return false
+end
+
+function getGiftableInventory()
+    local ok = loadMailModules()
+    if not ok then
+        return {}
+    end
+
+    local replica = getReplica()
+    if not replica then
+        return {}
+    end
+
+    local inventory = replica.Data and replica.Data.Inventory
+    if typeof(inventory) ~= 'table' then
+        return {}
+    end
+
+    local items = {}
+    local function displayCategoryName(name)
+        if name == 'HarvestedFruits' then
+            return 'Fruits'
+        end
+        if name == 'WateringCans' then
+            return 'Cans'
+        end
+        return name
+    end
+
+    local categories = {}
+    local seenCategory = {}
+
+    local defaultCategories = MailboxItemCatalog and MailboxItemCatalog.Categories
+    if typeof(defaultCategories) == 'table' then
+        for _, c in ipairs(defaultCategories) do
+            if typeof(c) == 'string' and not seenCategory[c] then
+                seenCategory[c] = true
+                table.insert(categories, c)
+            end
+        end
+    end
+
+    -- If the game adds new giftable categories (e.g. eggs), include them even if the catalog list is out of date.
+    for categoryName in inventory do
+        if typeof(categoryName) == 'string' and not seenCategory[categoryName] then
+            seenCategory[categoryName] = true
+            table.insert(categories, categoryName)
+        end
+    end
+
+    table.sort(categories)
+
+    for _, category in ipairs(categories) do
+        local tab = inventory[category]
+        if typeof(tab) == 'table' then
+            for key, value in tab do
+                if isGiftableEntry(category, key, value) then
+                    local count = typeof(value) == 'number' and value or 1
+                    table.insert(items, {
+                        category = category,
+                        key = tostring(key),
+                        count = count,
+                        label = string.format('%s / %s (%d)', displayCategoryName(category), tostring(key), count),
+                    })
+                end
+            end
+        end
+    end
+
+    -- Harvested fruits are often only present as Tools (not in replica inventory).
+    -- Mailbox expects ItemKey = fruit Tool's Id attribute (string UUID).
+    pcall(function()
+        local backpack = LocalPlayer:FindFirstChild('Backpack')
+        local character = LocalPlayer.Character
+
+        for _, container in { backpack, character } do
+            if container then
+                for _, tool in container:GetChildren() do
+                    if tool:IsA('Tool') and tool:GetAttribute('HarvestedFruit') == true then
+                        local id = tool:GetAttribute('Id')
+                        local fruitName = tool:GetAttribute('FruitName') or tool:GetAttribute('Fruit') or tool.Name
+                        local weight = tool:GetAttribute('Weight')
+                        local label = fruitName
+                        if typeof(weight) == 'number' then
+                            label = string.format('%s (%.2fkg)', tostring(fruitName), weight)
+                        end
+
+                        table.insert(items, {
+                            category = 'HarvestedFruits',
+                            key = typeof(id) == 'string' and id or tool.Name,
+                            count = 1,
+                            label = string.format('%s / %s', displayCategoryName('HarvestedFruits'), label),
+                        })
+                    end
+                end
+            end
+        end
+    end)
+
+    table.sort(items, function(a, b)
+        if a.category == b.category then
+            return a.key < b.key
+        end
+        return a.category < b.category
+    end)
+
+    return items
+end
+
+function getInbox()
+    local ok2, inbox = pcall(function()
+        return Networking.Mailbox.OpenInbox:Fire()
+    end)
+
+    if not ok2 or typeof(inbox) ~= 'table' then
+        return nil, inbox
+    end
+
+    return inbox
+end
+
+function claimGift(giftId, maxRetries)
+    maxRetries = tonumber(maxRetries) or 2
+
+    for attempt = 1, maxRetries do
+        local ok, success, errMsg = pcall(function()
+            return Networking.Mailbox.Claim:Fire(giftId)
+        end)
+
+        if ok and success then
+            return true
+        end
+
+        if attempt < maxRetries then
+            task.wait(0.5)
+        else
+            return false, errMsg
+        end
+    end
+
+    return false
+end
+
+function claimAllInbox(onProgress, claimDelay, maxRetries)
+    local inbox, err = getInbox()
+    if not inbox then
+        return 0, err
+    end
+
+    local ids = {}
+    for giftId in inbox do
+        table.insert(ids, giftId)
+    end
+    table.sort(ids)
+
+    local claimed = 0
+
+    for i, giftId in ipairs(ids) do
+        if State.MailAutoClaimStop then
+            break
+        end
+
+        local entry = inbox[giftId]
+        local fromName = typeof(entry) == 'table' and entry.FromName or 'Unknown'
+        local ok = claimGift(giftId, maxRetries)
+
+        if ok then
+            claimed += 1
+            State.MailTotals.Claimed += 1
+        else
+            State.MailTotals.Failed += 1
+        end
+
+        if onProgress then
+            pcall(onProgress, i, #ids, fromName, ok)
+        end
+
+        task.wait(claimDelay or 0.35)
+    end
+
+    return claimed
+end
+
+function sendGiftBatch(recipientId, item, amount, note)
+    if not item then
+        return false, 'Select an item'
+    end
+
+    amount = tonumber(amount) or 0
+    if amount <= 0 then
+        return false, 'Amount must be greater than 0'
+    end
+    if amount > (item.count or 0) then
+        return false, string.format('You only have %d', item.count or 0)
+    end
+
+    local batch = {
+        {
+            Category = item.category,
+            ItemKey = item.key,
+            Count = amount,
+        },
+    }
+
+    local ok, success, message = pcall(function()
+        return Networking.Mailbox.SendBatch:Fire(recipientId, batch, note or '')
+    end)
+
+    if not ok then
+        return false, tostring(success)
+    end
+    if not success then
+        return false, (message ~= '' and message) or 'Send failed'
+    end
+
+    return true, (message ~= '' and message) or 'Gift sent'
+end
+
+function getCharacter()
+    return LocalPlayer.Character
+end
+
+function walkToPosition(targetPos, timeout)
+    local char = getCharacter() or LocalPlayer.CharacterAdded:Wait()
+    local humanoid = char:WaitForChild('Humanoid', 10)
+    local root = char:WaitForChild('HumanoidRootPart', 10)
+    if not humanoid or not root then
+        return false
+    end
+
+    timeout = timeout or 90
+    local deadline = os.clock() + timeout
+
+    while os.clock() < deadline do
+        if (root.Position - targetPos).Magnitude <= 6 then
+            return true
+        end
+
+        humanoid:MoveTo(targetPos)
+        local finished = false
+        local reached = false
+        local conn = humanoid.MoveToFinished:Connect(function(success)
+            finished = true
+            reached = success
+        end)
+
+        local waitUntil = os.clock() + 4
+        while os.clock() < waitUntil and not finished do
+            if (root.Position - targetPos).Magnitude <= 6 then
+                conn:Disconnect()
+                return true
+            end
+            task.wait(0.1)
+        end
+
+        conn:Disconnect()
+
+        if reached and (root.Position - targetPos).Magnitude <= 8 then
+            return true
+        end
+
+        task.wait(0.15)
+    end
+
+    return (root.Position - targetPos).Magnitude <= 10
+end
+
+function getHumanoid()
+    local char = getCharacter()
+    return char and char:FindFirstChildOfClass('Humanoid')
+end
+
+function getPlot()
+    local plotId = LocalPlayer:GetAttribute('PlotId')
+    if plotId then
+        return Gardens:FindFirstChild('Plot' .. plotId)
+    end
+    return nil
+end
+
+function hidePlantVisual(inst)
+    suppressPlantVisual(inst, State.NoclipPlantState)
+    trackPlantEmitter(inst)
+end
+
+function restorePlantNoclip()
+    if State.NoclipPlantConnection then
+        State.NoclipPlantConnection:Disconnect()
+        State.NoclipPlantConnection = nil
+    end
+
+    for inst, props in State.NoclipPlantState do
+        if inst and inst.Parent then
+            for prop, val in props do
+                pcall(function()
+                    inst[prop] = val
+                end)
+            end
+        end
+    end
+
+    State.NoclipPlantState = {}
+    updatePlantEffectMaintain()
+end
+
+function applyPlantNoclip(enabled)
+    State.NoclipPlantApplyToken += 1
+    local applyToken = State.NoclipPlantApplyToken
+
+    restorePlantNoclip()
+
+    if not enabled then
+        return
+    end
+
+    task.spawn(function()
+        local plantsFolder
+        local deadline = os.clock() + 30
+
+        while not plantsFolder and os.clock() < deadline do
+            if applyToken ~= State.NoclipPlantApplyToken then
+                return
+            end
+
+            local plot = getPlot()
+            plantsFolder = plot and plot:FindFirstChild('Plants')
+            if not plantsFolder then
+                task.wait(0.25)
+            end
+        end
+
+        if not plantsFolder or applyToken ~= State.NoclipPlantApplyToken then
+            return
+        end
+
+        for _, plantModel in plantsFolder:GetChildren() do
+            if applyToken ~= State.NoclipPlantApplyToken then
+                return
+            end
+
+            hideWatchedPlantTree(plantModel)
+            task.wait(0.06)
+        end
+
+        updatePlantEffectMaintain()
+    end)
+end
+
+function setCharacterNoclip(char)
+    if not char then
+        return
+    end
+
+    for _, part in char:GetDescendants() do
+        if part:IsA('BasePart') then
+            part.CanCollide = false
+        end
+    end
+end
+
+function bindNoclipCharacter(char)
+    if State.NoclipCharConnection then
+        State.NoclipCharConnection:Disconnect()
+        State.NoclipCharConnection = nil
+    end
+
+    if not char then
+        return
+    end
+
+    setCharacterNoclip(char)
+    State.NoclipCharConnection = char.DescendantAdded:Connect(function(desc)
+        if desc:IsA('BasePart') then
+            desc.CanCollide = false
+        end
+    end)
+end
+
+function setNoclip(enabled)
+    if State.NoclipConnection then
+        State.NoclipConnection:Disconnect()
+        State.NoclipConnection = nil
+    end
+
+    if State.NoclipCharConnection then
+        State.NoclipCharConnection:Disconnect()
+        State.NoclipCharConnection = nil
+    end
+
+    applyPlantNoclip(enabled)
+    updatePlantEffectMaintain()
+
+    if not enabled then
+        return
+    end
+
+    bindNoclipCharacter(getCharacter())
+    State.NoclipConnection = LocalPlayer.CharacterAdded:Connect(bindNoclipCharacter)
+end
+
+function getPlotIdNumber(plot)
+    return tonumber(plot.Name:match('%d+'))
+end
+
+function findTool(attribute, value)
+    for _, container in { LocalPlayer:FindFirstChild('Backpack'), getCharacter() } do
+        if container then
+            for _, child in container:GetChildren() do
+                if child:IsA('Tool') and child:GetAttribute(attribute) == value then
+                    return child
+                end
+            end
+        end
+    end
+    return nil
+end
+
+function equipTool(tool)
+    if not tool then
+        return false
+    end
+
+    local humanoid = getHumanoid()
+    if not humanoid then
+        return false
+    end
+
+    if tool.Parent ~= getCharacter() then
+        humanoid:EquipTool(tool)
+        task.wait(0.15)
+    end
+
+    return getCharacter() and getCharacter():FindFirstChild(tool.Name) ~= nil
+end
+
+function getPlacementPosition(savedPos)
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Include
+    params.FilterDescendantsInstances = { Gardens }
+
+    local origin = Vector3.new(savedPos.X, savedPos.Y + 50, savedPos.Z)
+    local result = workspace:Raycast(origin, Vector3.new(0, -200, 0), params)
+
+    if result and CollectionService:HasTag(result.Instance, 'PlantArea') then
+        return result.Position
+    end
+
+    return Vector3.new(savedPos.X, 142.602, savedPos.Z)
+end
+
+function getActiveSuperSprinkler()
+    if State.SprinklerPlacePending then
+        return true, 'pending', nil, sprinklerLifetime
+    end
+
+    local sprinklers = GardenSync:GetSprinklers(LocalPlayer.UserId)
+    local now = os.time()
+
+    for sprinklerId, data in sprinklers do
+        if data and data.SprinklerName == SUPER_SPRINKLER then
+            local placedAt = tonumber(data.PlacedAt) or 0
+            local remaining = sprinklerLifetime - (now - placedAt)
+            if remaining > 0 then
+                return true, sprinklerId, data, remaining
+            end
+        end
+    end
+
+    return false
+end
+
+function placeSuperSprinkler()
+    if not State.SavedPosition then
+        return false
+    end
+
+    if os.clock() - State.LastSprinklerPlace < 5 then
+        return false
+    end
+
+    local active = getActiveSuperSprinkler()
+    if active then
+        return false
+    end
+
+    local tool = findTool('Sprinkler', SUPER_SPRINKLER)
+    if not tool then
+        return false
+    end
+
+    local plot = getPlot()
+    if not plot then
+        return false
+    end
+
+    local plotId = getPlotIdNumber(plot)
+    if not plotId then
+        return false
+    end
+
+    if not equipTool(tool) then
+        return false
+    end
+
+    local position = getPlacementPosition(State.SavedPosition)
+    Networking.Place.PlaceSprinkler:Fire(position, SUPER_SPRINKLER, tool, plotId)
+    State.LastSprinklerPlace = os.clock()
+    State.SprinklerPlacePending = true
+    task.delay(5, function()
+        State.SprinklerPlacePending = false
+    end)
+    return true
+end
+
+function getWateringInterval()
+    local seconds = tonumber(Options.WateringCanInterval and Options.WateringCanInterval.Value) or 10
+    return math.clamp(seconds, 1, 300)
+end
+
+function useSuperWateringCan()
+    if not State.SavedPosition or State.WateringBusy then
+        return false
+    end
+
+    local tool = findTool('WateringCan', SUPER_CAN)
+    if not tool then
+        return false
+    end
+
+    State.WateringBusy = true
+    State.LastWatering = os.clock()
+
+    local humanoid = getHumanoid()
+    if humanoid and tool.Parent ~= getCharacter() then
+        humanoid:EquipTool(tool)
+        task.wait(0.05)
+    end
+
+    local position = getPlacementPosition(State.SavedPosition)
+    Networking.WateringCan.UseWateringCan:Fire(position - Vector3.new(0, 0.3, 0), SUPER_CAN, tool)
+
+    State.WateringBusy = false
+    return true
+end
+
+function setAutoWateringLoop(enabled)
+    State.WateringStop = true
+
+    if State.WateringConnection then
+        pcall(task.cancel, State.WateringConnection)
+        State.WateringConnection = nil
+    end
+
+    if not enabled then
+        return
+    end
+
+    State.WateringStop = false
+    State.WateringConnection = task.spawn(function()
+        while not State.WateringStop and not Library.Unloaded do
+            if Toggles.AutoWateringCan and Toggles.AutoWateringCan.Value then
+                useSuperWateringCan()
+            end
+            task.wait(getWateringInterval())
+        end
+    end)
+end
+
+function isFruitTool(tool)
+    if not tool or not tool:IsA('Tool') then
+        return false
+    end
+
+    if tool:GetAttribute('HarvestedFruit') == true then
+        return true
+    end
+
+    return typeof(tool:GetAttribute('FruitName')) == 'string' and tool:GetAttribute('FruitName') ~= ''
+end
+
+function countHarvestedFruits()
+    local fruitCount = tonumber(LocalPlayer:GetAttribute('FruitCount'))
+    if fruitCount then
+        return fruitCount
+    end
+
+    local count = 0
+    for _, container in { LocalPlayer:FindFirstChild('Backpack'), getCharacter() } do
+        if container then
+            for _, child in container:GetChildren() do
+                if isFruitTool(child) then
+                    count += 1
+                end
+            end
+        end
+    end
+    return count
+end
+
+function getInventoryCapacity()
+    local maxCapacity = tonumber(LocalPlayer:GetAttribute('MaxFruitCapacity'))
+    if maxCapacity then
+        return maxCapacity
+    end
+
+    local upgrades = tonumber(LocalPlayer:GetAttribute('BackpackSpaceUpgradesPurchased')) or 0
+    local skillData = LocalPlayer:FindFirstChild('SkillData')
+    local maxBackpack = skillData and skillData:FindFirstChild('MaxBackpack')
+    local skillLevel = maxBackpack and tonumber(maxBackpack.Value) or 1
+    return math.max(1, 5 + upgrades + math.max(0, skillLevel - 1))
+end
+
+function isInventoryFull()
+    return countHarvestedFruits() >= getInventoryCapacity()
+end
+
+function normalizeWeightKg(weight)
+    weight = tonumber(weight)
+    if not weight then
+        return nil
+    end
+
+    if weight > 5000 then
+        weight = weight / 1000
+    end
+
+    return weight
+end
+
+function getMaxHarvestKg()
+    local maxKg = tonumber(Options and Options.MaxHarvestKg and Options.MaxHarvestKg.Value) or 50
+    return math.clamp(maxKg, 0.01, 1000)
+end
+
+function getHarvestedFruitTools()
+    local tools = {}
+
+    for _, container in { LocalPlayer:FindFirstChild('Backpack'), getCharacter() } do
+        if container then
+            for _, tool in container:GetChildren() do
+                if isFruitTool(tool) then
+                    table.insert(tools, tool)
+                end
+            end
+        end
+    end
+
+    return tools
+end
+
+function getFruitToolId(tool)
+    for _, attr in { 'Id', 'FruitId', 'ItemId', 'UUID' } do
+        local value = tool:GetAttribute(attr)
+        if typeof(value) == 'string' and value ~= '' then
+            return value
+        end
+    end
+
+    local stringValue = tool:FindFirstChild('Id')
+    if stringValue and stringValue:IsA('StringValue') and stringValue.Value ~= '' then
+        return stringValue.Value
+    end
+
+    return nil
+end
+
+function getToolWeightKg(tool)
+    local weight = tool:GetAttribute('Weight')
+        or tool:GetAttribute('WeightKg')
+        or tool:GetAttribute('FruitWeight')
+
+    if not weight then
+        local numberValue = tool:FindFirstChild('Weight')
+        if numberValue and numberValue:IsA('NumberValue') then
+            weight = numberValue.Value
+        end
+    end
+
+    return normalizeWeightKg(weight)
+end
+
+function sellResultSucceeded(result)
+    if result == nil then
+        return false
+    end
+
+    if typeof(result) == 'table' then
+        if result.Success == false then
+            return false
+        end
+        if (tonumber(result.SoldCount) or 0) > 0 then
+            return true
+        end
+        return result.Success == true or result.SellPrice ~= nil or result.Price ~= nil
+    end
+
+    return typeof(result) == 'number' and result > 0
+end
+
+function getSellEarnings(result, before)
+    local earned = 0
+    if typeof(result) == 'table' then
+        earned = tonumber(result.SellPrice) or tonumber(result.Price) or 0
+    elseif typeof(result) == 'number' then
+        earned = result
+    end
+
+    if earned <= 0 and before then
+        task.wait(0.25)
+        local after = getSheckles()
+        if after and after > before then
+            earned = after - before
+        end
+    end
+
+    return earned
+end
+
+function restoreTempFavorites(tempFavorited)
+    for _, entry in tempFavorited do
+        pcall(function()
+            Networking.Backpack.SetFruitFavorite:Fire(entry.id, false)
+        end)
+        if entry.tool and entry.tool.Parent then
+            entry.tool:SetAttribute('IsFavorite', false)
+        end
+    end
+end
+
+function hasAnyInventoryFruit()
+    local fruitCount = tonumber(LocalPlayer:GetAttribute('FruitCount'))
+    if fruitCount and fruitCount > 0 then
+        return true
+    end
+
+    return #getHarvestedFruitTools() > 0
+end
+
+function tryAutoSell()
+    if os.clock() - State.LastSell < 0.85 then
+        return
+    end
+
+    if not hasAnyInventoryFruit() then
+        return
+    end
+
+    local maxKg = getMaxHarvestKg()
+    local tools = getHarvestedFruitTools()
+    local tempFavorited = {}
+
+    for _, tool in tools do
+        if tool:GetAttribute('IsFavorite') then
+            continue
+        end
+
+        local weight = getToolWeightKg(tool)
+        if not weight or weight < maxKg then
+            continue
+        end
+
+        local id = getFruitToolId(tool)
+        if not id then
+            continue
+        end
+
+        pcall(function()
+            Networking.Backpack.SetFruitFavorite:Fire(id, true)
+        end)
+        tool:SetAttribute('IsFavorite', true)
+        table.insert(tempFavorited, { id = id, tool = tool })
+    end
+
+    if #tempFavorited > 0 then
+        task.wait(0.35)
+    end
+
+    local before = getSheckles()
+    local ok, result = pcall(function()
+        return Networking.NPCS.SellAll:Fire()
+    end)
+
+    State.LastSell = os.clock()
+
+    if #tempFavorited > 0 then
+        task.wait(0.2)
+    end
+    restoreTempFavorites(tempFavorited)
+
+    if not ok then
+        return
+    end
+
+    local earned = getSellEarnings(result, before)
+    if sellResultSucceeded(result) or earned > 0 then
+        pcall(function()
+            if HarvestedFruitHandleController and HarvestedFruitHandleController.DisconnectAllFruitTools then
+                HarvestedFruitHandleController:DisconnectAllFruitTools()
+            end
+        end)
+
+        if earned > 0 then
+            recordEarnings(earned)
+        end
+    end
+end
+
+function getSheckles()
+    local leaderstats = LocalPlayer:FindFirstChild('leaderstats')
+    local sheckles = leaderstats and leaderstats:FindFirstChild('Sheckles')
+    return sheckles and tonumber(sheckles.Value) or nil
+end
+
+function getMultiSelect(option)
+    local selected = {}
+    local value = Options and Options[option] and Options[option].Value
+
+    if typeof(value) == 'table' then
+        for key, itemValue in value do
+            if itemValue == true and typeof(key) == 'string' then
+                selected[key] = true
+            elseif typeof(itemValue) == 'string' then
+                selected[itemValue] = true
+            end
+        end
+    elseif typeof(value) == 'string' and value ~= '' then
+        selected[value] = true
+    end
+
+    return selected
+end
+
+function getShopStock(shopName, itemName)
+    local shop = StockValues:FindFirstChild(shopName)
+    local items = shop and shop:FindFirstChild('Items')
+    local item = items and items:FindFirstChild(itemName)
+    return item and item.Value or 0
+end
+
+function canAfford(cost)
+    if not cost then
+        return true
+    end
+
+    local sheckles = getSheckles()
+    return sheckles ~= nil and sheckles >= cost
+end
+
+function getAutoBuyKey(shopName, itemName)
+    return shopName .. ':' .. itemName
+end
+
+function getAutoBuyTracker(shopName, itemName)
+    local key = getAutoBuyKey(shopName, itemName)
+    local stock = getShopStock(shopName, itemName)
+    local tracker = State.AutoBuyTracker[key]
+
+    if not tracker then
+        tracker = {
+            exhausted = stock <= 0,
+            lastStock = stock,
+            pending = false,
+            pendingAt = 0,
+        }
+        State.AutoBuyTracker[key] = tracker
+        return tracker, stock
+    end
+
+    if stock > tracker.lastStock then
+        tracker.exhausted = false
+        tracker.pending = false
+    end
+
+    if stock <= 0 then
+        tracker.exhausted = true
+        tracker.pending = false
+    end
+
+    return tracker, stock
+end
+
+function tryPurchaseItem(shopName, itemName, price, purchaseFn)
+    local tracker, stock = getAutoBuyTracker(shopName, itemName)
+
+    if tracker.exhausted then
+        tracker.lastStock = stock
+        return
+    end
+
+    if stock <= 0 then
+        tracker.exhausted = true
+        tracker.lastStock = 0
+        tracker.pending = false
+        return
+    end
+
+    if tracker.pending then
+        if stock < tracker.lastStock then
+            tracker.pending = false
+            tracker.lastStock = stock
+        elseif os.clock() - tracker.pendingAt > 1.5 then
+            tracker.pending = false
+            tracker.exhausted = true
+            tracker.lastStock = stock
+        end
+
+        if stock <= 0 then
+            tracker.exhausted = true
+            tracker.pending = false
+            tracker.lastStock = 0
+        end
+
+        return
+    end
+
+    if not canAfford(price) then
+        tracker.lastStock = stock
+        return
+    end
+
+    tracker.pending = true
+    tracker.pendingAt = os.clock()
+    tracker.lastStock = stock
+    purchaseFn()
+end
+
+function tryPurchaseGear(itemName)
+    tryPurchaseItem('GearShop', itemName, GearPrices[itemName], function()
+        Networking.GearShop.PurchaseGear:Fire(itemName)
+    end)
+end
+
+function tryPurchaseSeed(itemName)
+    tryPurchaseItem('SeedShop', itemName, SeedPrices[itemName], function()
+        Networking.SeedShop.PurchaseSeed:Fire(itemName)
+    end)
+end
+
+function tryPurchaseProp(itemName)
+    -- Crate shop (props). Prices aren't exposed consistently; rely on server to reject if unaffordable.
+    tryPurchaseItem('CrateShop', itemName, nil, function()
+        Networking.CrateShop.PurchaseCrate:Fire(itemName)
+    end)
+end
+
+function runAutoBuy()
+    for itemName in getMultiSelect('AutoBuyGears') do
+        tryPurchaseGear(itemName)
+    end
+
+    for itemName in getMultiSelect('AutoBuySeeds') do
+        tryPurchaseSeed(itemName)
+    end
+
+    for itemName in getMultiSelect('AutoBuyProps') do
+        tryPurchaseProp(itemName)
+    end
+end
+
+function setAutoBuyLoop(enabled)
+    if State.AutoBuyThread then
+        pcall(task.cancel, State.AutoBuyThread)
+        State.AutoBuyThread = nil
+    end
+
+    if not enabled then
+        State.AutoBuyTracker = {}
+        return
+    end
+
+    State.AutoBuyTracker = {}
+
+    State.AutoBuyThread = task.spawn(function()
+        while not Library.Unloaded and Toggles.AutoBuy and Toggles.AutoBuy.Value do
+            runAutoBuy()
+            task.wait(2)
+        end
+        State.AutoBuyThread = nil
+    end)
+end
+
+function recordEarnings(amount)
+    if not amount or amount <= 0 then
+        return
+    end
+
+    table.insert(State.EarningsWindow, { t = os.clock(), amount = amount })
+
+    local now = os.clock()
+    while #State.EarningsWindow > 0 and now - State.EarningsWindow[1].t > 60 do
+        table.remove(State.EarningsWindow, 1)
+    end
+end
+
+function getEarningsPerMinute()
+    local total = 0
+    local now = os.clock()
+    for _, entry in State.EarningsWindow do
+        if now - entry.t <= 60 then
+            total += entry.amount
+        end
+    end
+    return total
+end
+
+function isFruitRipe(fruitData, fruitModel)
+    if fruitModel then
+        if fruitModel:GetAttribute('IsRipe') == true then
+            return true
+        end
+
+        local age = fruitModel:GetAttribute('Age')
+        local maxAge = fruitModel:GetAttribute('MaxAge')
+        if typeof(age) == 'number' and typeof(maxAge) == 'number' then
+            return age >= maxAge
+        end
+    end
+
+    if fruitData then
+        return (fruitData.Age or 0) >= (fruitData.MaxAge or 1)
+    end
+
+    return fruitModel ~= nil
+end
+
+function getFruitWeightKg(fruitModel, fruitData)
+    local weight
+
+    if fruitModel then
+        local ok, calculated = pcall(function()
+            return FruitVisualizer:CalculateFruitWeight(fruitModel)
+        end)
+        if ok and calculated then
+            weight = calculated
+        end
+
+        if not weight then
+            pcall(function()
+                if FruitVisualizer.CalculatePlantWeight then
+                    weight = FruitVisualizer:CalculatePlantWeight(fruitModel)
+                end
+            end)
+        end
+
+        if not weight then
+            weight = fruitModel:GetAttribute('Weight')
+                or fruitModel:GetAttribute('WeightKg')
+                or fruitModel:GetAttribute('FruitWeight')
+        end
+    end
+
+    if not weight and fruitData then
+        weight = fruitData.Weight or fruitData.FruitWeight or fruitData.Kg or fruitData.WeightKg
+    end
+
+    return normalizeWeightKg(weight)
+end
+
+function getFruitToolIdSet()
+    local ids = {}
+
+    for _, tool in getHarvestedFruitTools() do
+        local id = getFruitToolId(tool)
+        if id then
+            ids[id] = true
+        end
+    end
+
+    return ids
+end
+
+function favoriteFruitTool(tool)
+    if not tool or tool:GetAttribute('IsFavorite') then
+        return false
+    end
+
+    local id = getFruitToolId(tool)
+    if not id then
+        return false
+    end
+
+    pcall(function()
+        Networking.Backpack.SetFruitFavorite:Fire(id, true)
+    end)
+    tool:SetAttribute('IsFavorite', true)
+    return true
+end
+
+function waitAndFavoriteNewFruit(beforeIds)
+    for _ = 1, 25 do
+        for _, tool in getHarvestedFruitTools() do
+            local id = getFruitToolId(tool)
+            if id and not beforeIds[id] then
+                favoriteFruitTool(tool)
+                beforeIds[id] = true
+                return true
+            end
+        end
+        task.wait(0.05)
+    end
+
+    return false
+end
+
+function getGardenFruitData(garden, plantId, fruitId)
+    local plant = garden[plantId]
+    if not plant then
+        return nil
+    end
+
+    if fruitId and fruitId ~= '' then
+        return plant.Fruits and plant.Fruits[fruitId]
+    end
+
+    return plant
+end
+
+function findFruitModel(plantsFolder, plantId, fruitId)
+    if not plantsFolder then
+        return nil
+    end
+
+    for _, plantModel in plantsFolder:GetChildren() do
+        local fruitsFolder = plantModel:FindFirstChild('Fruits')
+        if fruitsFolder then
+            for _, fruitModel in fruitsFolder:GetChildren() do
+                if fruitModel:GetAttribute('PlantId') == plantId and fruitModel:GetAttribute('FruitId') == fruitId then
+                    return fruitModel
+                end
+            end
+        elseif plantModel:GetAttribute('PlantId') == plantId then
+            return plantModel
+        end
+    end
+
+    for _, plantModel in plantsFolder:GetChildren() do
+        if plantModel.Name:find(plantId, 1, true) then
+            local fruitsFolder = plantModel:FindFirstChild('Fruits')
+            if fruitsFolder and fruitId then
+                for _, fruitModel in fruitsFolder:GetChildren() do
+                    if fruitModel:GetAttribute('FruitId') == fruitId then
+                        return fruitModel
+                    end
+                end
+            else
+                return plantModel
+            end
+        end
+    end
+
+    return nil
+end
+
+function shouldHarvestFruit(weightKg, maxKg)
+    maxKg = tonumber(maxKg)
+    if not maxKg then
+        return false
+    end
+
+    if not weightKg then
+        return false
+    end
+
+    return weightKg <= maxKg
+end
+
+function abbreviateNumber(n)
+    n = tonumber(n) or 0
+    if NumberUtils and NumberUtils.Abbreviate then
+        return NumberUtils.Abbreviate(n)
+    end
+    return tostring(n)
+end
+
+function getFruitMutation(fruitModel, fruitData, plantData)
+    if fruitModel then
+        local mutation = fruitModel:GetAttribute('Mutation')
+        if mutation and mutation ~= '' then
+            return mutation
+        end
+    end
+
+    if fruitData and fruitData.Mutation and fruitData.Mutation ~= '' then
+        return fruitData.Mutation
+    end
+
+    if plantData and plantData.Mutation and plantData.Mutation ~= '' then
+        return plantData.Mutation
+    end
+
+    if plantData and plantData.Variant and plantData.Variant ~= '' and plantData.Variant ~= 'Normal' then
+        return plantData.Variant
+    end
+
+    return 'None'
+end
+
+function getFruitSellValue(fruitModel, fruitData, plantData)
+    local core = (fruitModel and fruitModel:GetAttribute('CorePartName'))
+        or (plantData and plantData.PlantName)
+        or 'Unknown'
+    local mutation = getFruitMutation(fruitModel, fruitData, plantData)
+    local sizeMulti = (fruitModel and fruitModel:GetAttribute('SizeMulti'))
+        or (fruitData and fruitData.SizeMultiplier)
+        or 1
+    local base = SellValueData[core] or 100
+    local mult = mutation ~= 'None' and MutationData.ReturnPriceMultiplier(mutation) or 1
+    return math.floor(base * (sizeMulti ^ 3) * mult)
+end
+
+local FruitsStatusLabel
+
+function formatFruitLabel(fruit)
+    local weightText = '?kg'
+    if fruit.weightKg and fruit.weightKg > 0 then
+        weightText = string.format('~%.2fkg', fruit.weightKg)
+    end
+
+    return string.format(
+        '%s | %s | %s | $%s',
+        fruit.plantName,
+        fruit.mutation,
+        weightText,
+        abbreviateNumber(fruit.value)
+    )
+end
+
+function scanGardenFruits()
+    local results = {}
+    local seen = {}
+    local plot = getPlot()
+    local plantsFolder = plot and plot:FindFirstChild('Plants')
+    local garden = GardenSync:GetGarden(LocalPlayer.UserId) or {}
+
+    if not plantsFolder then
+        return results
+    end
+
+    local function addFruit(plantId, fruitId, fruitModel, plantData)
+        if not plantId then
+            return
+        end
+
+        local key = plantId .. '_' .. (fruitId or '')
+        if seen[key] then
+            return
+        end
+
+        local fruitData = fruitId and fruitId ~= '' and getGardenFruitData(garden, plantId, fruitId) or plantData
+        if not isFruitRipe(fruitData, fruitModel) then
+            return
+        end
+
+        seen[key] = true
+        local plantName = (fruitModel and fruitModel:GetAttribute('CorePartName'))
+            or (plantData and plantData.PlantName)
+            or 'Plant'
+        local mutation = getFruitMutation(fruitModel, fruitData, plantData)
+        local weightKg = getFruitWeightKg(fruitModel, fruitData)
+        local maxKg = getMaxHarvestKg()
+        if weightKg and weightKg < maxKg then
+            return
+        end
+
+        local value = getFruitSellValue(fruitModel, fruitData, plantData)
+
+        table.insert(results, {
+            key = key,
+            plantId = plantId,
+            fruitId = fruitId or '',
+            plantName = plantName,
+            mutation = mutation,
+            weightKg = weightKg,
+            value = value,
+        })
+    end
+
+    for _, plantModel in plantsFolder:GetChildren() do
+        local fruitsFolder = plantModel:FindFirstChild('Fruits')
+        if fruitsFolder then
+            for _, fruitModel in fruitsFolder:GetChildren() do
+                local plantId = fruitModel:GetAttribute('PlantId') or plantModel:GetAttribute('PlantId')
+                local fruitId = fruitModel:GetAttribute('FruitId') or fruitModel.Name
+                if plantId then
+                    addFruit(plantId, fruitId, fruitModel, garden[plantId])
+                end
+            end
+        else
+            local plantId = plantModel:GetAttribute('PlantId')
+            if plantId then
+                addFruit(plantId, '', plantModel, garden[plantId])
+            end
+        end
+    end
+
+    for plantId, plantData in garden do
+        if plantData.Fruits then
+            for fruitId, fruitData in plantData.Fruits do
+                if not seen[plantId .. '_' .. fruitId] then
+                    addFruit(plantId, fruitId, findFruitModel(plantsFolder, plantId, fruitId), plantData)
+                end
+            end
+        elseif not seen[plantId .. '_'] then
+            addFruit(plantId, '', findFruitModel(plantsFolder, plantId, ''), plantData)
+        end
+    end
+
+    table.sort(results, function(a, b)
+        if a.value == b.value then
+            return a.weightKg > b.weightKg
+        end
+        return a.value > b.value
+    end)
+
+    return results
+end
+
+function refreshFruitsList()
+    State.GardenFruits = scanGardenFruits()
+    State.FruitLabelMap = {}
+
+    local labels = {}
+    local keepSelected = {}
+    local oldSelection = Options and Options.GardenFruitList and Options.GardenFruitList.Value
+
+    for _, fruit in State.GardenFruits do
+        local label = formatFruitLabel(fruit)
+        local uniqueLabel = label
+        local suffix = 2
+
+        while State.FruitLabelMap[uniqueLabel] do
+            uniqueLabel = label .. ' #' .. suffix
+            suffix += 1
+        end
+
+        label = uniqueLabel
+        fruit.label = label
+        State.FruitLabelMap[label] = fruit
+        table.insert(labels, label)
+
+        if typeof(oldSelection) == 'table' and oldSelection[label] == true then
+            keepSelected[label] = true
+        end
+    end
+
+    local fruitCount = #labels
+    local maxKg = getMaxHarvestKg()
+
+    task.defer(function()
+        if Options and Options.GardenFruitList then
+            if fruitCount == 0 then
+                Options.GardenFruitList:SetValues({ 'No fruits at or above Max KG' })
+                Options.GardenFruitList:SetValue({})
+            else
+                Options.GardenFruitList:SetValues(labels)
+                Options.GardenFruitList:SetValue(keepSelected)
+            end
+        end
+
+        if FruitsStatusLabel then
+            FruitsStatusLabel:SetText(string.format(
+                '%d fruits at or above %.0fkg — select from dropdown',
+                fruitCount,
+                maxKg
+            ))
+        end
+    end)
+
+    return fruitCount
+end
+
+function claimSelectedGardenFruits()
+    local selected = Options and Options.GardenFruitList and Options.GardenFruitList.Value
+    if typeof(selected) ~= 'table' then
+        Library:Notify('Select fruits from the dropdown first')
+        return
+    end
+
+    local claimed = 0
+
+    for label, isSelected in selected do
+        if isSelected == true then
+            local fruit = State.FruitLabelMap[label]
+            if fruit then
+                local beforeIds = getFruitToolIdSet()
+                Networking.Garden.CollectFruit:Fire(fruit.plantId, fruit.fruitId or '')
+                waitAndFavoriteNewFruit(beforeIds)
+                claimed += 1
+                task.wait(0.1)
+            end
+        end
+    end
+
+    if claimed == 0 then
+        Library:Notify('Select fruits from the dropdown first')
+        return
+    end
+
+    Library:Notify(string.format('Claimed & favorited %d fruit(s)', claimed))
+    task.wait(0.25)
+    refreshFruitsList()
+end
+
+function hookFruitsTabAutoScan(fruitsTab)
+    if not fruitsTab or fruitsTab._GG2ScanHooked then
+        return
+    end
+
+    fruitsTab._GG2ScanHooked = true
+    local showTab = fruitsTab.ShowTab
+
+    function fruitsTab.ShowTab(...)
+        showTab(...)
+        task.defer(refreshFruitsList)
+    end
+end
+
+function collectFruit(plantId, fruitId)
+    Networking.Garden.CollectFruit:Fire(plantId, fruitId or '')
+end
+
+function harvestFruits(maxKg)
+    local plot = getPlot()
+    local plantsFolder = plot and plot:FindFirstChild('Plants')
+    if not plantsFolder then
+        return
+    end
+
+    local maxKg = tonumber(maxKg) or 999
+    local garden = GardenSync:GetGarden(LocalPlayer.UserId)
+    local seen = {}
+
+    for _, plantModel in plantsFolder:GetChildren() do
+        local fruitsFolder = plantModel:FindFirstChild('Fruits')
+        if fruitsFolder then
+            for _, fruitModel in fruitsFolder:GetChildren() do
+                if isFruitRipe(nil, fruitModel) then
+                    local plantId = fruitModel:GetAttribute('PlantId')
+                    local fruitId = fruitModel:GetAttribute('FruitId')
+
+                    if plantId and fruitId then
+                        local key = plantId .. '_' .. fruitId
+                        if not seen[key] then
+                            seen[key] = true
+                            local fruitData = getGardenFruitData(garden, plantId, fruitId)
+                            local weight = getFruitWeightKg(fruitModel, fruitData)
+                            if shouldHarvestFruit(weight, maxKg) then
+                                collectFruit(plantId, fruitId)
+                            end
+                        end
+                    end
+                end
+            end
+        else
+            local plantId = plantModel:GetAttribute('PlantId')
+            if plantId and isFruitRipe(nil, plantModel) then
+                local key = plantId .. '_'
+                if not seen[key] then
+                    seen[key] = true
+                    local fruitData = getGardenFruitData(garden, plantId, '')
+                    local weight = getFruitWeightKg(plantModel, fruitData)
+                    if shouldHarvestFruit(weight, maxKg) then
+                        collectFruit(plantId, '')
+                    end
+                end
+            end
+        end
+    end
+
+    for plantId, plant in garden do
+        if plant.Fruits then
+            for fruitId, fruit in plant.Fruits do
+                local key = plantId .. '_' .. fruitId
+                if not seen[key] and isFruitRipe(fruit, findFruitModel(plantsFolder, plantId, fruitId)) then
+                    seen[key] = true
+                    local fruitModel = findFruitModel(plantsFolder, plantId, fruitId)
+                    local weight = getFruitWeightKg(fruitModel, fruit)
+                    if shouldHarvestFruit(weight, maxKg) then
+                        collectFruit(plantId, fruitId)
+                    end
+                end
+            end
+        else
+            local key = plantId .. '_'
+            if not seen[key] and isFruitRipe(plant, findFruitModel(plantsFolder, plantId, '')) then
+                seen[key] = true
+                local plantModel = findFruitModel(plantsFolder, plantId, '')
+                local weight = getFruitWeightKg(plantModel, plant)
+                if shouldHarvestFruit(weight, maxKg) then
+                    collectFruit(plantId, '')
+                end
+            end
+        end
+    end
+end
+
+function setAntiAfk(enabled)
+    if State.AntiAfkConnection then
+        State.AntiAfkConnection:Disconnect()
+        State.AntiAfkConnection = nil
+    end
+
+    if not enabled then
+        return
+    end
+
+    State.AntiAfkConnection = LocalPlayer.Idled:Connect(function()
+        pcall(function()
+            VirtualUser:CaptureController()
+            VirtualUser:ClickButton2(Vector2.new())
+        end)
+    end)
+end
+
+function setAutoSellLoop(enabled)
+    if State.AutoSellThread then
+        pcall(task.cancel, State.AutoSellThread)
+        State.AutoSellThread = nil
+    end
+
+    if not enabled then
+        return
+    end
+
+    State.AutoSellThread = task.spawn(function()
+        while not Library.Unloaded and Toggles.AutoSell and Toggles.AutoSell.Value do
+            tryAutoSell()
+            task.wait(1)
+        end
+        State.AutoSellThread = nil
+    end)
+end
+
+function waitForHarvestReady(timeout)
+    timeout = timeout or 90
+    local deadline = os.clock() + timeout
+
+    repeat
+        task.wait()
+    until game:IsLoaded()
+
+    if isLoadingScreenBlocking() then
+        waitForLoadingScreenDismiss(math.min(90, timeout))
+    end
+
+    while os.clock() < deadline do
+        if not (Toggles.AutoHarvest and Toggles.AutoHarvest.Value) then
+            return false
+        end
+
+        local char = LocalPlayer.Character
+        if not char then
+            char = LocalPlayer.CharacterAdded:Wait()
+        end
+
+        local root = char:FindFirstChild('HumanoidRootPart')
+        local plotId = LocalPlayer:GetAttribute('PlotId')
+        local plot = plotId and Gardens:FindFirstChild('Plot' .. plotId)
+        local plants = plot and plot:FindFirstChild('Plants')
+
+        if root and plants then
+            local ok, garden = pcall(function()
+                return GardenSync:GetGarden(LocalPlayer.UserId)
+            end)
+            if ok and garden then
+                return true
+            end
+        end
+
+        task.wait(0.25)
+    end
+
+    return false
+end
+
+function setAutoHarvestLoop(enabled)
+    if State.HarvestConnection then
+        State.HarvestConnection:Disconnect()
+        State.HarvestConnection = nil
+    end
+
+    if State.HarvestThread then
+        pcall(task.cancel, State.HarvestThread)
+        State.HarvestThread = nil
+    end
+
+    if not enabled then
+        return
+    end
+
+    State.HarvestThread = task.spawn(function()
+        local ready = waitForHarvestReady(90)
+        if not ready then
+            if Library and Library.Notify then
+                Library:Notify('Auto harvest waiting for garden to load...')
+            end
+            ready = waitForHarvestReady(60)
+        end
+
+        while not Library.Unloaded and Toggles.AutoHarvest and Toggles.AutoHarvest.Value do
+            if not ready then
+                ready = waitForHarvestReady(5)
+            end
+
+            if ready then
+                local maxKg = getMaxHarvestKg()
+                harvestFruits(maxKg)
+            end
+
+            task.wait(0)
+        end
+        State.HarvestThread = nil
+    end)
+end
+
+local WeatherStatusLabel
+local CurrentWeatherLabel
+
+function getQueueOnTeleport()
+    return queue_on_teleport
+        or (syn and syn.queue_on_teleport)
+        or (fluxus and fluxus.queue_on_teleport)
+        or (getgenv().queueteleport)
+        or (getgenv().queueonteleport)
+end
+
+function getOutsideWalkTarget(basePos, standoff)
+    standoff = standoff or 10
+    if not basePos then
+        return nil
+    end
+
+    local char = getCharacter()
+    local root = char and char:FindFirstChild('HumanoidRootPart')
+    if root then
+        local flatTo = Vector3.new(basePos.X - root.Position.X, 0, basePos.Z - root.Position.Z)
+        local dist = flatTo.Magnitude
+        if dist > standoff + 2 then
+            local flatPos = root.Position + flatTo.Unit * (dist - standoff)
+            return Vector3.new(flatPos.X, basePos.Y, flatPos.Z)
+        end
+    end
+
+    local plot = getPlot()
+    if plot then
+        local plotPivot = plot:GetPivot().Position
+        local fromCenter = Vector3.new(basePos.X - plotPivot.X, 0, basePos.Z - plotPivot.Z)
+        if fromCenter.Magnitude > 0.5 then
+            local edge = plotPivot + fromCenter.Unit * (fromCenter.Magnitude + standoff)
+            return Vector3.new(edge.X, basePos.Y, edge.Z)
+        end
+    end
+
+    return Vector3.new(basePos.X + standoff, basePos.Y, basePos.Z)
+end
+
+function saveWeatherState()
+    local savedPos = State.SavedPosition
+    local data = {
+        Hiding = State.WeatherHiding,
+        ReturnJobId = State.ReturnJobId,
+        ReturnPlaceId = State.ReturnPlaceId,
+        HideUntil = State.HideUntil,
+        HidingFromWeather = State.HidingFromWeather,
+        PendingWalkBack = State.PendingWalkBack == true,
+        PendingWalkToSaved = State.PendingWalkToSaved == true,
+        ReturnPosX = State.ReturnPosX,
+        ReturnPosY = State.ReturnPosY,
+        ReturnPosZ = State.ReturnPosZ,
+        SavedPosX = savedPos and savedPos.X,
+        SavedPosY = savedPos and savedPos.Y,
+        SavedPosZ = savedPos and savedPos.Z,
+    }
+
+    GENV.GG2_WeatherState = data
+    writeWeatherStateFile(data)
+end
+
+function loadWeatherState()
+    local saved = GENV.GG2_WeatherState or readWeatherStateFile()
+    if not saved then
+        return
+    end
+
+    State.WeatherHiding = saved.Hiding == true
+    State.ReturnJobId = saved.ReturnJobId
+    State.ReturnPlaceId = saved.ReturnPlaceId
+    State.HideUntil = saved.HideUntil or 0
+    State.HidingFromWeather = saved.HidingFromWeather
+    State.PendingWalkBack = saved.PendingWalkBack == true
+    State.PendingWalkToSaved = saved.PendingWalkToSaved == true
+    State.ReturnPosX = tonumber(saved.ReturnPosX)
+    State.ReturnPosY = tonumber(saved.ReturnPosY)
+    State.ReturnPosZ = tonumber(saved.ReturnPosZ)
+
+    local sx = tonumber(saved.SavedPosX)
+    local sy = tonumber(saved.SavedPosY)
+    local sz = tonumber(saved.SavedPosZ)
+    if sx and sy and sz and not State.SavedPosition then
+        State.SavedPosition = Vector3.new(sx, sy, sz)
+    end
+
+    GENV.GG2_WeatherState = saved
+end
+
+function clearRejoinTarget()
+    State.ReturnJobId = nil
+    State.ReturnPlaceId = nil
+    State.HideUntil = 0
+    State.WeatherHiding = false
+    State.HidingFromWeather = nil
+    saveWeatherState()
+end
+
+function clearWeatherState(options)
+    options = options or {}
+
+    State.WeatherHiding = false
+    State.HidingFromWeather = nil
+
+    if not options.keepWalkBack then
+        State.ReturnJobId = nil
+        State.ReturnPlaceId = nil
+        State.HideUntil = 0
+        State.PendingWalkBack = false
+        State.PendingWalkToSaved = false
+        State.ReturnPosX = nil
+        State.ReturnPosY = nil
+        State.ReturnPosZ = nil
+        GENV.GG2_WeatherState = nil
+        clearWeatherStateFile()
+    else
+        saveWeatherState()
+    end
+end
+
+function saveAutoExecWalkState()
+    if State.SavedPosition then
+        State.PendingWalkToSaved = true
+    end
+    saveWeatherState()
+end
+
+function saveWeatherReturnPosition()
+    local root = getCharacter() and getCharacter():FindFirstChild('HumanoidRootPart')
+    local pos = root and root.Position or State.SavedPosition
+
+    if not pos then
+        return false
+    end
+
+    State.ReturnPosX = pos.X
+    State.ReturnPosY = pos.Y
+    State.ReturnPosZ = pos.Z
+    State.PendingWalkBack = true
+    return true
+end
+
+function walkNearPosition(basePos, standoff)
+    standoff = standoff or 10
+    if not basePos then
+        return false
+    end
+
+    local char = getCharacter()
+    if not char then
+        char = LocalPlayer.CharacterAdded:Wait()
+    end
+
+    local root = char:WaitForChild('HumanoidRootPart', 15)
+    if not root then
+        return false
+    end
+
+    local target = getOutsideWalkTarget(basePos, standoff)
+    if not target then
+        return false
+    end
+
+    local flatDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(target.X, 0, target.Z)).Magnitude
+    if flatDist <= 8 then
+        return true
+    end
+
+    local walked = walkToPosition(target, 60)
+    if not walked and root.Parent then
+        pcall(function()
+            root.CFrame = CFrame.new(target + Vector3.new(0, 3, 0))
+        end)
+    end
+
+    return walked
+end
+
+function doStartupWalk()
+    if State.StartupWalkDone then
+        return
+    end
+    State.StartupWalkDone = true
+
+    task.spawn(function()
+        waitForLoadingScreenDismiss(120)
+
+        local char = getCharacter() or LocalPlayer.CharacterAdded:Wait()
+        char:WaitForChild('HumanoidRootPart', 15)
+        task.wait(1)
+
+        loadPositionFromConfig()
+
+        local basePos = State.SavedPosition
+        if State.PendingWalkBack and State.ReturnPosX and State.ReturnPosY and State.ReturnPosZ then
+            basePos = Vector3.new(State.ReturnPosX, State.ReturnPosY, State.ReturnPosZ)
+        end
+
+        if not basePos then
+            return
+        end
+
+        walkNearPosition(basePos, 10)
+
+        if State.PendingWalkBack or State.PendingWalkToSaved then
+            State.PendingWalkBack = false
+            State.PendingWalkToSaved = false
+            State.ReturnPosX = nil
+            State.ReturnPosY = nil
+            State.ReturnPosZ = nil
+            GENV.GG2_FromAutoExec = nil
+            clearWeatherState()
+        end
+    end)
+end
+
+function getTeleportScriptSource()
+    return string.format([[
 repeat task.wait() until game:IsLoaded()
 
 local isfile = isfile or function(file)
@@ -60,8 +3292,58 @@ local function stripBom(src)
     return src
 end
 
+local REMOTE_URL = %q
+
+local function httpGet(url)
+    local req = (syn and syn.request)
+        or http_request
+        or request
+        or (fluxus and fluxus.request)
+
+    if req then
+        local ok, res = pcall(function()
+            return req({
+                Url = url,
+                Method = 'GET',
+            })
+        end)
+        if ok and res and res.Body and (not res.StatusCode or res.StatusCode == 200) then
+            return res.Body
+        end
+    end
+
+    return game:HttpGet(url)
+end
+
+local function fetchLatestFarm()
+    if not writefile or not REMOTE_URL or REMOTE_URL == '' then
+        return
+    end
+
+    local ok, src = pcall(function()
+        return httpGet(REMOTE_URL .. '?t=' .. tostring(os.time()))
+    end)
+
+    if not ok or type(src) ~= 'string' or src == '' or src:find('404: Not Found', 1, true) then
+        return
+    end
+
+    src = stripBom(src)
+    pcall(function()
+        if makefolder and (not isfolder or not isfolder('GG2')) then
+            makefolder('GG2')
+        end
+        writefile('GG2/grow_garden_autofarm.lua', src)
+        writefile(%q, src)
+    end)
+end
+
 local function loadFarm()
+    fetchLatestFarm()
     task.wait(2)
+    if getgenv().GG2_AutoFarmRunning then
+        return
+    end
     getgenv().GG2_FromAutoExec = true
     for _, path in ipairs({ 'GG2/grow_garden_autofarm.lua', %q }) do
         if isfile(path) then
@@ -86,6 +3368,29 @@ if saved and saved.ReturnPlaceId then
     end
 
     if game.PlaceId == saved.ReturnPlaceId then
+        if saved.ReturnJobId and game.JobId ~= saved.ReturnJobId then
+            requeue()
+            task.wait(2)
+            local failed = false
+            local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
+                if player == Players.LocalPlayer then
+                    failed = true
+                end
+            end)
+            pcall(function()
+                TeleportService:TeleportToPlaceInstance(saved.ReturnPlaceId, saved.ReturnJobId, Players.LocalPlayer)
+            end)
+            for _ = 1, 8 do
+                if failed then
+                    break
+                end
+                task.wait(0.5)
+            end
+            failConn:Disconnect()
+            if not failed then
+                return
+            end
+        end
         loadFarm()
         return
     end
@@ -123,4 +3428,1145 @@ if saved and saved.ReturnPlaceId then
 end
 
 loadFarm()
-]],v23,v24);end function writeTeleportScript() if  not writefile then return false;end ensureGg2Folders();local v429=stripBom(getTeleportScriptSource());return pcall(function() writefile(v26,v429);end);end function queueTeleportScript() local v430=getQueueOnTeleport();if  not v430 then return false;end writeTeleportScript();persistAutoFarmScript();local v431=getTeleportScriptSource();if isfile(v26) then local v787,v788=pcall(readfile,v26);if (v787 and v788 and (v788~="")) then v431=v788;end end return pcall(function() v430(stripBom(v431));end);end function setupAutoExecute() ensureGg2Folders();persistAutoFarmScript();writeTeleportScript();queueTeleportScript();if v48.AutoExecTeleportConnection then return;end local v432=false;v48.AutoExecTeleportConnection=v11.OnTeleport:Connect(function() if v432 then return;end v432=true;saveAutoExecWalkState();saveConfigBeforeTeleport();queueTeleportScript();end);end function stopAutoExecute() if v48.AutoExecTeleportConnection then v48.AutoExecTeleportConnection:Disconnect();v48.AutoExecTeleportConnection=nil;end end function teleportToHomeServer(v434,v435) if  not v434 then return false;end if (game.PlaceId==v434) then return true;end if  not v435 then return teleportToAnyGameServer(v434);end for v674=1,25 do v48.WeatherReconnectPending=true;queueTeleportScript();if (v674==1) then task.wait(3);end local v676=false;local v677=v8.TeleportInitFailed:Connect(function(v790) if (v790==v11) then v676=true;end end);pcall(function() if (v674<=2) then v8:TeleportToPlaceInstance(v434,v435,v11);else v8:Teleport(v434,v11);end end);for v791=1,16 do if v676 then break;end task.wait(0.5);end v677:Disconnect();if  not v676 then task.delay(10,function() v48.WeatherReconnectPending=false;end);return true;end task.wait(math.min(3 + (v674 * 0.75) ,15));end v48.WeatherReconnectPending=false;return false;end function teleportToAnyGameServer(v437) v437=tonumber(v437) or game.PlaceId ;v48.WeatherReconnectPending=true;queueTeleportScript();task.wait(2);local v439=false;local v440=v8.TeleportInitFailed:Connect(function(v678) if (v678==v11) then v439=true;end end);pcall(function() v8:Teleport(v437,v11);end);for v679=1,16 do if v439 then break;end task.wait(0.5);end v440:Disconnect();if  not v439 then task.delay(10,function() v48.WeatherReconnectPending=false;end);return true;end v48.WeatherReconnectPending=false;return false;end function shouldHandleWeatherReconnectError() local v441=v22.GG2_WeatherState or readWeatherStateFile() ;if ( not v441 or (v441.Hiding~=true)) then return false;end if (os.time()<(v441.HideUntil or 0)) then return false;end return true;end function handleWeatherReconnectError(v442) if ( not v442 or (v442=="")) then return;end if ( not shouldHandleWeatherReconnectError() and  not v48.WeatherReconnectPending) then return;end v48.WeatherReconnectAttempts=(v48.WeatherReconnectAttempts or 0) + 1 ;if (v48.WeatherReconnectAttempts>8) then v48.WeatherReconnectAttempts=0;if (v1 and v1.Notify) then v1:Notify("Teleport failed - joining any server");end local v793=v22.GG2_WeatherState or readWeatherStateFile() ;local v794=tonumber(v793 and v793.ReturnPlaceId ) or game.PlaceId ;clearWeatherState({keepWalkBack=true});teleportToAnyGameServer(v794);return;end if ((os.clock() -(v48.LastWeatherReconnectAttempt or 0))<2) then return;end v48.LastWeatherReconnectAttempt=os.clock();if (v1 and v1.Notify) then v1:Notify(string.format("Reconnect failed, retrying home (%d/8)...",v48.WeatherReconnectAttempts));end task.wait(2);local v445=v22.GG2_WeatherState or readWeatherStateFile() ;if (v445 and v445.ReturnPlaceId and v445.ReturnJobId) then queueTeleportScript();if teleportToHomeServer(v445.ReturnPlaceId,v445.ReturnJobId) then return;end end end function setupWeatherErrorReconnect() if v48.WeatherErrorReconnectConnection then return;end v48.WeatherErrorReconnectConnection=v9.ErrorMessageChanged:Connect(function(v680) if (v48.WeatherReconnectPending or shouldHandleWeatherReconnectError()) then task.spawn(function() handleWeatherReconnectError(v680);end);end end);task.defer(function() local v681=v9:GetErrorMessage();if (v681 and (v681~="")) then handleWeatherReconnectError(v681);end end);end function stopWeatherErrorReconnect() if v48.WeatherErrorReconnectConnection then v48.WeatherErrorReconnectConnection:Disconnect();v48.WeatherErrorReconnectConnection=nil;end end function startWeatherRejoinWorker() if ( not v48.WeatherHiding or  not v48.ReturnPlaceId) then return;end if (game.PlaceId==v48.ReturnPlaceId) then if (os.time()>=v48.HideUntil) then clearRejoinTarget();v48.WeatherReconnectAttempts=0;end return;end if (game.JobId==v48.ReturnJobId) then if (os.time()>=v48.HideUntil) then clearRejoinTarget();v48.WeatherReconnectAttempts=0;end return;end task.spawn(function() while v48.WeatherHiding and (os.time()<v48.HideUntil)  do task.wait(1);end if ( not v48.WeatherHiding or  not v48.ReturnPlaceId or  not v48.ReturnJobId) then return;end local v682=v48.ReturnPlaceId;local v683=v48.ReturnJobId;v48.WeatherHiding=false;saveAutoExecWalkState();saveWeatherState();queueTeleportScript();if  not teleportToHomeServer(v682,v683) then teleportToAnyGameServer(v682);end end);end function getBlockedWeathers() return getMultiSelect("BlockedWeathers");end function getActiveNightMoon() local v447=workspace:GetAttribute("ActiveWeather");if (v447 and v19[v447]) then local v796=workspace:GetAttribute("PhaseDuration");local v797=((typeof(v796)=="number") and v796) or (os.time() + 120) ;return v447,v797;end return nil;end function isNightMoonBlocked(v448,v449) local v450=v20[v448];if (v450 and v449[v450]) then return true;end if ((v448=="Rainbow Moon") and v449.Rainbow) then return true;end return v449[v448]==true ;end function getActiveEventWeathers() local v451={};for v685,v686 in v18 do if (v15:GetAttribute(v686   .. "_Playing" )==true) then v451[v686]=v15:GetAttribute(v686   .. "_EndTime" ) or 0 ;end end return v451;end function getCurrentWeatherText() local v452={};local v453=select(1,getActiveNightMoon());if v453 then table.insert(v452,v20[v453] or v453 );end for v687 in getActiveEventWeathers() do table.insert(v452,v687);end if ( #v452==0) then return "None";end return table.concat(v452,", ");end function findBlockedWeather(v454) local v455,v456=getActiveNightMoon();if (v455 and isNightMoonBlocked(v455,v454)) then return v455,v456;end for v688,v689 in getActiveEventWeathers() do if v454[v688] then return v688,v689;end end return nil;end function getWeatherDisplayName(v457) return v20[v457] or v457 ;end function updateWeatherLabels() if v51 then v51:SetText("Active Event: "   .. getCurrentWeatherText() );end if  not v50 then return;end if v48.WeatherHiding then local v798=math.max(0,v48.HideUntil-os.time() );v50:SetText(string.format("Weather: Hiding from %s (%ds)",v48.HidingFromWeather or "?" ,v798));elseif (Toggles.WeatherDodge and Toggles.WeatherDodge.Value) then v50:SetText("Weather: Watching");else v50:SetText("Weather: Disabled");end end function tryRejoinHome() if  not v48.ReturnPlaceId then clearWeatherState();return;end if (game.PlaceId==v48.ReturnPlaceId) then v48.WeatherHiding=false;clearRejoinTarget();saveAutoExecWalkState();queueTeleportScript();return;end if  not v48.ReturnJobId then clearWeatherState();return;end v1:Notify("Weather ended - rejoining your server");local v458=v48.ReturnPlaceId;local v459=v48.ReturnJobId;v48.WeatherHiding=false;saveAutoExecWalkState();saveWeatherState();queueTeleportScript();if  not teleportToHomeServer(v458,v459) then v1:Notify("Rejoin failed - joining any server");teleportToAnyGameServer(v458);end end function leaveForWeather(v461,v462) if v48.WeatherHiding then return;end v48.WeatherHiding=true;v48.HidingFromWeather=getWeatherDisplayName(v461);v48.ReturnPlaceId=game.PlaceId;v48.ReturnJobId=game.JobId;v48.HideUntil=math.max(tonumber(v462) or 0 ,os.time() + 30 );saveWeatherReturnPosition();saveAutoExecWalkState();saveWeatherState();queueTeleportScript();local v470=math.max(30,v48.HideUntil-os.time() );local v471=string.format("[AutoRejoin] %s detected - auto rejoining in %ds.",v461,v470);saveWeatherState();if  not writefile then clearWeatherState();v1:Notify("Weather dodge needs writefile support to rejoin after kick");return;end task.wait(0.5);local v472=pcall(function() v11:Kick(v471);end);if  not v472 then clearWeatherState();v1:Notify("Weather dodge failed - could not disconnect");end end function setWeatherDodge(v473) v48.WeatherMonitorStop= not v473;if v48.WeatherMonitorThread then task.cancel(v48.WeatherMonitorThread);v48.WeatherMonitorThread=nil;end if  not v473 then updateWeatherLabels();return;end v48.WeatherMonitorThread=task.spawn(function() while  not v48.WeatherMonitorStop and  not v1.Unloaded  do updateWeatherLabels();if v48.WeatherHiding then if (os.time()>=v48.HideUntil) then tryRejoinHome();end elseif (Toggles.WeatherDodge and Toggles.WeatherDodge.Value) then local v961=getBlockedWeathers();local v962,v963=findBlockedWeather(v961);if v962 then leaveForWeather(v962,v963);end end task.wait(0.5);end end);end function savePositionToConfig(v476) if ( not v476 or  not Options.SavedPosX) then return;end Options.SavedPosX:SetValue(string.format("%.3f",v476.X));Options.SavedPosY:SetValue(string.format("%.3f",v476.Y));Options.SavedPosZ:SetValue(string.format("%.3f",v476.Z));end function loadPositionFromConfig() if  not Options.SavedPosX then return;end local v477=tonumber(Options.SavedPosX.Value);local v478=tonumber(Options.SavedPosY.Value);local v479=tonumber(Options.SavedPosZ.Value);if (v477 and v478 and v479) then v48.SavedPosition=Vector3.new(v477,v478,v479);end end local v52=v1:CreateWindow({Title="Grow a Garden 2 - Auto Farm",Center=true,AutoShow=true,Size=UDim2.fromOffset(620,580),TabPadding=8,MenuFadeTime=0.2,ShowCustomCursor=false,UnlockMouseWhileOpen=true});v1.ShowCustomCursor=false;task.spawn(function() while  not v1.Unloaded do if  not v1.Toggled then v6.MouseIconEnabled=true;end task.wait(0.25);end end);local v54={Main=v52:AddTab("Main"),Fruits=v52:AddTab("Fruits"),Mail=v52:AddTab("Mail"),Settings=v52:AddTab("Settings")};local v55=v54.Main:AddLeftGroupbox("Auto Gear");local v56=v54.Main:AddLeftGroupbox("Stats");local v57=v54.Main:AddLeftGroupbox("Weather Dodge");local v58=v54.Main:AddRightGroupbox("Auto Farm");local v59=v54.Main:AddRightGroupbox("Auto Buy");local v60=v54.Mail:AddLeftGroupbox("Auto Claim");local v61=v54.Mail:AddRightGroupbox("Send Gift");local v62=v54.Fruits:AddLeftGroupbox("Fruits");v49=v62:AddLabel("Auto-refreshes when you open this tab",true);v62:AddDropdown("GardenFruitList",{Text="Fruits",Values={"Open tab to load fruits"},Multi=true,Default={},Tooltip="Unharvested fruits at or above Max Harvest KG"});v62:AddButton({Text="Claim Selected",Func=function() task.spawn(claimSelectedGardenFruits);end});hookFruitsTabAutoScan(v54.Fruits);local v63=v54.Settings:AddLeftGroupbox("Optimizer");local v64=v54.Settings:AddRightGroupbox("Menu");v55:AddButton({Text="Save Current Position",Func=function() local v480=getCharacter() and getCharacter():FindFirstChild("HumanoidRootPart") ;if v480 then v48.SavedPosition=v480.Position;savePositionToConfig(v48.SavedPosition);v1:Notify("Saved position for sprinkler & watering can");else v1:Notify("No character found");end end});v55:AddInput("SavedPosX",{Text="SavedPosX",Default="",Visible=false});v55:AddInput("SavedPosY",{Text="SavedPosY",Default="",Visible=false});v55:AddInput("SavedPosZ",{Text="SavedPosZ",Default="",Visible=false});for v481,v482 in {"SavedPosX","SavedPosY","SavedPosZ"} do if Options[v482] then Options[v482]:OnChanged(function() loadPositionFromConfig();end);end end v55:AddToggle("Noclip",{Text="Noclip",Default=false,Tooltip="Walk through walls and makes your plot plants invisible + non-collidable",Callback=function(v483) task.defer(function() setNoclip(v483);end);end});v55:AddToggle("AutoSprinkler",{Text="Auto Super Sprinkler",Default=false,Tooltip="Keeps 1 Super Sprinkler active at your saved position"});v55:AddToggle("AutoWateringCan",{Text="Auto Super Watering Can",Default=false,Tooltip="Uses 1 Super Watering Can at saved position on the interval below",Callback=function(v484) setAutoWateringLoop(v484);end});v55:AddInput("WateringCanInterval",{Text="Watering Can Interval (s)",Default="10",Numeric=true,Finished=false,Tooltip="Seconds between each Super Watering Can use (1-300)"});v58:AddToggle("AutoHarvest",{Text="Auto Harvest",Default=false,Callback=function(v485) setAutoHarvestLoop(v485);end});v58:AddInput("MaxHarvestKg",{Text="Max Harvest KG",Default="50",Numeric=true,Finished=false,Tooltip="Auto harvest/sell below this KG. Fruits tab shows fruits at or above this KG."});if Options.MaxHarvestKg then Options.MaxHarvestKg:OnChanged(function() task.defer(refreshFruitsList);end);end v58:AddToggle("AutoSell",{Text="Auto Sell",Default=false,Tooltip="Sells fruits below Max Harvest KG every 1s (uses SellAll, keeps heavy/favorite fruits)",Callback=function(v486) setAutoSellLoop(v486);end});v57:AddToggle("WeatherDodge",{Text="Enable Weather Dodge",Default=false,Tooltip="Kicks you when a selected event starts. Auto-rejoins your server when it ends (falls back to any server if private join fails).",Callback=function(v487) setWeatherDodge(v487);end});v57:AddDropdown("BlockedWeathers",{Text="Bad Events",Values=v21,Multi=true,Default={},Tooltip="Events + night moons (Gold, Blood, Mega). Rainbow covers Rainbow event and Rainbow Moon."});v50=v57:AddLabel("Weather: Disabled",true);v51=v57:AddLabel("Active Event: None",true);v59:AddToggle("AutoBuy",{Text="Enable Auto Buy",Default=false,Tooltip="Instantly buys selected items when they are in stock and you can afford them",Callback=function(v488) setAutoBuyLoop(v488);end});v59:AddDropdown("AutoBuyGears",{Text="Gears",Values=v40,Multi=true,Default={}});v59:AddDropdown("AutoBuySeeds",{Text="Seeds",Values=v41,Multi=true,Default={}});v59:AddDropdown("AutoBuyProps",{Text="Props",Values=v42,Multi=true,Default={}});local v65=v56:AddLabel("Earnings/min: 0Â¢",true);local v66=v56:AddLabel("Sprinkler: None",true);v63:AddToggle("Optimizer",{Text="Enable Optimizer",Default=false,Tooltip="Elite optimizer: Anti LAG + FPS unlock + FPS booster, and hides all garden plants.",Callback=function(v489) task.defer(function() setOptimizer(v489);end);end});function shutdownScript() if v1.Unloaded then return;end v1.Unloaded=true;v48.WateringStop=true;v48.WeatherMonitorStop=true;v48.MailAutoClaimStop=true;pcall(stopPlantEffectMaintain);pcall(setNoclip,false);pcall(setOptimizer,false);pcall(setAutoHarvestLoop,false);pcall(setAutoWateringLoop,false);pcall(setAutoBuyLoop,false);pcall(setAutoSellLoop,false);pcall(setWeatherDodge,false);pcall(stopWeatherErrorReconnect);pcall(stopMailAutoClaim);pcall(setAntiAfk,false);pcall(stopAutoExecute);v22.GG2_AutoFarmRunning=false;end v64:AddToggle("AntiAfk",{Text="Anti AFK",Default=true,Tooltip="Prevents Roblox from kicking you for being idle.",Callback=function(v495) setAntiAfk(v495);end});v64:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind",{Default="RightShift",NoUI=true,Text="Menu keybind"});v1.ToggleKeybind=Options.MenuKeybind;v64:AddButton({Text="Unload Script",Func=function() shutdownScript();pcall(function() v1:Unload();end);end});local v69=v60:AddLabel("Claimed: 0 | Failed: 0 | Status: Idle",true);local v70=v60:AddLabel("Progress: -",true);function updateMailClaimLabels(v496) v69:SetText(string.format("Claimed: %d | Failed: %d | Status: %s",v48.MailTotals.Claimed or 0 ,v48.MailTotals.Failed or 0 ,(v496 and "Running") or "Idle" ));end function stopMailAutoClaim() v48.MailAutoClaimStop=true;if v48.MailAutoClaimThread then pcall(task.cancel,v48.MailAutoClaimThread);v48.MailAutoClaimThread=nil;end updateMailClaimLabels(false);end v60:AddToggle("MailAutoClaim",{Text="Enable Auto Claim",Default=false,Tooltip="Auto claims mailbox gifts every 15 seconds",Callback=function(v498) stopMailAutoClaim();if  not v498 then return;end v48.MailAutoClaimStop=false;updateMailClaimLabels(true);v48.MailAutoClaimThread=task.spawn(function() while  not v48.MailAutoClaimStop and  not v1.Unloaded  do local v805=claimAllInbox(function(v857,v858,v859,v860) v70:SetText(string.format("Progress: %d/%d (from %s) %s",v857,v858,tostring(v859),(v860 and "OK") or "FAIL" ));updateMailClaimLabels(true);end,0.35,2);if (v805>0) then v1:Notify(string.format("Mail: claimed %d gift(s)",v805));end local v806=0;while  not v48.MailAutoClaimStop and (v806<15)  do task.wait(1);v806+=1 end end end);end});local v71=v61:AddInput("MailRecipient",{Default="",Numeric=false,Finished=false,Text="Recipient (username or userId)",Tooltip="Enter a username, display name, or userId"});local v72=v61:AddInput("MailAmount",{Default="1",Numeric=true,Finished=false,Text="Amount (bypasses 20 cap)"});local v73=v61:AddInput("MailNote",{Default="",Numeric=false,Finished=false,Text="Note (optional)"});local v74=v61:AddLabel("Selected: none",true);local v75=v61:AddLabel("Ready",true);local v76={};local v77={};local v78;function refreshMailInventory() v76=getGiftableInventory();v77={};v78=nil;for v690,v691 in ipairs(v76) do table.insert(v77,v691.label);end if (Options and Options.MailInventory) then Options.MailInventory.Values=v77;Options.MailInventory:SetValues(v77);Options.MailInventory:SetValue(v77[1] or "" );end if ( #v77==0) then v74:SetText("Selected: none (empty)");end local v501=0;for v692,v693 in ipairs(v76) do if (v693.category=="HarvestedFruits") then v501+=1 end end v75:SetText(string.format("Inventory loaded (%d items, %d fruits)", #v76,v501));end v61:AddDropdown("MailInventory",{Text="Inventory item",Values={},Default="",Multi=false,Tooltip="Select an item to gift",Callback=function(v502) v78=nil;for v694,v695 in ipairs(v76) do if (v695.label==v502) then v78=v695;break;end end if v78 then local v808=v78.category;if (v808=="HarvestedFruits") then v808="Fruits";elseif (v808=="WateringCans") then v808="Cans";end v74:SetText(string.format("Selected: %s / %s (%d)",v808,v78.key,v78.count));else v74:SetText("Selected: none");end end});v61:AddButton({Text="Refresh Inventory",Func=function() refreshMailInventory();v75:SetText("Inventory refreshed");end});v61:AddButton({Text="Send Gift",Func=function() v75:SetText("Sending...");task.spawn(function() local v696,v697=resolveRecipientId(v71.Value);if  not v696 then v75:SetText("Error: "   .. tostring(v697 or "Invalid recipient" ) );return;end local v698,v699=sendGiftBatch(v696,v78,v72.Value,v73.Value);v75:SetText(((v698 and "OK: ") or "Error: ")   .. tostring(v699) );if v698 then refreshMailInventory();end end);end});v2:SetLibrary(v1);v3:SetLibrary(v1);v3:IgnoreThemeSettings();v3:SetIgnoreIndexes({});v2:SetFolder("GrowGarden2AutoFarm");v3:SetFolder("GrowGarden2AutoFarm");v3:BuildConfigSection(v54.Settings);v2:ApplyToTab(v54.Settings);loadWeatherState();setupWeatherErrorReconnect();if (v48.ReturnPlaceId and (game.PlaceId==v48.ReturnPlaceId)) then if ( not v48.WeatherHiding or (os.time()>=v48.HideUntil)) then clearRejoinTarget();end elseif (v48.WeatherHiding and (v48.ReturnJobId==game.JobId)) then if (os.time()>=v48.HideUntil) then clearRejoinTarget();end elseif v48.WeatherHiding then startWeatherRejoinWorker();end setupAutoExecute();if  not getQueueOnTeleport() then task.defer(function() if (v1 and v1.Notify) then v1:Notify("Auto-exec needs queue_on_teleport (Potassium supports this)");end end);elseif  not persistAutoFarmScript() then task.defer(function() if (v1 and v1.Notify) then v1:Notify("Run this script from "   .. v24   .. " in your executor workspace for auto-exec" );end end);end task.defer(function() v3:LoadAutoloadConfig();if Options.MenuKeybind then v1.ToggleKeybind=Options.MenuKeybind;end if (Toggles.AntiAfk and Toggles.AntiAfk.Value) then setAntiAfk(true);end task.wait(0.25);loadPositionFromConfig();if (Toggles.AutoWateringCan and Toggles.AutoWateringCan.Value) then setAutoWateringLoop(true);end if (Toggles.AutoSell and Toggles.AutoSell.Value) then setAutoSellLoop(true);end if (Toggles.AutoBuy and Toggles.AutoBuy.Value) then setAutoBuyLoop(true);end if (Toggles.WeatherDodge and Toggles.WeatherDodge.Value) then setWeatherDodge(true);elseif (v48.WeatherHiding and (os.time()<v48.HideUntil)) then setWeatherDodge(true);elseif (v48.WeatherHiding and (os.time()>=v48.HideUntil)) then tryRejoinHome();end task.wait(1.5);if (Toggles.AutoHarvest and Toggles.AutoHarvest.Value) then setAutoHarvestLoop(true);end if (Toggles.Noclip and Toggles.Noclip.Value) then task.spawn(function() setNoclip(true);end);end task.wait(1);if (Toggles.Optimizer and Toggles.Optimizer.Value) then task.spawn(function() setOptimizer(true);end);end task.wait(0.1);pcall(refreshMailInventory);updateWeatherLabels();handlePendingWalkback();end);v11.CharacterAdded:Connect(function() if (Toggles.Noclip and Toggles.Noclip.Value) then task.wait(0.1);setNoclip(true);end end);v11:GetAttributeChangedSignal("PlotId"):Connect(function() if (Toggles.Noclip and Toggles.Noclip.Value) then task.defer(function() setNoclip(true);end);end end);v1:OnUnload(function() shutdownScript();end);task.spawn(function() while  not v1.Unloaded do if (Toggles.AutoSprinkler and Toggles.AutoSprinkler.Value) then placeSuperSprinkler();end updateWeatherLabels();v65:SetText("Earnings/min: "   .. abbreviate(getEarningsPerMinute()) );local v700,v701,v701,v702=getActiveSuperSprinkler();if v700 then v66:SetText(string.format("Sprinkler: Active (%ds left)",math.floor(v702)));else v66:SetText("Sprinkler: None");end task.wait(0.5);end end);v1:Notify("Grow a Garden 2 Auto Farm loaded! Save your position first.");v22.GG2_AutoFarmRunning=true;
+]], WEATHER_STATE_FILE, REMOTE_SCRIPT_URL, AUTO_FARM_SCRIPT, AUTO_FARM_SCRIPT)
+end
+
+function writeTeleportScript()
+    if not writefile then
+        return false
+    end
+
+    ensureGg2Folders()
+    local source = stripBom(getTeleportScriptSource())
+    return pcall(function()
+        writefile(GG2_TELEPORT_SCRIPT, source)
+    end)
+end
+
+function queueTeleportScript()
+    local queue = getQueueOnTeleport()
+    if not queue then
+        return false
+    end
+
+    writeTeleportScript()
+    persistAutoFarmScript()
+
+    local source = getTeleportScriptSource()
+    if isfile(GG2_TELEPORT_SCRIPT) then
+        local ok, fileSource = pcall(readfile, GG2_TELEPORT_SCRIPT)
+        if ok and fileSource and fileSource ~= '' then
+            source = fileSource
+        end
+    end
+
+    return pcall(function()
+        queue(stripBom(source))
+    end)
+end
+
+function setupAutoExecute()
+    ensureGg2Folders()
+    persistAutoFarmScript()
+    writeTeleportScript()
+
+    if State.AutoExecTeleportConnection then
+        return
+    end
+
+    local teleportedOnce = false
+    State.AutoExecTeleportConnection = LocalPlayer.OnTeleport:Connect(function()
+        if teleportedOnce then
+            return
+        end
+        teleportedOnce = true
+
+        saveAutoExecWalkState()
+        saveConfigBeforeTeleport()
+        queueTeleportScript()
+    end)
+end
+
+function stopAutoExecute()
+    if State.AutoExecTeleportConnection then
+        State.AutoExecTeleportConnection:Disconnect()
+        State.AutoExecTeleportConnection = nil
+    end
+end
+
+function teleportToHomeServer(placeId, jobId)
+    if not placeId then
+        return false
+    end
+
+    if game.PlaceId == placeId then
+        return true
+    end
+
+    if not jobId then
+        return teleportToAnyGameServer(placeId)
+    end
+
+    for attempt = 1, 25 do
+        State.WeatherReconnectPending = true
+        queueTeleportScript()
+
+        if attempt == 1 then
+            task.wait(3)
+        end
+
+        local failed = false
+        local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
+            if player == LocalPlayer then
+                failed = true
+            end
+        end)
+
+        pcall(function()
+            if attempt <= 2 then
+                TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
+            else
+                TeleportService:Teleport(placeId, LocalPlayer)
+            end
+        end)
+
+        for _ = 1, 16 do
+            if failed then
+                break
+            end
+            task.wait(0.5)
+        end
+
+        failConn:Disconnect()
+
+        if not failed then
+            task.delay(10, function()
+                State.WeatherReconnectPending = false
+            end)
+            return true
+        end
+
+        task.wait(math.min(3 + attempt * 0.75, 15))
+    end
+
+    State.WeatherReconnectPending = false
+    return false
+end
+
+function teleportToAnyGameServer(placeId)
+    placeId = tonumber(placeId) or game.PlaceId
+
+    State.WeatherReconnectPending = true
+    queueTeleportScript()
+    task.wait(2)
+
+    local failed = false
+    local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
+        if player == LocalPlayer then
+            failed = true
+        end
+    end)
+
+    pcall(function()
+        TeleportService:Teleport(placeId, LocalPlayer)
+    end)
+
+    for _ = 1, 16 do
+        if failed then
+            break
+        end
+        task.wait(0.5)
+    end
+
+    failConn:Disconnect()
+
+    if not failed then
+        task.delay(10, function()
+            State.WeatherReconnectPending = false
+        end)
+        return true
+    end
+
+    State.WeatherReconnectPending = false
+    return false
+end
+
+function shouldHandleWeatherReconnectError()
+    local saved = GENV.GG2_WeatherState or readWeatherStateFile()
+    if not saved or saved.Hiding ~= true then
+        return false
+    end
+
+    if os.time() < (saved.HideUntil or 0) then
+        return false
+    end
+
+    return true
+end
+
+function handleWeatherReconnectError(errorMessage)
+    if not errorMessage or errorMessage == '' then
+        return
+    end
+
+    if not shouldHandleWeatherReconnectError() and not State.WeatherReconnectPending then
+        return
+    end
+
+    State.WeatherReconnectAttempts = (State.WeatherReconnectAttempts or 0) + 1
+    if State.WeatherReconnectAttempts > 8 then
+        State.WeatherReconnectAttempts = 0
+        if Library and Library.Notify then
+            Library:Notify('Teleport failed - joining any server')
+        end
+        local saved = GENV.GG2_WeatherState or readWeatherStateFile()
+        local placeId = tonumber(saved and saved.ReturnPlaceId) or game.PlaceId
+        clearWeatherState({ keepWalkBack = true })
+        teleportToAnyGameServer(placeId)
+        return
+    end
+
+    if os.clock() - (State.LastWeatherReconnectAttempt or 0) < 2 then
+        return
+    end
+    State.LastWeatherReconnectAttempt = os.clock()
+
+    if Library and Library.Notify then
+        Library:Notify(string.format('Reconnect failed, retrying home (%d/8)...', State.WeatherReconnectAttempts))
+    end
+
+    task.wait(2)
+
+    local saved = GENV.GG2_WeatherState or readWeatherStateFile()
+    if saved and saved.ReturnPlaceId and saved.ReturnJobId then
+        queueTeleportScript()
+        if teleportToHomeServer(saved.ReturnPlaceId, saved.ReturnJobId) then
+            return
+        end
+    end
+end
+
+function setupWeatherErrorReconnect()
+    if State.WeatherErrorReconnectConnection then
+        return
+    end
+
+    State.WeatherErrorReconnectConnection = GuiService.ErrorMessageChanged:Connect(function(errorMessage)
+        if State.WeatherReconnectPending or shouldHandleWeatherReconnectError() then
+            task.spawn(function()
+                handleWeatherReconnectError(errorMessage)
+            end)
+        end
+    end)
+
+    task.defer(function()
+        local currentError = GuiService:GetErrorMessage()
+        if currentError and currentError ~= '' then
+            handleWeatherReconnectError(currentError)
+        end
+    end)
+end
+
+function stopWeatherErrorReconnect()
+    if State.WeatherErrorReconnectConnection then
+        State.WeatherErrorReconnectConnection:Disconnect()
+        State.WeatherErrorReconnectConnection = nil
+    end
+end
+
+function startWeatherRejoinWorker()
+    if not State.WeatherHiding or not State.ReturnPlaceId then
+        return
+    end
+
+    if game.PlaceId == State.ReturnPlaceId then
+        if os.time() >= State.HideUntil then
+            clearRejoinTarget()
+            State.WeatherReconnectAttempts = 0
+        end
+        return
+    end
+
+    if game.JobId == State.ReturnJobId then
+        if os.time() >= State.HideUntil then
+            clearRejoinTarget()
+            State.WeatherReconnectAttempts = 0
+        end
+        return
+    end
+
+    task.spawn(function()
+        while State.WeatherHiding and os.time() < State.HideUntil do
+            task.wait(1)
+        end
+
+        if not State.WeatherHiding or not State.ReturnPlaceId or not State.ReturnJobId then
+            return
+        end
+
+        local placeId = State.ReturnPlaceId
+        local jobId = State.ReturnJobId
+        State.WeatherHiding = false
+        saveAutoExecWalkState()
+        saveWeatherState()
+        queueTeleportScript()
+
+        if not teleportToHomeServer(placeId, jobId) then
+            teleportToAnyGameServer(placeId)
+        end
+    end)
+end
+
+function getBlockedWeathers()
+    return getMultiSelect('BlockedWeathers')
+end
+
+function getActiveNightMoon()
+    local activeWeather = workspace:GetAttribute('ActiveWeather')
+    if activeWeather and NIGHT_MOON_GAME_NAMES[activeWeather] then
+        local phaseEnd = workspace:GetAttribute('PhaseDuration')
+        local endTime = typeof(phaseEnd) == 'number' and phaseEnd or (os.time() + 120)
+        return activeWeather, endTime
+    end
+
+    return nil
+end
+
+function isNightMoonBlocked(gameName, blocked)
+    local label = NIGHT_MOON_LABELS[gameName]
+    if label and blocked[label] then
+        return true
+    end
+
+    if gameName == 'Rainbow Moon' and blocked.Rainbow then
+        return true
+    end
+
+    return blocked[gameName] == true
+end
+
+function getActiveEventWeathers()
+    local active = {}
+
+    for _, weatherName in EVENT_WEATHERS do
+        if WeatherValues:GetAttribute(weatherName .. '_Playing') == true then
+            active[weatherName] = WeatherValues:GetAttribute(weatherName .. '_EndTime') or 0
+        end
+    end
+
+    return active
+end
+
+function getCurrentWeatherText()
+    local parts = {}
+    local moonName = select(1, getActiveNightMoon())
+
+    if moonName then
+        table.insert(parts, NIGHT_MOON_LABELS[moonName] or moonName)
+    end
+
+    for weatherName in getActiveEventWeathers() do
+        table.insert(parts, weatherName)
+    end
+
+    if #parts == 0 then
+        return 'None'
+    end
+
+    return table.concat(parts, ', ')
+end
+
+function findBlockedWeather(blocked)
+    local moonName, moonEnd = getActiveNightMoon()
+    if moonName and isNightMoonBlocked(moonName, blocked) then
+        return moonName, moonEnd
+    end
+
+    for weatherName, endTime in getActiveEventWeathers() do
+        if blocked[weatherName] then
+            return weatherName, endTime
+        end
+    end
+
+    return nil
+end
+
+function getWeatherDisplayName(gameName)
+    return NIGHT_MOON_LABELS[gameName] or gameName
+end
+
+function updateWeatherLabels()
+    if CurrentWeatherLabel then
+        CurrentWeatherLabel:SetText('Active Event: ' .. getCurrentWeatherText())
+    end
+
+    if not WeatherStatusLabel then
+        return
+    end
+
+    if State.WeatherHiding then
+        local remaining = math.max(0, State.HideUntil - os.time())
+        WeatherStatusLabel:SetText(string.format('Weather: Hiding from %s (%ds)', State.HidingFromWeather or '?', remaining))
+    elseif Toggles.WeatherDodge and Toggles.WeatherDodge.Value then
+        WeatherStatusLabel:SetText('Weather: Watching')
+    else
+        WeatherStatusLabel:SetText('Weather: Disabled')
+    end
+end
+
+function tryRejoinHome()
+    if not State.ReturnPlaceId then
+        clearWeatherState()
+        return
+    end
+
+    if game.PlaceId == State.ReturnPlaceId then
+        State.WeatherHiding = false
+        clearRejoinTarget()
+        saveAutoExecWalkState()
+        queueTeleportScript()
+        return
+    end
+
+    if not State.ReturnJobId then
+        clearWeatherState()
+        return
+    end
+
+    Library:Notify('Weather ended - rejoining your server')
+
+    local placeId = State.ReturnPlaceId
+    local jobId = State.ReturnJobId
+    State.WeatherHiding = false
+    saveAutoExecWalkState()
+    saveWeatherState()
+    queueTeleportScript()
+
+    if not teleportToHomeServer(placeId, jobId) then
+        Library:Notify('Rejoin failed - joining any server')
+        teleportToAnyGameServer(placeId)
+    end
+end
+
+function leaveForWeather(weatherGameName, endTime)
+    if State.WeatherHiding then
+        return
+    end
+
+    State.WeatherHiding = true
+    State.HidingFromWeather = getWeatherDisplayName(weatherGameName)
+    State.ReturnPlaceId = game.PlaceId
+    State.ReturnJobId = game.JobId
+    State.HideUntil = math.max(tonumber(endTime) or 0, os.time() + 30)
+    saveWeatherReturnPosition()
+    saveAutoExecWalkState()
+    saveWeatherState()
+    persistAutoFarmScript()
+    queueTeleportScript()
+
+    local remaining = math.max(30, State.HideUntil - os.time())
+    local kickMessage = string.format('[AutoRejoin] %s detected - auto rejoining in %ds.', weatherGameName, remaining)
+
+    saveWeatherState()
+
+    if not writefile then
+        clearWeatherState()
+        Library:Notify('Weather dodge needs writefile support to rejoin after kick')
+        return
+    end
+
+    task.wait(0.5)
+
+    local kicked = pcall(function()
+        LocalPlayer:Kick(kickMessage)
+    end)
+
+    if not kicked then
+        State.WeatherReconnectPending = true
+        local failed = false
+        local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
+            if player == LocalPlayer then
+                failed = true
+            end
+        end)
+
+        pcall(function()
+            TeleportService:Teleport(game.PlaceId, LocalPlayer)
+        end)
+
+        for _ = 1, 12 do
+            if failed then
+                break
+            end
+            task.wait(0.5)
+        end
+
+        failConn:Disconnect()
+        State.WeatherReconnectPending = false
+
+        if failed then
+            clearWeatherState()
+            Library:Notify('Weather dodge failed - could not leave server')
+        end
+    end
+end
+
+function setWeatherDodge(enabled)
+    State.WeatherMonitorStop = not enabled
+
+    if State.WeatherMonitorThread then
+        task.cancel(State.WeatherMonitorThread)
+        State.WeatherMonitorThread = nil
+    end
+
+    if not enabled then
+        updateWeatherLabels()
+        return
+    end
+
+    State.WeatherMonitorThread = task.spawn(function()
+        while not State.WeatherMonitorStop and not Library.Unloaded do
+            updateWeatherLabels()
+
+            if State.WeatherHiding then
+                if os.time() >= State.HideUntil then
+                    tryRejoinHome()
+                end
+            elseif Toggles.WeatherDodge and Toggles.WeatherDodge.Value then
+                local blocked = getBlockedWeathers()
+                local weatherName, endTime = findBlockedWeather(blocked)
+
+                if weatherName then
+                    leaveForWeather(weatherName, endTime)
+                end
+            end
+
+            task.wait(0.5)
+        end
+    end)
+end
+
+function savePositionToConfig(pos)
+    if not pos or not Options.SavedPosX then
+        return
+    end
+
+    Options.SavedPosX:SetValue(string.format('%.3f', pos.X))
+    Options.SavedPosY:SetValue(string.format('%.3f', pos.Y))
+    Options.SavedPosZ:SetValue(string.format('%.3f', pos.Z))
+end
+
+function loadPositionFromConfig()
+    if not Options.SavedPosX then
+        return
+    end
+
+    local x = tonumber(Options.SavedPosX.Value)
+    local y = tonumber(Options.SavedPosY.Value)
+    local z = tonumber(Options.SavedPosZ.Value)
+
+    if x and y and z then
+        State.SavedPosition = Vector3.new(x, y, z)
+    end
+end
+
+local Window = Library:CreateWindow({
+    Title = 'Grow a Garden 2 - Auto Farm',
+    Center = true,
+    AutoShow = true,
+    Size = UDim2.fromOffset(620, 580),
+    TabPadding = 8,
+    MenuFadeTime = 0.2,
+    ShowCustomCursor = false,
+    UnlockMouseWhileOpen = true,
+})
+
+Library.ShowCustomCursor = false
+
+task.spawn(function()
+    while not Library.Unloaded do
+        if not Library.Toggled then
+            UserInputService.MouseIconEnabled = true
+        end
+        task.wait(0.25)
+    end
+end)
+
+local Tabs = {
+    Main = Window:AddTab('Main'),
+    Fruits = Window:AddTab('Fruits'),
+    Mail = Window:AddTab('Mail'),
+    Settings = Window:AddTab('Settings'),
+}
+
+local GearBox = Tabs.Main:AddLeftGroupbox('Auto Gear')
+local StatsBox = Tabs.Main:AddLeftGroupbox('Stats')
+local WeatherBox = Tabs.Main:AddLeftGroupbox('Weather Dodge')
+local FarmBox = Tabs.Main:AddRightGroupbox('Auto Farm')
+local BuyBox = Tabs.Main:AddRightGroupbox('Auto Buy')
+
+local MailClaimBox = Tabs.Mail:AddLeftGroupbox('Auto Claim')
+local MailSendBox = Tabs.Mail:AddRightGroupbox('Send Gift')
+
+local FruitsBox = Tabs.Fruits:AddLeftGroupbox('Fruits')
+FruitsStatusLabel = FruitsBox:AddLabel('Auto-refreshes when you open this tab', true)
+FruitsBox:AddDropdown('GardenFruitList', {
+    Text = 'Fruits',
+    Values = { 'Open tab to load fruits' },
+    Multi = true,
+    Default = {},
+    Tooltip = 'Unharvested fruits at or above Max Harvest KG',
+})
+FruitsBox:AddButton({
+    Text = 'Claim Selected',
+    Func = function()
+        task.spawn(claimSelectedGardenFruits)
+    end,
+})
+hookFruitsTabAutoScan(Tabs.Fruits)
+
+local OptimizerBox = Tabs.Settings:AddLeftGroupbox('Optimizer')
+local MenuBox = Tabs.Settings:AddRightGroupbox('Menu')
+
+GearBox:AddButton({
+    Text = 'Save Current Position',
+    Func = function()
+        local root = getCharacter() and getCharacter():FindFirstChild('HumanoidRootPart')
+        if root then
+            State.SavedPosition = root.Position
+            savePositionToConfig(State.SavedPosition)
+            Library:Notify('Saved position for sprinkler & watering can')
+        else
+            Library:Notify('No character found')
+        end
+    end,
+})
+
+GearBox:AddInput('SavedPosX', {
+    Text = 'SavedPosX',
+    Default = '',
+    Visible = false,
+})
+
+GearBox:AddInput('SavedPosY', {
+    Text = 'SavedPosY',
+    Default = '',
+    Visible = false,
+})
+
+GearBox:AddInput('SavedPosZ', {
+    Text = 'SavedPosZ',
+    Default = '',
+    Visible = false,
+})
+
+for _, optionName in { 'SavedPosX', 'SavedPosY', 'SavedPosZ' } do
+    if Options[optionName] then
+        Options[optionName]:OnChanged(function()
+            loadPositionFromConfig()
+        end)
+    end
+end
+
+GearBox:AddToggle('Noclip', {
+    Text = 'Noclip',
+    Default = false,
+    Tooltip = 'Walk through walls and makes your plot plants invisible + non-collidable',
+    Callback = function(value)
+        task.defer(function()
+            setNoclip(value)
+        end)
+    end,
+})
+
+GearBox:AddToggle('AutoSprinkler', {
+    Text = 'Auto Super Sprinkler',
+    Default = false,
+    Tooltip = 'Keeps 1 Super Sprinkler active at your saved position',
+})
+
+GearBox:AddToggle('AutoWateringCan', {
+    Text = 'Auto Super Watering Can',
+    Default = false,
+    Tooltip = 'Uses 1 Super Watering Can at saved position on the interval below',
+    Callback = function(value)
+        setAutoWateringLoop(value)
+    end,
+})
+
+GearBox:AddInput('WateringCanInterval', {
+    Text = 'Watering Can Interval (s)',
+    Default = '10',
+    Numeric = true,
+    Finished = false,
+    Tooltip = 'Seconds between each Super Watering Can use (1-300)',
+})
+
+FarmBox:AddToggle('AutoHarvest', {
+    Text = 'Auto Harvest',
+    Default = false,
+    Callback = function(value)
+        setAutoHarvestLoop(value)
+    end,
+})
+
+FarmBox:AddInput('MaxHarvestKg', {
+    Text = 'Max Harvest KG',
+    Default = '50',
+    Numeric = true,
+    Finished = false,
+    Tooltip = 'Auto harvest/sell below this KG. Fruits tab shows fruits at or above this KG.',
+})
+
+if Options.MaxHarvestKg then
+    Options.MaxHarvestKg:OnChanged(function()
+        task.defer(refreshFruitsList)
+    end)
+end
+
+FarmBox:AddToggle('AutoSell', {
+    Text = 'Auto Sell',
+    Default = false,
+    Tooltip = 'Sells fruits below Max Harvest KG every 1s (uses SellAll, keeps heavy/favorite fruits)',
+    Callback = function(value)
+        setAutoSellLoop(value)
+    end,
+})
+
+WeatherBox:AddToggle('WeatherDodge', {
+    Text = 'Enable Weather Dodge',
+    Default = false,
+    Tooltip = 'Kicks you when a selected event starts. Click Leave, then the script auto-runs and rejoins your server when the event ends.',
+    Callback = function(value)
+        setWeatherDodge(value)
+    end,
+})
+
+WeatherBox:AddDropdown('BlockedWeathers', {
+    Text = 'Bad Events',
+    Values = BLOCKABLE_WEATHERS,
+    Multi = true,
+    Default = {},
+    Tooltip = 'Events + night moons (Gold, Blood, Mega). Rainbow covers Rainbow event and Rainbow Moon.',
+})
+
+WeatherStatusLabel = WeatherBox:AddLabel('Weather: Disabled', true)
+CurrentWeatherLabel = WeatherBox:AddLabel('Active Event: None', true)
+
+BuyBox:AddToggle('AutoBuy', {
+    Text = 'Enable Auto Buy',
+    Default = false,
+    Tooltip = 'Instantly buys selected items when they are in stock and you can afford them',
+    Callback = function(value)
+        setAutoBuyLoop(value)
+    end,
+})
+
+BuyBox:AddDropdown('AutoBuyGears', {
+    Text = 'Gears',
+    Values = BUY_GEARS,
+    Multi = true,
+    Default = {},
+})
+
+BuyBox:AddDropdown('AutoBuySeeds', {
+    Text = 'Seeds',
+    Values = BUY_SEEDS,
+    Multi = true,
+    Default = {},
+})
+
+BuyBox:AddDropdown('AutoBuyProps', {
+    Text = 'Props',
+    Values = BUY_PROPS,
+    Multi = true,
+    Default = {},
+})
+
+local EarningsLabel = StatsBox:AddLabel('Earnings/min: 0Â¢', true)
+local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
+
+OptimizerBox:AddToggle('Optimizer', {
+    Text = 'Enable Optimizer',
+    Default = false,
+    Tooltip = 'Elite optimizer: Anti LAG + FPS unlock + FPS booster, and hides all garden plants.',
+    Callback = function(value)
+        task.defer(function()
+            setOptimizer(value)
+        end)
+    end,
+})
+
+function shutdownScript()
+    if Library.Unloaded then
+        return
+    end
+
+    Library.Unloaded = true
+    State.WateringStop = true
+    State.WeatherMonitorStop = true
+    State.MailAutoClaimStop = true
+
+    pcall(stopPlantEffectMaintain)
+    pcall(setNoclip, false)
+    pcall(setOptimizer, false)
+    pcall(setAutoHarvestLoop, false)
+    pcall(setAutoWateringLoop, false)
+    pcall(setAutoBuyLoop, false)
+    pcall(setAutoSellLoop, false)
+    pcall(setWeatherDodge, false)
+    pcall(stopWeatherErrorReconnect)
+    pcall(stopMailAutoClaim)
+    pcall(setAntiAfk, false)
+    pcall(stopAutoExecute)
+
+    if State.LoadingDismissThread then
+        pcall(task.cancel, State.LoadingDismissThread)
+        State.LoadingDismissThread = nil
+    end
+
+    GENV.GG2_AutoFarmRunning = false
+end
+
+MenuBox:AddToggle('AntiAfk', {
+    Text = 'Anti AFK',
+    Default = true,
+    Tooltip = 'Prevents Roblox from kicking you for being idle.',
+    Callback = function(value)
+        setAntiAfk(value)
+    end,
+})
+
+MenuBox:AddLabel('Menu bind'):AddKeyPicker('MenuKeybind', {
+    Default = 'RightShift',
+    NoUI = true,
+    Text = 'Menu keybind',
+})
+
+Library.ToggleKeybind = Options.MenuKeybind
+
+MenuBox:AddButton({
+    Text = 'Unload Script',
+    Func = function()
+        shutdownScript()
+        pcall(function()
+            Library:Unload()
+        end)
+    end,
+})
+
+-- Mail UI (Linoria)
+local MailClaimStatus = MailClaimBox:AddLabel('Claimed: 0 | Failed: 0 | Status: Idle', true)
+local MailProgressLabel = MailClaimBox:AddLabel('Progress: -', true)
+
+function updateMailClaimLabels(running)
+    MailClaimStatus:SetText(string.format(
+        'Claimed: %d | Failed: %d | Status: %s',
+        State.MailTotals.Claimed or 0,
+        State.MailTotals.Failed or 0,
+        running and 'Running' or 'Idle'
+    ))
+end
+
+function stopMailAutoClaim()
+    State.MailAutoClaimStop = true
+    if State.MailAutoClaimThread then
+        pcall(task.cancel, State.MailAutoClaimThread)
+        State.MailAutoClaimThread = nil
+    end
+    updateMailClaimLabels(false)
+end
+
+MailClaimBox:AddToggle('MailAutoClaim', {
+    Text = 'Enable Auto Claim',
+    Default = false,
+    Tooltip = 'Auto claims mailbox gifts every 15 seconds',
+    Callback = function(value)
+        stopMailAutoClaim()
+
+        if not value then
+            return
+        end
+
+        State.MailAutoClaimStop = false
+        updateMailClaimLabels(true)
+
+        State.MailAutoClaimThread = task.spawn(function()
+            while not State.MailAutoClaimStop and not Library.Unloaded do
+                local claimed = claimAllInbox(function(i, total, fromName, ok)
+                    MailProgressLabel:SetText(string.format('Progress: %d/%d (from %s) %s', i, total, tostring(fromName), ok and 'OK' or 'FAIL'))
+                    updateMailClaimLabels(true)
+                end, 0.35, 2)
+
+                if claimed > 0 then
+                    Library:Notify(string.format('Mail: claimed %d gift(s)', claimed))
+                end
+
+                local waited = 0
+                while not State.MailAutoClaimStop and waited < 15 do
+                    task.wait(1)
+                    waited += 1
+                end
+            end
+        end)
+    end,
+})
+
+local RecipientBox = MailSendBox:AddInput('MailRecipient', {
+    Default = '',
+    Numeric = false,
+    Finished = false,
+    Text = 'Recipient (username or userId)',
+    Tooltip = 'Enter a username, display name, or userId',
+})
+
+local AmountBox = MailSendBox:AddInput('MailAmount', {
+    Default = '1',
+    Numeric = true,
+    Finished = false,
+    Text = 'Amount (bypasses 20 cap)',
+})
+
+local NoteBox = MailSendBox:AddInput('MailNote', {
+    Default = '',
+    Numeric = false,
+    Finished = false,
+    Text = 'Note (optional)',
+})
+
+local MailSelectedLabel = MailSendBox:AddLabel('Selected: none', true)
+local MailSendStatus = MailSendBox:AddLabel('Ready', true)
+
+local MailInventoryItems = {}
+local MailInventoryLabels = {}
+local SelectedMailItem
+
+function refreshMailInventory()
+    MailInventoryItems = getGiftableInventory()
+    MailInventoryLabels = {}
+    SelectedMailItem = nil
+
+    for _, item in ipairs(MailInventoryItems) do
+        table.insert(MailInventoryLabels, item.label)
+    end
+
+    if Options and Options.MailInventory then
+        Options.MailInventory.Values = MailInventoryLabels
+        Options.MailInventory:SetValues(MailInventoryLabels)
+        Options.MailInventory:SetValue(MailInventoryLabels[1] or '')
+    end
+
+    if #MailInventoryLabels == 0 then
+        MailSelectedLabel:SetText('Selected: none (empty)')
+    end
+
+    local fruitCount = 0
+    for _, item in ipairs(MailInventoryItems) do
+        if item.category == 'HarvestedFruits' then
+            fruitCount += 1
+        end
+    end
+    MailSendStatus:SetText(string.format('Inventory loaded (%d items, %d fruits)', #MailInventoryItems, fruitCount))
+end
+
+MailSendBox:AddDropdown('MailInventory', {
+    Text = 'Inventory item',
+    Values = { },
+    Default = '',
+    Multi = false,
+    Tooltip = 'Select an item to gift',
+    Callback = function(value)
+        SelectedMailItem = nil
+        for _, item in ipairs(MailInventoryItems) do
+            if item.label == value then
+                SelectedMailItem = item
+                break
+            end
+        end
+
+        if SelectedMailItem then
+            local displayCategory = SelectedMailItem.category
+            if displayCategory == 'HarvestedFruits' then
+                displayCategory = 'Fruits'
+            elseif displayCategory == 'WateringCans' then
+                displayCategory = 'Cans'
+            end
+            MailSelectedLabel:SetText(string.format('Selected: %s / %s (%d)', displayCategory, SelectedMailItem.key, SelectedMailItem.count))
+        else
+            MailSelectedLabel:SetText('Selected: none')
+        end
+    end,
+})
+
+MailSendBox:AddButton({
+    Text = 'Refresh Inventory',
+    Func = function()
+        refreshMailInventory()
+        MailSendStatus:SetText('Inventory refreshed')
+    end,
+})
+
+MailSendBox:AddButton({
+    Text = 'Send Gift',
+    Func = function()
+        MailSendStatus:SetText('Sending...')
+
+        task.spawn(function()
+            local recipientId, err = resolveRecipientId(RecipientBox.Value)
+            if not recipientId then
+                MailSendStatus:SetText('Error: ' .. tostring(err or 'Invalid recipient'))
+                return
+            end
+
+            local ok, msg = sendGiftBatch(recipientId, SelectedMailItem, AmountBox.Value, NoteBox.Value)
+            MailSendStatus:SetText((ok and 'OK: ' or 'Error: ') .. tostring(msg))
+
+            if ok then
+                refreshMailInventory()
+            end
+        end)
+    end,
+})
+
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({})
+ThemeManager:SetFolder('GrowGarden2AutoFarm')
+SaveManager:SetFolder('GrowGarden2AutoFarm')
+SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:ApplyToTab(Tabs.Settings)
+
+loadWeatherState()
+setupWeatherErrorReconnect()
+
+if State.ReturnPlaceId and game.PlaceId == State.ReturnPlaceId then
+    if not State.WeatherHiding or os.time() >= State.HideUntil then
+        clearRejoinTarget()
+    end
+elseif State.WeatherHiding and State.ReturnJobId == game.JobId then
+    if os.time() >= State.HideUntil then
+        clearRejoinTarget()
+    end
+elseif State.WeatherHiding then
+    startWeatherRejoinWorker()
+end
+
+setupAutoExecute()
+startLoadingScreenAutoDismiss()
+
+local remoteOk, remoteStatus = syncWorkspaceFromRemote()
+State.RemoteSyncStatus = remoteStatus
+
+if not getQueueOnTeleport() then
+    task.defer(function()
+        if Library and Library.Notify then
+            Library:Notify('Auto-exec needs queue_on_teleport (Potassium supports this)')
+        end
+    end)
+elseif not remoteOk and not persistAutoFarmScript() then
+    task.defer(function()
+        if Library and Library.Notify then
+            Library:Notify('Could not sync script to workspace. Check GitHub URL or run loader.lua')
+        end
+    end)
+end
+
+task.defer(function()
+    SaveManager:LoadAutoloadConfig()
+    if Options.MenuKeybind then
+        Library.ToggleKeybind = Options.MenuKeybind
+    end
+    if remoteStatus == 'updated' and Library and Library.Notify then
+        Library:Notify('Script updated from GitHub')
+    end
+    if Toggles.AntiAfk and Toggles.AntiAfk.Value then
+        setAntiAfk(true)
+    end
+    task.wait(0.25)
+    loadPositionFromConfig()
+
+    if Toggles.AutoWateringCan and Toggles.AutoWateringCan.Value then
+        setAutoWateringLoop(true)
+    end
+    if Toggles.AutoSell and Toggles.AutoSell.Value then
+        setAutoSellLoop(true)
+    end
+    if Toggles.AutoBuy and Toggles.AutoBuy.Value then
+        setAutoBuyLoop(true)
+    end
+    if Toggles.WeatherDodge and Toggles.WeatherDodge.Value then
+        setWeatherDodge(true)
+    elseif State.WeatherHiding and os.time() < State.HideUntil then
+        setWeatherDodge(true)
+    elseif State.WeatherHiding and os.time() >= State.HideUntil then
+        tryRejoinHome()
+    end
+
+    task.wait(1.5)
+
+    if Toggles.AutoHarvest and Toggles.AutoHarvest.Value then
+        setAutoHarvestLoop(true)
+    end
+
+    if Toggles.Noclip and Toggles.Noclip.Value then
+        task.spawn(function()
+            setNoclip(true)
+        end)
+    end
+
+    task.wait(1)
+
+    if Toggles.Optimizer and Toggles.Optimizer.Value then
+        task.spawn(function()
+            setOptimizer(true)
+        end)
+    end
+
+    task.wait(0.1)
+    pcall(refreshMailInventory)
+    updateWeatherLabels()
+    doStartupWalk()
+end)
+
+LocalPlayer.CharacterAdded:Connect(function()
+    if Toggles.Noclip and Toggles.Noclip.Value then
+        task.wait(0.1)
+        setNoclip(true)
+    end
+end)
+
+LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
+    if Toggles.Noclip and Toggles.Noclip.Value then
+        task.defer(function()
+            setNoclip(true)
+        end)
+    end
+end)
+
+Library:OnUnload(function()
+    shutdownScript()
+end)
+
+task.spawn(function()
+    while not Library.Unloaded do
+        if Toggles.AutoSprinkler and Toggles.AutoSprinkler.Value then
+            placeSuperSprinkler()
+        end
+
+        updateWeatherLabels()
+
+        EarningsLabel:SetText('Earnings/min: ' .. abbreviate(getEarningsPerMinute()))
+
+        local active, _, _, remaining = getActiveSuperSprinkler()
+        if active then
+            SprinklerLabel:SetText(string.format('Sprinkler: Active (%ds left)', math.floor(remaining)))
+        else
+            SprinklerLabel:SetText('Sprinkler: None')
+        end
+
+        task.wait(0.5)
+    end
+end)
+
+Library:Notify('Grow a Garden 2 Auto Farm loaded! Save your position first.')
