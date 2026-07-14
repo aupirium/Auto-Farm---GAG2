@@ -3821,6 +3821,41 @@ function getOutsideWalkTarget(basePos, standoff)
     return Vector3.new(basePos.X + standoff, basePos.Y, basePos.Z)
 end
 
+function getWeatherClock()
+    local ok, now = pcall(function()
+        return workspace:GetServerTimeNow()
+    end)
+
+    return ok and now or os.time()
+end
+
+function normalizeWeatherHideUntil(endTime)
+    local now = getWeatherClock()
+    local value = tonumber(endTime)
+
+    if not value or value <= 0 then
+        return now + 120
+    end
+
+    if value <= now then
+        if value >= 30 and value <= 86400 then
+            return now + value
+        end
+
+        return now + 120
+    end
+
+    if value - now < 30 then
+        return now + 30
+    end
+
+    return value
+end
+
+function isWeatherHideTimerElapsed()
+    return getWeatherClock() >= (State.HideUntil or 0)
+end
+
 function saveWeatherState()
     local savedPos = State.SavedPosition
     local data = {
@@ -4193,7 +4228,7 @@ function shouldHandleWeatherReconnectError()
         return false
     end
 
-    if os.time() < (saved.HideUntil or 0) then
+    if getWeatherClock() < (saved.HideUntil or 0) then
         return false
     end
 
@@ -4278,12 +4313,12 @@ function stopWeatherErrorReconnect()
 end
 
 function startWeatherHideWait()
-    if not State.WeatherHiding or os.time() >= State.HideUntil then
+    if not State.WeatherHiding or isWeatherHideTimerElapsed() then
         return
     end
 
     task.spawn(function()
-        while State.WeatherHiding and os.time() < State.HideUntil do
+        while State.WeatherHiding and not isWeatherHideTimerElapsed() do
             task.wait(1)
             updateWeatherLabels()
         end
@@ -4314,7 +4349,7 @@ function startWeatherRejoinWorker()
     end
 
     if game.PlaceId == State.ReturnPlaceId and (not State.ReturnJobId or game.JobId == State.ReturnJobId) then
-        if os.time() >= State.HideUntil then
+        if isWeatherHideTimerElapsed() then
             tryRejoinHome()
         else
             startWeatherHideWait()
@@ -4323,7 +4358,7 @@ function startWeatherRejoinWorker()
     end
 
     task.spawn(function()
-        while State.WeatherHiding and os.time() < State.HideUntil do
+        while State.WeatherHiding and not isWeatherHideTimerElapsed() do
             task.wait(1)
             updateWeatherLabels()
         end
@@ -4344,8 +4379,7 @@ function getActiveNightMoon()
     local activeWeather = workspace:GetAttribute('ActiveWeather')
     if activeWeather and NIGHT_MOON_GAME_NAMES[activeWeather] then
         local phaseEnd = workspace:GetAttribute('PhaseDuration')
-        local endTime = typeof(phaseEnd) == 'number' and phaseEnd or (os.time() + 120)
-        return activeWeather, endTime
+        return activeWeather, normalizeWeatherHideUntil(phaseEnd)
     end
 
     return nil
@@ -4369,7 +4403,9 @@ function getActiveEventWeathers()
 
     for _, weatherName in EVENT_WEATHERS do
         if WeatherValues:GetAttribute(weatherName .. '_Playing') == true then
-            active[weatherName] = WeatherValues:GetAttribute(weatherName .. '_EndTime') or 0
+            active[weatherName] = normalizeWeatherHideUntil(
+                WeatherValues:GetAttribute(weatherName .. '_EndTime')
+            )
         end
     end
 
@@ -4424,7 +4460,7 @@ function updateWeatherLabels()
     end
 
     if State.WeatherHiding then
-        local remaining = math.max(0, State.HideUntil - os.time())
+        local remaining = math.max(0, State.HideUntil - getWeatherClock())
         WeatherStatusLabel:SetText(string.format('Weather: Hiding from %s (%ds)', State.HidingFromWeather or '?', remaining))
     elseif Toggles.WeatherDodge and Toggles.WeatherDodge.Value then
         WeatherStatusLabel:SetText('Weather: Watching')
@@ -4483,6 +4519,16 @@ function forceLeaveServer(kickMessage)
 
     task.wait(0.35)
 
+    local kickOk = pcall(function()
+        LocalPlayer:Kick(kickMessage or '[AutoRejoin] Leaving for weather dodge')
+    end)
+
+    if kickOk then
+        return true
+    end
+
+    State.WeatherKickPending = false
+
     local failed = false
     local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
         if player == LocalPlayer then
@@ -4508,20 +4554,13 @@ function forceLeaveServer(kickMessage)
         return true
     end
 
-    local kicked = pcall(function()
-        LocalPlayer:Kick(kickMessage)
-    end)
-
-    if not kicked then
-        State.WeatherReconnectPending = false
-        State.WeatherKickPending = false
-        if Library and Library.Notify then
-            Library:Notify('Weather dodge failed - could not leave server')
-        end
-        return false
+    State.WeatherReconnectPending = false
+    State.WeatherKickPending = false
+    if Library and Library.Notify then
+        Library:Notify('Weather dodge failed - could not leave server')
     end
 
-    return true
+    return false
 end
 
 function retryLeaveIfStillHome()
@@ -4534,9 +4573,9 @@ function retryLeaveIfStillHome()
     end
     State.LastWeatherLeaveAttempt = os.clock()
 
-    local remaining = math.max(0, State.HideUntil - os.time())
+    local remaining = math.max(0, State.HideUntil - getWeatherClock())
     local kickMessage = string.format(
-        '[AutoRejoin] %s detected - auto rejoining in %ds.',
+        '[AutoRejoin] %s detected - kicked. Auto-return in %ds.',
         State.HidingFromWeather or 'Weather',
         math.max(remaining, 30)
     )
@@ -4554,13 +4593,17 @@ function leaveForWeather(weatherGameName, endTime)
     State.HidingFromWeather = getWeatherDisplayName(weatherGameName)
     State.ReturnPlaceId = game.PlaceId
     State.ReturnJobId = game.JobId
-    State.HideUntil = math.max(tonumber(endTime) or 0, os.time() + 30)
+    State.HideUntil = normalizeWeatherHideUntil(endTime)
     saveWeatherReturnPosition()
     saveAutoExecWalkState()
     saveWeatherState()
 
-    local remaining = math.max(30, State.HideUntil - os.time())
-    local kickMessage = string.format('[AutoRejoin] %s detected - auto rejoining in %ds.', weatherGameName, remaining)
+    local remaining = math.max(30, State.HideUntil - getWeatherClock())
+    local kickMessage = string.format(
+        '[AutoRejoin] %s detected - kicked. Auto-return in %ds.',
+        getWeatherDisplayName(weatherGameName),
+        remaining
+    )
 
     saveWeatherState()
 
@@ -4595,9 +4638,7 @@ function setWeatherDodge(enabled)
             if State.WeatherHiding then
                 if isStillOnWeatherHomeServer() then
                     retryLeaveIfStillHome()
-                end
-
-                if os.time() >= State.HideUntil then
+                elseif isWeatherHideTimerElapsed() then
                     tryRejoinHome()
                 end
             elseif Toggles.WeatherDodge and Toggles.WeatherDodge.Value then
@@ -5172,17 +5213,23 @@ setupWeatherErrorReconnect()
 setupAuctionNetworking()
 
 if State.WeatherHiding then
-    if os.time() < State.HideUntil then
+    if not isWeatherHideTimerElapsed() then
         if isStillOnWeatherHomeServer() then
             task.defer(function()
                 retryLeaveIfStillHome()
             end)
         end
         startWeatherHideWait()
-    elseif game.PlaceId ~= State.ReturnPlaceId or (State.ReturnJobId and game.JobId ~= State.ReturnJobId) then
+    elseif not isStillOnWeatherHomeServer() then
         startWeatherRejoinWorker()
     else
-        tryRejoinHome()
+        task.defer(function()
+            forceLeaveServer(string.format(
+                '[AutoRejoin] %s detected - kicked. Auto-return in %ds.',
+                State.HidingFromWeather or 'Weather',
+                120
+            ))
+        end)
     end
 elseif State.ReturnPlaceId and game.PlaceId == State.ReturnPlaceId then
     if not State.PendingWalkToSaved
@@ -5256,10 +5303,12 @@ task.defer(function()
     task.defer(requestAuctionSnapshot)
     if Toggles.WeatherDodge and Toggles.WeatherDodge.Value then
         setWeatherDodge(true)
-    elseif State.WeatherHiding and os.time() < State.HideUntil then
+    elseif State.WeatherHiding and not isWeatherHideTimerElapsed() then
         setWeatherDodge(true)
-    elseif State.WeatherHiding and os.time() >= State.HideUntil then
+    elseif State.WeatherHiding and isWeatherHideTimerElapsed() and not isStillOnWeatherHomeServer() then
         tryRejoinHome()
+    elseif State.WeatherHiding and isWeatherHideTimerElapsed() and isStillOnWeatherHomeServer() then
+        setWeatherDodge(true)
     end
 
     task.wait(1.5)
