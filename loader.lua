@@ -3,7 +3,12 @@
 
 local GENV = getgenv()
 local queuedAutoExec = GENV.GG2_FromAutoExec == true
-GENV.GG2_AutoFarmRunning = nil
+
+if GENV.GG2_AutoFarmShutdown then
+    pcall(GENV.GG2_AutoFarmShutdown)
+    task.wait(0.05)
+end
+
 GENV.GG2_SkipRemoteUpdate = nil
 if not queuedAutoExec then
     GENV.GG2_FromAutoExec = nil
