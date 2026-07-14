@@ -156,6 +156,9 @@ local AUTO_FARM_SCRIPT = 'grow_garden_autofarm.lua'
 local GG2_SCRIPT_PATH = 'GG2/grow_garden_autofarm.lua'
 local GG2_TELEPORT_SCRIPT = 'GG2/teleport.lua'
 local GG2_AUTEXEC_FILE = 'GG2/autexec.txt'
+local GG2_AUTORUN_FILE = 'GG2/autorun.txt'
+local GG2_POTASSIUM_AUTOEXEC = 'autoexec/GG2_AutoFarm.lua'
+local GG2_PLACE_ID = 97598239454123
 local GG2_REPO = 'aupirium/Auto-Farm---GAG2'
 local GG2_LOADER_URL = 'https://raw.githubusercontent.com/' .. GG2_REPO .. '/'
 
@@ -194,6 +197,20 @@ function ensureGg2Folders()
         if not isfolder('GG2') then
             makefolder('GG2')
         end
+        if not isfolder('autoexec') then
+            makefolder('autoexec')
+        end
+    end)
+end
+
+function enableGg2AutoRun()
+    if not writefile then
+        return false
+    end
+
+    ensureGg2Folders()
+    return pcall(function()
+        writefile(GG2_AUTORUN_FILE, tostring(os.time()))
     end)
 end
 
@@ -3052,8 +3069,10 @@ local CurrentWeatherLabel
 
 function getQueueOnTeleport()
     return queue_on_teleport
+        or queueteleport
         or (syn and syn.queue_on_teleport)
         or (fluxus and fluxus.queue_on_teleport)
+        or (getgenv().queue_on_teleport)
         or (getgenv().queueteleport)
         or (getgenv().queueonteleport)
 end
@@ -3266,7 +3285,7 @@ function doStartupWalk()
     end)
 end
 
-function getAutoExecQueueScript()
+function getAutoExecBootstrapScript()
     return string.format([[
 repeat task.wait() until game:IsLoaded()
 
@@ -3277,13 +3296,20 @@ local isfile = isfile or function(file)
     return suc and res ~= nil and res ~= ''
 end
 
-getgenv().GG2_AutoFarmRunning = nil
-getgenv().GG2_FromAutoExec = true
+local function stripBom(src)
+    while src and src:byte(1) == 0xEF and src:byte(2) == 0xBB and src:byte(3) == 0xBF do
+        src = src:sub(4)
+    end
+    return src
+end
 
 local function requeue()
     local queue = queue_on_teleport
+        or queueteleport
         or (syn and syn.queue_on_teleport)
         or (fluxus and fluxus.queue_on_teleport)
+        or (getgenv().queue_on_teleport)
+        or (getgenv().queueteleport)
     if queue and isfile('GG2/autexec.txt') then
         local ok, src = pcall(readfile, 'GG2/autexec.txt')
         if ok and src and src ~= '' then
@@ -3294,10 +3320,64 @@ local function requeue()
     end
 end
 
+local function runLoader()
+    getgenv().GG2_AutoFarmRunning = nil
+    getgenv().GG2_FromAutoExec = true
+    getgenv().GG2_SkipRemoteUpdate = true
+
+    if isfile('loader.lua') then
+        local ok, src = pcall(readfile, 'loader.lua')
+        if ok and src and src ~= '' then
+            local func = loadstring(stripBom(src), 'loader.lua')
+            if func then
+                func()
+                return true
+            end
+        end
+    end
+
+    for _, path in ipairs({ 'grow_garden_autofarm.lua', 'GG2/grow_garden_autofarm.lua' }) do
+        if isfile(path) then
+            local ok, src = pcall(readfile, path)
+            if ok and src and src ~= '' then
+                local func = loadstring(stripBom(src), path)
+                if func then
+                    func()
+                    return true
+                end
+            end
+        end
+    end
+
+    local commit = 'main'
+    pcall(function()
+        if isfile('GG2/commit.txt') then
+            commit = readfile('GG2/commit.txt'):gsub('%%s+', '')
+        end
+    end)
+    if commit == '' then
+        commit = 'main'
+    end
+
+    local ok, src = pcall(function()
+        return game:HttpGet(%q .. commit .. '/loader.lua', true)
+    end)
+    if ok and src and src ~= '' and src ~= '404: Not Found' then
+        local func = loadstring(stripBom(src), 'loader.lua')
+        if func then
+            func()
+            return true
+        end
+    end
+
+    return false
+end
+
 local HttpService = game:GetService('HttpService')
 local TeleportService = game:GetService('TeleportService')
 local Players = game:GetService('Players')
 local STATE_FILE = %q
+local GAG2_PLACE_ID = %d
 
 local function readState()
     if not (readfile and isfile(STATE_FILE)) then
@@ -3314,6 +3394,17 @@ local function readState()
 end
 
 local saved = readState()
+local hasAutorun = isfile('GG2/autorun.txt')
+local hasWeatherJob = saved and saved.ReturnPlaceId
+
+if not hasAutorun and not hasWeatherJob then
+    return
+end
+
+if hasAutorun and not hasWeatherJob and game.PlaceId ~= GAG2_PLACE_ID then
+    return
+end
+
 if saved and saved.Hiding == true then
     while os.time() < (saved.HideUntil or 0) do
         task.wait(1)
@@ -3344,18 +3435,12 @@ if saved and saved.ReturnPlaceId then
     end
 end
 
-local commit = 'main'
-pcall(function()
-    if isfile('GG2/commit.txt') then
-        commit = readfile('GG2/commit.txt'):gsub('%%s+', '')
-    end
-end)
-if commit == '' then
-    commit = 'main'
+runLoader()
+]], GG2_LOADER_URL, WEATHER_STATE_FILE, GG2_PLACE_ID)
 end
 
-loadstring(game:HttpGet(%q .. commit .. '/loader.lua', true))()
-]], WEATHER_STATE_FILE, GG2_LOADER_URL)
+function getAutoExecQueueScript()
+    return getAutoExecBootstrapScript()
 end
 
 function writeAutoExecScript()
@@ -3364,10 +3449,11 @@ function writeAutoExecScript()
     end
 
     ensureGg2Folders()
-    local source = stripBom(getAutoExecQueueScript())
+    local source = stripBom(getAutoExecBootstrapScript())
     return pcall(function()
         writefile(GG2_AUTEXEC_FILE, source)
         writefile(GG2_TELEPORT_SCRIPT, source)
+        writefile(GG2_POTASSIUM_AUTOEXEC, source)
     end)
 end
 
@@ -3384,7 +3470,7 @@ function queueTeleportScript()
     persistAutoFarmScript()
     writeAutoExecScript()
 
-    local source = stripBom(getAutoExecQueueScript())
+    local source = stripBom(getAutoExecBootstrapScript())
     if isfile(GG2_AUTEXEC_FILE) then
         local ok, fileSource = pcall(readfile, GG2_AUTEXEC_FILE)
         if ok and fileSource and fileSource ~= '' then
@@ -3399,6 +3485,7 @@ end
 
 function setupAutoExecute()
     ensureGg2Folders()
+    enableGg2AutoRun()
     persistAutoFarmScript()
     writeAutoExecScript()
 
@@ -3794,6 +3881,8 @@ function leaveForWeather(weatherGameName, endTime)
     saveAutoExecWalkState()
     saveWeatherState()
     persistAutoFarmScript()
+    enableGg2AutoRun()
+    writeAutoExecScript()
     queueTeleportScript()
 
     local remaining = math.max(30, State.HideUntil - os.time())
@@ -4390,6 +4479,15 @@ end
 setupAutoExecute()
 startLoadingScreenAutoDismiss()
 persistAutoFarmScript()
+
+if writefile then
+    local autoExecOk = select(1, writeAutoExecScript())
+    if autoExecOk and Library and Library.Notify then
+        task.defer(function()
+            Library:Notify('Auto-exec installed (Potassium autoexec + queue_on_teleport)')
+        end)
+    end
+end
 
 task.spawn(function()
     local remoteOk, remoteStatus = tryUpdateFromRemote()
