@@ -440,6 +440,8 @@ local GearShopData = require(ReplicatedStorage.SharedModules.GearShopData)
 local SeedData = require(ReplicatedStorage.SharedModules.SeedData)
 local SellValueData = require(ReplicatedStorage.SharedModules.SellValueData)
 local MutationData = require(ReplicatedStorage.SharedModules.MutationData)
+local AuctioneerModule = require(ReplicatedStorage.SharedModules.Auctioneer)
+local AuctioneerFlags = require(ReplicatedStorage.SharedModules.Flags.AuctioneerFlags)
 
 local GardenSync = require(PlayerScripts.Controllers.GardenSyncController)
 local FruitVisualizer = require(PlayerScripts.Controllers.FruitVisualizerController)
@@ -485,12 +487,21 @@ local BUY_PROPS = {}
 local GearPrices = {}
 local SeedPrices = {}
 
-for _, entry in GearShopData.Data do
-    GearPrices[entry.ItemName] = entry.Cost
+local function isShecklesGearEntry(entry)
+    if entry.ItemType == 'PetTeleporter' then
+        return false
+    end
 
-    -- Only include George shop (sheckles) gear items.
-    -- Robux-only items have PriceInRobux set (e.g. Pet Teleporters).
-    if not entry.PriceInRobux then
+    if type(entry.Cost) ~= 'number' or entry.Cost <= 0 then
+        return false
+    end
+
+    return true
+end
+
+for _, entry in GearShopData.Data do
+    if isShecklesGearEntry(entry) then
+        GearPrices[entry.ItemName] = entry.Cost
         table.insert(BUY_GEARS, entry.ItemName)
     end
 end
@@ -559,6 +570,13 @@ local State = {
     LastWeatherReconnectAttempt = 0,
     AutoBuyThread = nil,
     AutoBuyTracker = {},
+    AutoAuctionThread = nil,
+    AuctionLots = {},
+    AuctionStock = {},
+    AuctionPurchaseTimes = {},
+    AuctionPurchaseCooldowns = {},
+    AuctionLastSnapshot = 0,
+    AuctionNetworkingReady = false,
     MailAutoClaimStop = false,
     MailAutoClaimThread = nil,
     MailTotals = { Claimed = 0, Failed = 0 },
@@ -2430,6 +2448,217 @@ function setAutoBuyLoop(enabled)
     end)
 end
 
+function getAuctionServerNow()
+    local ok, now = pcall(function()
+        return workspace:GetServerTimeNow()
+    end)
+
+    return ok and now or os.time()
+end
+
+function isAuctionShopActive()
+    local override = workspace:GetAttribute('AuctionStandOverride')
+    if override == 'on' then
+        return true
+    end
+    if override == 'off' then
+        return false
+    end
+
+    return AuctioneerFlags.Enabled:Get() and AuctioneerFlags.OpenEnabled:Get()
+end
+
+function applyAuctionSnapshot(snapshot)
+    if type(snapshot) ~= 'table' then
+        return
+    end
+
+    local lots = {}
+    local manifest = snapshot.manifest
+    if type(manifest) == 'table' and type(manifest.lots) == 'table' then
+        for _, lot in manifest.lots do
+            if type(lot) == 'table' and type(lot.lotId) == 'string' then
+                table.insert(lots, lot)
+            end
+        end
+    end
+
+    State.AuctionLots = lots
+
+    if type(snapshot.stock) == 'table' then
+        State.AuctionStock = snapshot.stock
+    end
+
+    State.AuctionLastSnapshot = os.clock()
+end
+
+function applyAuctionStockUpdate(update)
+    if type(update) ~= 'table' then
+        return
+    end
+
+    if type(update.stock) == 'table' then
+        State.AuctionStock = update.stock
+    end
+end
+
+function requestAuctionSnapshot()
+    local ok, snapshot = pcall(function()
+        return Networking.Auctioneer.RequestSnapshot:Fire()
+    end)
+
+    if ok and type(snapshot) == 'table' then
+        applyAuctionSnapshot(snapshot)
+        return true
+    end
+
+    return false
+end
+
+function setupAuctionNetworking()
+    if State.AuctionNetworkingReady then
+        return
+    end
+
+    State.AuctionNetworkingReady = true
+
+    Networking.Auctioneer.Snapshot.OnClientEvent:Connect(function(snapshot)
+        applyAuctionSnapshot(snapshot)
+    end)
+
+    Networking.Auctioneer.StockUpdate.OnClientEvent:Connect(function(update)
+        applyAuctionStockUpdate(update)
+    end)
+
+    task.defer(function()
+        requestAuctionSnapshot()
+    end)
+end
+
+function getAuctionPriceLimit()
+    if not Options or not Options.AuctionPrice then
+        return 0
+    end
+
+    return tonumber(Options.AuctionPrice.Value) or 0
+end
+
+function getAuctionPriceMode()
+    if not Options or not Options.AuctionPriceMode then
+        return 'Below'
+    end
+
+    return Options.AuctionPriceMode.Value or 'Below'
+end
+
+function matchesAuctionPriceFilter(price)
+    local limit = getAuctionPriceLimit()
+    if limit <= 0 then
+        return true
+    end
+
+    local mode = getAuctionPriceMode()
+    if mode == 'Above' then
+        return price >= limit
+    end
+    if mode == 'At' then
+        return price == limit
+    end
+
+    return price <= limit
+end
+
+function canPurchaseAuctionLot(lotId)
+    local debounce = AuctioneerFlags.PurchaseDebounceSeconds:Get()
+    local lastPurchase = State.AuctionPurchaseTimes[lotId]
+    if lastPurchase and debounce > 0 and os.clock() - lastPurchase < debounce then
+        return false
+    end
+
+    local cooldownUntil = State.AuctionPurchaseCooldowns[lotId] or 0
+    if os.clock() < cooldownUntil then
+        return false
+    end
+
+    return true
+end
+
+function tryPurchaseAuctionLot(lot, stock)
+    if lot.robuxPrice ~= nil then
+        return
+    end
+
+    local lotId = lot.lotId
+    if not lotId or not canPurchaseAuctionLot(lotId) then
+        return
+    end
+
+    local now = getAuctionServerNow()
+    if not AuctioneerModule.IsActive(lot, now, stock) then
+        return
+    end
+
+    local price = AuctioneerModule.CurrentPrice(lot, now)
+    if not price or price <= 0 then
+        return
+    end
+
+    if not matchesAuctionPriceFilter(price) then
+        return
+    end
+
+    if not canAfford(price) then
+        return
+    end
+
+    State.AuctionPurchaseTimes[lotId] = os.clock()
+
+    local cooldown = AuctioneerFlags.PurchaseCooldownSeconds:Get()
+    if cooldown > 0 then
+        State.AuctionPurchaseCooldowns[lotId] = os.clock() + cooldown
+    end
+
+    pcall(function()
+        Networking.Auctioneer.PurchaseLot:Fire(lotId, price)
+    end)
+end
+
+function runAutoAuction()
+    if not isAuctionShopActive() then
+        return
+    end
+
+    if os.clock() - (State.AuctionLastSnapshot or 0) > 2 then
+        requestAuctionSnapshot()
+    end
+
+    local stock = State.AuctionStock or {}
+    for _, lot in State.AuctionLots or {} do
+        tryPurchaseAuctionLot(lot, stock[lot.lotId])
+    end
+end
+
+function setAutoAuctionLoop(enabled)
+    if State.AutoAuctionThread then
+        pcall(task.cancel, State.AutoAuctionThread)
+        State.AutoAuctionThread = nil
+    end
+
+    if not enabled then
+        return
+    end
+
+    setupAuctionNetworking()
+
+    State.AutoAuctionThread = task.spawn(function()
+        while not Library.Unloaded and Toggles.AutoBuyAuction and Toggles.AutoBuyAuction.Value do
+            runAutoAuction()
+            task.wait(0.5)
+        end
+        State.AutoAuctionThread = nil
+    end)
+end
+
 function recordEarnings(amount)
     if not amount or amount <= 0 then
         return
@@ -3870,6 +4099,7 @@ local StatsBox = Tabs.Main:AddLeftGroupbox('Stats')
 local WeatherBox = Tabs.Main:AddLeftGroupbox('Weather Dodge')
 local FarmBox = Tabs.Main:AddRightGroupbox('Auto Farm')
 local BuyBox = Tabs.Main:AddRightGroupbox('Auto Buy')
+local AuctionBox = Tabs.Main:AddRightGroupbox('Auto Auction')
 
 local MailClaimBox = Tabs.Mail:AddLeftGroupbox('Auto Claim')
 local MailSendBox = Tabs.Mail:AddRightGroupbox('Send Gift')
@@ -4049,6 +4279,29 @@ BuyBox:AddDropdown('AutoBuyProps', {
     Default = {},
 })
 
+AuctionBox:AddDropdown('AuctionPriceMode', {
+    Text = 'Auction Price Mode',
+    Values = { 'Below', 'Above', 'At' },
+    Default = 'Below',
+    Tooltip = 'Below = buy when price is at or under your limit. Above = at or over. At = exact price.',
+})
+
+AuctionBox:AddInput('AuctionPrice', {
+    Text = 'Auction Price',
+    Default = '0',
+    Numeric = true,
+    Tooltip = 'Price filter in sheckles. Set 0 to buy any lot you can afford.',
+})
+
+AuctionBox:AddToggle('AutoBuyAuction', {
+    Text = 'Auto Buy Auction',
+    Default = false,
+    Tooltip = 'Auto-buys auction lots with sheckles when stock is available and price matches your filter',
+    Callback = function(value)
+        setAutoAuctionLoop(value)
+    end,
+})
+
 local EarningsLabel = StatsBox:AddLabel('Earnings/min: 0Â¢', true)
 local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 
@@ -4079,6 +4332,7 @@ function shutdownScript()
     pcall(setAutoHarvestLoop, false)
     pcall(setAutoWateringLoop, false)
     pcall(setAutoBuyLoop, false)
+    pcall(setAutoAuctionLoop, false)
     pcall(setAutoSellLoop, false)
     pcall(setWeatherDodge, false)
     pcall(stopWeatherErrorReconnect)
@@ -4377,6 +4631,9 @@ task.defer(function()
     end
     if Toggles.AutoBuy and Toggles.AutoBuy.Value then
         setAutoBuyLoop(true)
+    end
+    if Toggles.AutoBuyAuction and Toggles.AutoBuyAuction.Value then
+        setAutoAuctionLoop(true)
     end
     if Toggles.WeatherDodge and Toggles.WeatherDodge.Value then
         setWeatherDodge(true)
