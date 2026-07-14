@@ -1,17 +1,20 @@
 -- Grow a Garden 2 Auto Farm loader
--- Users run: loadstring(game:HttpGet('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/loader.lua'))()
+-- loadstring(game:HttpGet('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/loader.lua', true))()
 
 local GENV = getgenv()
 GENV.GG2_AutoFarmRunning = nil
 GENV.GG2_SkipRemoteUpdate = nil
 
-local SCRIPT_URLS = {
-    'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/gag2.lua',
-    'https://cdn.jsdelivr.net/gh/aupirium/Auto-Farm---GAG2@main/gag2.lua',
-}
-GENV.GG2_ScriptUrl = SCRIPT_URLS[1]
+local REPO = 'aupirium/Auto-Farm---GAG2'
+local SCRIPT_FILE = 'gag2.lua'
+local COMMIT_FILE = 'GG2/commit.txt'
 
-local HttpService = game:GetService('HttpService')
+local isfile = isfile or function(file)
+    local suc, res = pcall(function()
+        return readfile(file)
+    end)
+    return suc and res ~= nil and res ~= ''
+end
 
 local function stripBom(source)
     if type(source) ~= 'string' or source == '' then
@@ -25,115 +28,81 @@ local function stripBom(source)
     return source
 end
 
-local function isBadBody(body)
-    return type(body) ~= 'string'
-        or body == ''
-        or body:find('404: Not Found', 1, true)
-        or body:find('404 Not Found', 1, true)
-end
+local function getCommit()
+    local commit = 'main'
 
-local function tryRequest(url)
-    local req = (syn and syn.request)
-        or http_request
-        or request
-        or (fluxus and fluxus.request)
-
-    if not req then
-        return nil
-    end
-
-    local ok, res = pcall(function()
-        return req({
-            Url = url,
-            Method = 'GET',
-        })
+    local ok, html = pcall(function()
+        return game:HttpGet('https://github.com/' .. REPO, true)
     end)
 
-    if not ok or not res then
-        return nil
-    end
-
-    local body = res.Body or res.body
-    local code = res.StatusCode or res.Status or res.status
-
-    if isBadBody(body) or (code and code ~= 200) then
-        return nil
-    end
-
-    return body
-end
-
-local function tryHttpService(url)
-    local ok, body = pcall(function()
-        return HttpService:GetAsync(url, true)
-    end)
-
-    if ok and not isBadBody(body) then
-        return body
-    end
-
-    return nil
-end
-
-local function tryHttpGet(url)
-    local ok, body = pcall(function()
-        return game:HttpGet(url)
-    end)
-
-    if ok and not isBadBody(body) then
-        return body
-    end
-
-    return nil
-end
-
-local function downloadScript()
-    local lastErr = 'no response'
-
-    for _, baseUrl in SCRIPT_URLS do
-        local urls = { baseUrl, baseUrl .. '?t=' .. tostring(os.time()) }
-
-        for _, url in urls do
-            local body = tryRequest(url)
-                or tryHttpService(url)
-                or tryHttpGet(url)
-
-            if body then
-                return stripBom(body)
+    if ok and type(html) == 'string' then
+        local idx = html:find('currentOid')
+        if idx then
+            local hash = html:sub(idx + 13, idx + 52)
+            if hash and #hash == 40 then
+                commit = hash
             end
         end
-
-        lastErr = 'failed: ' .. baseUrl
     end
 
-    for _, path in { 'grow_garden_autofarm.lua', 'GG2/grow_garden_autofarm.lua' } do
-        local ok, cached = pcall(function()
-            return readfile(path)
-        end)
-        if ok and type(cached) == 'string' and cached ~= '' then
-            return stripBom(cached), 'cached'
-        end
+    return commit
+end
+
+local function downloadScript(commit)
+    local url = 'https://raw.githubusercontent.com/' .. REPO .. '/' .. commit .. '/' .. SCRIPT_FILE
+
+    local ok, source = pcall(function()
+        return game:HttpGet(url, true)
+    end)
+
+    if not ok or type(source) ~= 'string' or source == '' or source == '404: Not Found' then
+        return nil, url
     end
 
-    return nil, lastErr
+    return stripBom(source), url
 end
 
 if type(writefile) ~= 'function' then
     error('Grow a Garden 2 Auto Farm needs writefile support')
 end
 
-local source, downloadInfo = downloadScript()
-if not source then
-    error('Failed to download script from GitHub (' .. tostring(downloadInfo) .. ')')
+if makefolder and (not isfolder or not isfolder('GG2')) then
+    makefolder('GG2')
 end
 
-pcall(function()
-    if makefolder and (not isfolder or not isfolder('GG2')) then
-        makefolder('GG2')
+local commit = getCommit()
+local oldCommit = isfile(COMMIT_FILE) and readfile(COMMIT_FILE) or ''
+if oldCommit ~= commit then
+    pcall(function()
+        writefile(COMMIT_FILE, commit)
+    end)
+end
+
+GENV.GG2_ScriptUrl = 'https://raw.githubusercontent.com/' .. REPO .. '/' .. commit .. '/' .. SCRIPT_FILE
+
+local source, triedUrl = downloadScript(commit)
+if not source and commit ~= 'main' then
+    source, triedUrl = downloadScript('main')
+end
+
+if not source then
+    for _, path in { 'grow_garden_autofarm.lua', 'GG2/grow_garden_autofarm.lua' } do
+        if isfile(path) then
+            local ok, cached = pcall(readfile, path)
+            if ok and type(cached) == 'string' and cached ~= '' then
+                source = stripBom(cached)
+                break
+            end
+        end
     end
-    writefile('GG2/grow_garden_autofarm.lua', source)
-    writefile('grow_garden_autofarm.lua', source)
-end)
+end
+
+if not source then
+    error('Failed to download script from GitHub (' .. tostring(triedUrl) .. ')')
+end
+
+writefile('GG2/grow_garden_autofarm.lua', source)
+writefile('grow_garden_autofarm.lua', source)
 
 GENV.GG2_SkipRemoteUpdate = true
 
