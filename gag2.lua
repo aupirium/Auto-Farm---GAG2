@@ -155,6 +155,9 @@ local WEATHER_STATE_FILE = 'GG2_WeatherState.json'
 local AUTO_FARM_SCRIPT = 'grow_garden_autofarm.lua'
 local GG2_SCRIPT_PATH = 'GG2/grow_garden_autofarm.lua'
 local GG2_TELEPORT_SCRIPT = 'GG2/teleport.lua'
+local GG2_AUTEXEC_FILE = 'GG2/autexec.txt'
+local GG2_REPO = 'aupirium/Auto-Farm---GAG2'
+local GG2_LOADER_URL = 'https://raw.githubusercontent.com/' .. GG2_REPO .. '/'
 
 isfile = isfile or function(file)
     local suc, res = pcall(function()
@@ -3166,9 +3169,8 @@ function clearWeatherState(options)
 end
 
 function saveAutoExecWalkState()
-    if State.SavedPosition then
-        State.PendingWalkToSaved = true
-    end
+    State.PendingWalkToSaved = State.SavedPosition ~= nil
+        or (State.ReturnPosX ~= nil and State.ReturnPosY ~= nil and State.ReturnPosZ ~= nil)
     saveWeatherState()
 end
 
@@ -3234,9 +3236,12 @@ function doStartupWalk()
 
         local char = getCharacter() or LocalPlayer.CharacterAdded:Wait()
         char:WaitForChild('HumanoidRootPart', 15)
-        task.wait(1)
+        task.wait(0.5)
 
         loadPositionFromConfig()
+        if not State.SavedPosition then
+            loadWeatherState()
+        end
 
         local basePos = State.SavedPosition
         if State.PendingWalkBack and State.ReturnPosX and State.ReturnPosY and State.ReturnPosZ then
@@ -3261,7 +3266,7 @@ function doStartupWalk()
     end)
 end
 
-function getTeleportScriptSource()
+function getAutoExecQueueScript()
     return string.format([[
 repeat task.wait() until game:IsLoaded()
 
@@ -3272,18 +3277,20 @@ local isfile = isfile or function(file)
     return suc and res ~= nil and res ~= ''
 end
 
+getgenv().GG2_AutoFarmRunning = nil
+getgenv().GG2_FromAutoExec = true
+
 local function requeue()
     local queue = queue_on_teleport
         or (syn and syn.queue_on_teleport)
         or (fluxus and fluxus.queue_on_teleport)
-    if not queue or not isfile('GG2/teleport.lua') then
-        return
-    end
-    local ok, src = pcall(readfile, 'GG2/teleport.lua')
-    if ok and src and src ~= '' then
-        pcall(function()
-            queue(src)
-        end)
+    if queue and isfile('GG2/autexec.txt') then
+        local ok, src = pcall(readfile, 'GG2/autexec.txt')
+        if ok and src and src ~= '' then
+            pcall(function()
+                queue(src)
+            end)
+        end
     end
 end
 
@@ -3293,7 +3300,7 @@ local Players = game:GetService('Players')
 local STATE_FILE = %q
 
 local function readState()
-    if not (readfile and isfile and isfile(STATE_FILE)) then
+    if not (readfile and isfile(STATE_FILE)) then
         return nil
     end
     local ok, raw = pcall(readfile, STATE_FILE)
@@ -3306,175 +3313,66 @@ local function readState()
     return ok and raw or nil
 end
 
-local function stripBom(src)
-    while src:byte(1) == 0xEF and src:byte(2) == 0xBB and src:byte(3) == 0xBF do
-        src = src:sub(4)
-    end
-    return src
-end
-
-local REPO = %q
-
-local function httpGet(url)
-    local ok, body = pcall(function()
-        return game:HttpGet(url, true)
-    end)
-    if ok and body and body ~= '' and body ~= '404: Not Found' then
-        return body
-    end
-    return nil
-end
-
-local function getCommit()
-    local commit = 'main'
-    local ok, html = pcall(function()
-        return game:HttpGet('https://github.com/' .. REPO, true)
-    end)
-    if ok and type(html) == 'string' then
-        local idx = html:find('currentOid')
-        if idx then
-            local hash = html:sub(idx + 13, idx + 52)
-            if hash and #hash == 40 then
-                commit = hash
-            end
-        end
-    end
-    return commit
-end
-
-local function fetchLatestFarm()
-    if not writefile then
-        return
-    end
-
-    local commit = getCommit()
-    local src = httpGet('https://raw.githubusercontent.com/' .. REPO .. '/' .. commit .. '/gag2.lua')
-    if not src then
-        src = httpGet('https://raw.githubusercontent.com/' .. REPO .. '/main/gag2.lua')
-    end
-
-    if not src then
-        return
-    end
-
-    src = stripBom(src)
-    pcall(function()
-        if makefolder and (not isfolder or not isfolder('GG2')) then
-            makefolder('GG2')
-        end
-        writefile('GG2/grow_garden_autofarm.lua', src)
-        writefile(%q, src)
-    end)
-end
-
-local function loadFarm()
-    getgenv().GG2_AutoFarmRunning = nil
-    getgenv().GG2_SkipRemoteUpdate = true
-    getgenv().GG2_FromAutoExec = true
-
-    fetchLatestFarm()
-    task.wait(2)
-
-    if getgenv().GG2_AutoFarmRunning then
-        return
-    end
-
-    for _, path in ipairs({ 'GG2/grow_garden_autofarm.lua', %q }) do
-        if isfile(path) then
-            local ok, src = pcall(readfile, path)
-            if ok and src and src ~= '' then
-                local func, err = loadstring(stripBom(src), path)
-                if func then
-                    func()
-                    return
-                end
-            end
-        end
-    end
-end
-
 local saved = readState()
+if saved and saved.Hiding == true then
+    while os.time() < (saved.HideUntil or 0) do
+        task.wait(1)
+    end
+end
+
 if saved and saved.ReturnPlaceId then
-    if saved.Hiding == true then
-        while os.time() < (saved.HideUntil or 0) do
-            task.wait(1)
-        end
-    end
-
-    if game.PlaceId == saved.ReturnPlaceId then
-        if saved.ReturnJobId and game.JobId ~= saved.ReturnJobId then
-            requeue()
-            task.wait(2)
-            local failed = false
-            local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
-                if player == Players.LocalPlayer then
-                    failed = true
-                end
-            end)
-            pcall(function()
-                TeleportService:TeleportToPlaceInstance(saved.ReturnPlaceId, saved.ReturnJobId, Players.LocalPlayer)
-            end)
-            for _ = 1, 8 do
-                if failed then
-                    break
-                end
-                task.wait(0.5)
-            end
-            failConn:Disconnect()
-            if not failed then
-                return
-            end
-        end
-        loadFarm()
-        return
-    end
-
-    requeue()
-    task.wait(3)
-    for attempt = 1, 5 do
-        local failed = false
-        local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
-            if player == Players.LocalPlayer then
-                failed = true
-            end
-        end)
+    if game.PlaceId ~= saved.ReturnPlaceId then
+        requeue()
+        task.wait(1)
         pcall(function()
-            if saved.ReturnJobId and attempt <= 2 then
+            if saved.ReturnJobId then
                 TeleportService:TeleportToPlaceInstance(saved.ReturnPlaceId, saved.ReturnJobId, Players.LocalPlayer)
             else
                 TeleportService:Teleport(saved.ReturnPlaceId, Players.LocalPlayer)
             end
         end)
-        for _ = 1, 12 do
-            if failed then
-                break
-            end
-            task.wait(0.5)
-        end
-        failConn:Disconnect()
-        if not failed then
-            return
-        end
-        task.wait(math.min(3 + attempt, 10))
+        return
     end
-    loadFarm()
-    return
+
+    if saved.ReturnJobId and game.JobId ~= saved.ReturnJobId then
+        requeue()
+        task.wait(1)
+        pcall(function()
+            TeleportService:TeleportToPlaceInstance(saved.ReturnPlaceId, saved.ReturnJobId, Players.LocalPlayer)
+        end)
+        return
+    end
 end
 
-loadFarm()
-]], WEATHER_STATE_FILE, 'aupirium/Auto-Farm---GAG2', AUTO_FARM_SCRIPT, AUTO_FARM_SCRIPT)
+local commit = 'main'
+pcall(function()
+    if isfile('GG2/commit.txt') then
+        commit = readfile('GG2/commit.txt'):gsub('%%s+', '')
+    end
+end)
+if commit == '' then
+    commit = 'main'
 end
 
-function writeTeleportScript()
+loadstring(game:HttpGet(%q .. commit .. '/loader.lua', true))()
+]], WEATHER_STATE_FILE, GG2_LOADER_URL)
+end
+
+function writeAutoExecScript()
     if not writefile then
         return false
     end
 
     ensureGg2Folders()
-    local source = stripBom(getTeleportScriptSource())
+    local source = stripBom(getAutoExecQueueScript())
     return pcall(function()
+        writefile(GG2_AUTEXEC_FILE, source)
         writefile(GG2_TELEPORT_SCRIPT, source)
     end)
+end
+
+function writeTeleportScript()
+    return writeAutoExecScript()
 end
 
 function queueTeleportScript()
@@ -3483,26 +3381,26 @@ function queueTeleportScript()
         return false
     end
 
-    writeTeleportScript()
     persistAutoFarmScript()
+    writeAutoExecScript()
 
-    local source = getTeleportScriptSource()
-    if isfile(GG2_TELEPORT_SCRIPT) then
-        local ok, fileSource = pcall(readfile, GG2_TELEPORT_SCRIPT)
+    local source = stripBom(getAutoExecQueueScript())
+    if isfile(GG2_AUTEXEC_FILE) then
+        local ok, fileSource = pcall(readfile, GG2_AUTEXEC_FILE)
         if ok and fileSource and fileSource ~= '' then
-            source = fileSource
+            source = stripBom(fileSource)
         end
     end
 
     return pcall(function()
-        queue(stripBom(source))
+        queue(source)
     end)
 end
 
 function setupAutoExecute()
     ensureGg2Folders()
     persistAutoFarmScript()
-    writeTeleportScript()
+    writeAutoExecScript()
 
     if State.AutoExecTeleportConnection then
         return
@@ -4475,7 +4373,10 @@ loadWeatherState()
 setupWeatherErrorReconnect()
 
 if State.ReturnPlaceId and game.PlaceId == State.ReturnPlaceId then
-    if not State.WeatherHiding or os.time() >= State.HideUntil then
+    if (not State.WeatherHiding or os.time() >= State.HideUntil)
+        and not State.PendingWalkToSaved
+        and not State.PendingWalkBack
+        and not GENV.GG2_FromAutoExec then
         clearRejoinTarget()
     end
 elseif State.WeatherHiding and State.ReturnJobId == game.JobId then
@@ -4523,6 +4424,7 @@ task.defer(function()
     end
     task.wait(0.25)
     loadPositionFromConfig()
+    doStartupWalk()
 
     if Toggles.AutoWateringCan and Toggles.AutoWateringCan.Value then
         setAutoWateringLoop(true)
@@ -4564,7 +4466,6 @@ task.defer(function()
     task.wait(0.1)
     pcall(refreshMailInventory)
     updateWeatherLabels()
-    doStartupWalk()
 end)
 
 LocalPlayer.CharacterAdded:Connect(function()
