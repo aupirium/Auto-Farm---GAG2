@@ -2655,7 +2655,19 @@ function mergeAuctionDropdownValues(category, names)
     State.AuctionItemLists[category] = merged
 
     if Options and Options[optionKey] and Options[optionKey].SetValues then
-        Options[optionKey]:SetValues(merged)
+        task.defer(function()
+            if Library.Unloaded then
+                return
+            end
+
+            local option = Options[optionKey]
+            local values = State.AuctionItemLists[category]
+            if option and option.SetValues and type(values) == 'table' then
+                pcall(function()
+                    option:SetValues(values)
+                end)
+            end
+        end)
     end
 end
 
