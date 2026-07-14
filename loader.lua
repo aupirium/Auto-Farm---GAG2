@@ -1,11 +1,11 @@
 -- Grow a Garden 2 Auto Farm loader
--- Users run: loadstring(game:HttpGet('https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/loader.lua'))()
+-- Users run: loadstring(game:HttpGet('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/loader.lua'))()
 
 local GENV = getgenv()
 GENV.GG2_AutoFarmRunning = nil
 GENV.GG2_SkipRemoteUpdate = nil
 
-local SCRIPT_URL = 'https://raw.githubusercontent.com/YOUR_USER/YOUR_REPO/main/grow_garden_autofarm.lua'
+local SCRIPT_URL = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/gag2.lua'
 GENV.GG2_ScriptUrl = SCRIPT_URL
 
 local function httpGet(url)
