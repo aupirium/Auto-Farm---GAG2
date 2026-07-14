@@ -6,6 +6,14 @@ if GENV.GG2_AutoFarmRunning then
     return
 end
 
+repeat task.wait() until game:IsLoaded()
+
+local Players = game:GetService('Players')
+if not Players.LocalPlayer then
+    Players.PlayerAdded:Wait()
+end
+local LocalPlayer = Players.LocalPlayer
+
 local DEFAULT_REMOTE_SCRIPT_URL = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/gag2.lua'
 local REMOTE_SCRIPT_URL = (type(GENV.GG2_ScriptUrl) == 'string' and GENV.GG2_ScriptUrl ~= '')
     and GENV.GG2_ScriptUrl
@@ -98,7 +106,6 @@ local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
 local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
 local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
 
-local Players = game:GetService('Players')
 local RunService = game:GetService('RunService')
 local UserInputService = game:GetService('UserInputService')
 local CollectionService = game:GetService('CollectionService')
@@ -106,7 +113,6 @@ local TeleportService = game:GetService('TeleportService')
 local GuiService = game:GetService('GuiService')
 local VirtualUser = game:GetService('VirtualUser')
 
-local LocalPlayer = Players.LocalPlayer
 local PlayerScripts = LocalPlayer:WaitForChild('PlayerScripts')
 local ReplicatedStorage = game:GetService('ReplicatedStorage')
 local Gardens = workspace:WaitForChild('Gardens')
@@ -2751,10 +2757,12 @@ function scanGardenFruits()
     end
 
     table.sort(results, function(a, b)
-        if a.value == b.value then
-            return a.weightKg > b.weightKg
+        local av = a.value or 0
+        local bv = b.value or 0
+        if av == bv then
+            return (a.weightKg or 0) > (b.weightKg or 0)
         end
-        return a.value > b.value
+        return av > bv
     end)
 
     return results
