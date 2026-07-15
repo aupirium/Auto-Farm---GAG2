@@ -1,6 +1,3 @@
--- Grow a Garden 2 - Auto Farm (LinoriaLib)
--- Auto Super Sprinkler / Watering Can at saved position, auto harvest, auto sell, earnings/min
-
 local GENV = getgenv()
 
 if GENV.GG2_AutoFarmShutdown then
@@ -26,7 +23,42 @@ if not Players.LocalPlayer then
 end
 local LocalPlayer = Players.LocalPlayer
 
-local DEFAULT_REMOTE_SCRIPT_URL = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/gag2.lua'
+local GG2_REPO = 'aupirium/Auto-Farm---GAG2'
+local AUTO_FARM_SCRIPT = 'gag2.lua'
+local GG2_SCRIPT_PATH = 'GG2/gag2.lua'
+local GG2_LOADER_SCRIPT = 'loader.lua'
+local GG2_COMMIT_FILE = 'GG2/commit.txt'
+local LEGACY_SCRIPT_PATHS = {
+    'GG2/grow_garden_autofarm.lua',
+    'grow_garden_autofarm.lua',
+    'workspace/grow_garden_autofarm.lua',
+    'scripts/grow_garden_autofarm.lua',
+}
+
+local function gg2RawUrl(scriptName, commit)
+    return string.format('https://raw.githubusercontent.com/%s/%s/%s', GG2_REPO, commit or 'main', scriptName)
+end
+
+local function gg2RepoUrl()
+    return 'https://github.com/' .. GG2_REPO
+end
+
+local function getScriptReadPaths()
+    local paths = {
+        GG2_SCRIPT_PATH,
+        AUTO_FARM_SCRIPT,
+        'workspace/' .. AUTO_FARM_SCRIPT,
+        'scripts/' .. AUTO_FARM_SCRIPT,
+    }
+
+    for _, legacyPath in LEGACY_SCRIPT_PATHS do
+        table.insert(paths, legacyPath)
+    end
+
+    return paths
+end
+
+local DEFAULT_REMOTE_SCRIPT_URL = gg2RawUrl(AUTO_FARM_SCRIPT, 'main')
 local REMOTE_SCRIPT_URL = (type(GENV.GG2_ScriptUrl) == 'string' and GENV.GG2_ScriptUrl ~= '')
     and GENV.GG2_ScriptUrl
     or DEFAULT_REMOTE_SCRIPT_URL
@@ -58,7 +90,7 @@ if not GENV.GG2_SkipRemoteUpdate and not GENV.GG2_FromAutoExec and type(writefil
     local function getCommitEarly()
         local commit = 'main'
         local ok, html = pcall(function()
-            return game:HttpGet('https://github.com/aupirium/Auto-Farm---GAG2', true)
+            return game:HttpGet(gg2RepoUrl(), true)
         end)
         if ok and type(html) == 'string' then
             local idx = html:find('currentOid')
@@ -73,16 +105,16 @@ if not GENV.GG2_SkipRemoteUpdate and not GENV.GG2_FromAutoExec and type(writefil
     end
 
     local commit = getCommitEarly()
-    local remote = httpGetEarly('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/' .. commit .. '/gag2.lua')
+    local remote = httpGetEarly(gg2RawUrl(AUTO_FARM_SCRIPT, commit))
     if not remote then
-        remote = httpGetEarly('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/gag2.lua')
+        remote = httpGetEarly(gg2RawUrl(AUTO_FARM_SCRIPT, 'main'))
     end
 
     if remote then
         remote = stripBomEarly(remote)
         local localSrc = nil
 
-        for _, path in { 'GG2/gag2.lua', 'gag2.lua', 'GG2/grow_garden_autofarm.lua', 'grow_garden_autofarm.lua' } do
+        for _, path in getScriptReadPaths() do
             local readOk, content = pcall(function()
                 return readfile(path)
             end)
@@ -96,8 +128,8 @@ if not GENV.GG2_SkipRemoteUpdate and not GENV.GG2_FromAutoExec and type(writefil
             if makefolder and (not isfolder or not isfolder('GG2')) then
                 makefolder('GG2')
             end
-            writefile('GG2/gag2.lua', remote)
-            writefile('gag2.lua', remote)
+            writefile(GG2_SCRIPT_PATH, remote)
+            writefile(AUTO_FARM_SCRIPT, remote)
         end)
 
         if localSrc and localSrc ~= remote then
@@ -107,7 +139,7 @@ if not GENV.GG2_SkipRemoteUpdate and not GENV.GG2_FromAutoExec and type(writefil
                 task.wait(0.05)
             end
             GENV.GG2_AutoFarmRunning = false
-            local func = loadstring(remote, 'gag2.lua')
+            local func = loadstring(remote, AUTO_FARM_SCRIPT)
             if func then
                 func()
                 return
@@ -181,11 +213,7 @@ local BLOCKABLE_WEATHERS = {
 }
 
 local WEATHER_STATE_FILE = 'GG2_WeatherState.json'
-local AUTO_FARM_SCRIPT = 'gag2.lua'
-local GG2_SCRIPT_PATH = 'GG2/gag2.lua'
-local GG2_COMMIT_FILE = 'GG2/commit.txt'
 local GG2_PLACE_ID = 97598239454123
-local GG2_REPO = 'aupirium/Auto-Farm---GAG2'
 
 isfile = isfile or function(file)
     local suc, res = pcall(function()
@@ -266,7 +294,7 @@ end
 function getRemoteCommit()
     local commit = 'main'
     local ok, html = pcall(function()
-        return game:HttpGet('https://github.com/aupirium/Auto-Farm---GAG2', true)
+        return game:HttpGet(gg2RepoUrl(), true)
     end)
     if ok and type(html) == 'string' then
         local idx = html:find('currentOid')
@@ -283,8 +311,8 @@ end
 function fetchRemoteScriptSource()
     local commit = getRemoteCommit()
     local urls = {
-        'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/' .. commit .. '/gag2.lua',
-        'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/gag2.lua',
+        gg2RawUrl(AUTO_FARM_SCRIPT, commit),
+        gg2RawUrl(AUTO_FARM_SCRIPT, 'main'),
     }
 
     for _, url in urls do
@@ -320,7 +348,7 @@ function syncWorkspaceFromRemote()
     end
 
     local localSource = nil
-    for _, path in { GG2_SCRIPT_PATH, AUTO_FARM_SCRIPT } do
+    for _, path in getScriptReadPaths() do
         if isfile(path) then
             local ok, source = pcall(readfile, path)
             if ok and source and source ~= '' then
@@ -348,16 +376,7 @@ function persistAutoFarmScript()
 
     ensureGg2Folders()
 
-    for _, path in {
-        AUTO_FARM_SCRIPT,
-        GG2_SCRIPT_PATH,
-        'workspace/' .. AUTO_FARM_SCRIPT,
-        'scripts/' .. AUTO_FARM_SCRIPT,
-        'grow_garden_autofarm.lua',
-        'GG2/grow_garden_autofarm.lua',
-        'workspace/grow_garden_autofarm.lua',
-        'scripts/grow_garden_autofarm.lua',
-    } do
+    for _, path in getScriptReadPaths() do
         if isfile(path) then
             local ok, source = pcall(readfile, path)
             if ok and source and source ~= '' then
@@ -499,7 +518,6 @@ pcall(function()
     NumberUtils = require(ReplicatedStorage.SharedModules.NumberUtils)
 end)
 
--- Mail / gifts
 local PlayerStateClient
 local MailboxItemCatalog
 
@@ -737,6 +755,7 @@ local State = {
     HarvestThread = nil,
     WateringConnection = nil,
     WateringStop = false,
+    WateringBusy = false,
     SprinklerPlacePending = false,
     WeatherHiding = false,
     ReturnJobId = nil,
@@ -782,10 +801,14 @@ local State = {
     MailTotals = { Claimed = 0, Failed = 0 },
     OptimizerEnabled = false,
     OptimizerOriginal = nil,
-    OptimizerChanged = nil,
     OptimizerApplyToken = 0,
     OptimizerScanThread = nil,
+    OptimizerWorldScanThread = nil,
     OptimizerBoostConnection = nil,
+    OptimizerWorldFlushConnection = nil,
+    OptimizerWorldQueue = nil,
+    OptimizerPlantIncomingQueue = nil,
+    PlantEmitterSet = {},
     OptimizerElitePartCache = {},
     OptimizerEliteBoostCache = {},
     OptimizerEliteEffectCache = {},
@@ -881,9 +904,20 @@ function startLoadingScreenAutoDismiss()
     end)
 end
 
-function killPlantEmitter(emitter)
+local OPTIMIZER_FRAME_BUDGET = 0.007
+local OPTIMIZER_WORLD_QUEUE_FLUSH = 48
+
+function isGardenDescendant(inst)
+    return inst == Gardens or inst:IsDescendantOf(Gardens)
+end
+
+function killPlantEmitter(emitter, skipClear)
     emitter.Enabled = false
     emitter.Rate = 0
+    if skipClear then
+        return
+    end
+
     pcall(function()
         emitter.Lifetime = NumberRange.new(0, 0)
     end)
@@ -960,34 +994,18 @@ function isPlantInstance(inst)
     return false
 end
 
-function refreshPlantEmitterCache()
-    local cache = {}
-
-    for _, plants in getWatchedPlantsFolders() do
-        for _, desc in plants:GetDescendants() do
-            if desc:IsA('ParticleEmitter') then
-                table.insert(cache, desc)
-            end
-        end
-    end
-
-    State.PlantEmitterCache = cache
-    State.PlantEmitterCacheAt = os.clock()
-end
-
 function trackPlantEmitter(emitter)
     if not emitter:IsA('ParticleEmitter') then
         return
     end
 
-    for _, cached in State.PlantEmitterCache do
-        if cached == emitter then
-            return
-        end
+    if State.PlantEmitterSet[emitter] then
+        return
     end
 
+    State.PlantEmitterSet[emitter] = true
     table.insert(State.PlantEmitterCache, emitter)
-    killPlantEmitter(emitter)
+    killPlantEmitter(emitter, true)
 end
 
 function clearCachedPlantEmitters()
@@ -1062,14 +1080,23 @@ function suppressPlantVisual(inst, savedState, record)
         inst.Enabled = false
     elseif inst:IsA('BasePart') then
         if not props then
-            props = {
-                CanCollide = inst.CanCollide,
-                LocalTransparencyModifier = inst.LocalTransparencyModifier,
-                Transparency = inst.Transparency,
-                CastShadow = inst.CastShadow,
-                Material = inst.Material,
-                Reflectance = inst.Reflectance,
-            }
+            if State.OptimizerEnabled then
+                props = {
+                    CanCollide = inst.CanCollide,
+                    LocalTransparencyModifier = inst.LocalTransparencyModifier,
+                    Transparency = inst.Transparency,
+                    CastShadow = inst.CastShadow,
+                }
+            else
+                props = {
+                    CanCollide = inst.CanCollide,
+                    LocalTransparencyModifier = inst.LocalTransparencyModifier,
+                    Transparency = inst.Transparency,
+                    CastShadow = inst.CastShadow,
+                    Material = inst.Material,
+                    Reflectance = inst.Reflectance,
+                }
+            end
             savedState[inst] = props
             if record then
                 record(inst, props)
@@ -1079,10 +1106,6 @@ function suppressPlantVisual(inst, savedState, record)
         inst.LocalTransparencyModifier = 1
         inst.Transparency = 1
         inst.CastShadow = false
-        if State.OptimizerEnabled then
-            inst.Material = Enum.Material.SmoothPlastic
-            inst.Reflectance = 0
-        end
     end
 end
 
@@ -1101,7 +1124,9 @@ function stopPlantEffectMaintain()
     stopFruitsFolderWatchers()
 
     State.PlantEmitterCache = {}
+    State.PlantEmitterSet = {}
     State.PlantEmitterCacheAt = 0
+    State.OptimizerPlantIncomingQueue = nil
 end
 
 function shouldMaintainPlantEffects()
@@ -1151,9 +1176,7 @@ end
 
 function hideWatchedPlantInstance(desc)
     if State.OptimizerEnabled and isPlantInstance(desc) then
-        suppressPlantVisual(desc, State.OptimizerPlantRecordCache, State.OptimizerChanged and function(inst, props)
-            table.insert(State.OptimizerChanged, { inst = inst, props = props })
-        end or nil)
+        suppressPlantVisual(desc, State.OptimizerPlantRecordCache)
         trackPlantEmitter(desc)
     end
 
@@ -1173,16 +1196,38 @@ function hideWatchedPlantTree(root)
         return
     end
 
-    hideWatchedPlantInstance(root)
-    for _, desc in root:GetDescendants() do
-        hideWatchedPlantInstance(desc)
+    local stack = { root }
+    while #stack > 0 do
+        local inst = table.remove(stack)
+        hideWatchedPlantInstance(inst)
+        local children = inst:GetChildren()
+        for i = #children, 1, -1 do
+            table.insert(stack, children[i])
+        end
     end
 end
 
 function onPlantDescendantAdded(desc)
-    task.defer(function()
-        hideWatchedPlantInstance(desc)
-    end)
+    if not State.OptimizerPlantIncomingQueue then
+        State.OptimizerPlantIncomingQueue = {}
+    end
+    table.insert(State.OptimizerPlantIncomingQueue, desc)
+end
+
+function flushOptimizerPlantIncomingQueue(batchSize)
+    local queue = State.OptimizerPlantIncomingQueue
+    if not queue or #queue == 0 then
+        return
+    end
+
+    batchSize = batchSize or 64
+    local count = math.min(#queue, batchSize)
+    for _ = 1, count do
+        local inst = table.remove(queue, 1)
+        if inst and inst.Parent then
+            hideWatchedPlantInstance(inst)
+        end
+    end
 end
 
 function ensureFruitsFolderWatchers()
@@ -1271,6 +1316,8 @@ function updatePlantEffectMaintain()
                 return
             end
 
+            flushOptimizerPlantIncomingQueue(64)
+
             local now = os.clock()
             if now - lastEmitterClear >= 3 then
                 lastEmitterClear = now
@@ -1284,39 +1331,38 @@ function updatePlantEffectMaintain()
 end
 
 function scanOptimizerPlants(applyToken)
-    local queue = {}
+    local stack = {}
 
     for _, plot in Gardens:GetChildren() do
         local plants = plot:FindFirstChild('Plants')
         if plants then
             for _, plantModel in plants:GetChildren() do
-                table.insert(queue, plantModel)
+                table.insert(stack, plantModel)
             end
         end
     end
 
-    local index = 1
-    while index <= #queue do
+    while #stack > 0 do
         if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
             return
         end
 
-        for _ = 1, 5 do
-            local plantModel = queue[index]
-            if not plantModel then
-                break
+        local frameStart = os.clock()
+        while #stack > 0 and os.clock() - frameStart < OPTIMIZER_FRAME_BUDGET do
+            local inst = table.remove(stack)
+            hideWatchedPlantInstance(inst)
+            local children = inst:GetChildren()
+            for i = #children, 1, -1 do
+                table.insert(stack, children[i])
             end
-
-            hideWatchedPlantTree(plantModel)
-            index += 1
         end
 
-        task.wait(0.02)
+        RunService.Heartbeat:Wait()
     end
 end
 
 function eliteOptimizeInstance(inst)
-    if not State.OptimizerEnabled then
+    if not State.OptimizerEnabled or isGardenDescendant(inst) then
         return
     end
 
@@ -1338,7 +1384,7 @@ function eliteOptimizeInstance(inst)
 end
 
 function eliteBoostInstance(inst)
-    if not State.OptimizerEnabled then
+    if not State.OptimizerEnabled or isGardenDescendant(inst) then
         return
     end
 
@@ -1350,39 +1396,56 @@ function eliteBoostInstance(inst)
     end
 end
 
-function eliteScanWorldGraphics()
-    local descendants = workspace:GetDescendants()
+function eliteScanWorld(applyToken)
+    local stack = {}
 
-    for index, desc in descendants do
-        if not State.OptimizerEnabled then
+    for _, child in workspace:GetChildren() do
+        if child ~= Gardens then
+            table.insert(stack, child)
+        end
+    end
+
+    while #stack > 0 do
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
             return
         end
 
-        eliteOptimizeInstance(desc)
+        local frameStart = os.clock()
+        while #stack > 0 and os.clock() - frameStart < OPTIMIZER_FRAME_BUDGET do
+            local inst = table.remove(stack)
+            eliteOptimizeInstance(inst)
+            if _G.ExtremeBoost then
+                eliteBoostInstance(inst)
+            end
+            local children = inst:GetChildren()
+            for i = #children, 1, -1 do
+                table.insert(stack, children[i])
+            end
+        end
 
-        if index % 500 == 0 then
-            task.wait()
+        RunService.Heartbeat:Wait()
+    end
+end
+
+function flushOptimizerWorldQueue()
+    if not State.OptimizerEnabled or not State.OptimizerWorldQueue then
+        return
+    end
+
+    local queue = State.OptimizerWorldQueue
+    local flushCount = math.min(#queue, OPTIMIZER_WORLD_QUEUE_FLUSH)
+    for _ = 1, flushCount do
+        local inst = table.remove(queue, 1)
+        if inst and inst.Parent and not isGardenDescendant(inst) then
+            eliteOptimizeInstance(inst)
+            if _G.ExtremeBoost then
+                eliteBoostInstance(inst)
+            end
         end
     end
 end
 
-function eliteScanWorldBoost()
-    local descendants = workspace:GetDescendants()
-
-    for index, desc in descendants do
-        if not State.OptimizerEnabled or not _G.ExtremeBoost then
-            return
-        end
-
-        eliteBoostInstance(desc)
-
-        if index % 500 == 0 then
-            task.wait()
-        end
-    end
-end
-
-function applyEliteOptimizer()
+function applyEliteOptimizer(applyToken)
     local terrainDecoration
     pcall(function()
         terrainDecoration = workspace.Terrain.Decoration
@@ -1391,6 +1454,9 @@ function applyEliteOptimizer()
     local renderQuality
     local physicsThrottle
     local fpsCap
+    local savedQualityLevel
+    local meshPartDetailLevel
+    local lightingTechnology
 
     pcall(function()
         renderQuality = settings().Rendering.QualityLevel
@@ -1401,6 +1467,15 @@ function applyEliteOptimizer()
     pcall(function()
         fpsCap = getfpscap and getfpscap() or 60
     end)
+    pcall(function()
+        savedQualityLevel = UserSettings():GetService('UserGameSettings').SavedQualityLevel
+    end)
+    pcall(function()
+        meshPartDetailLevel = settings().Rendering.MeshPartDetailLevel
+    end)
+    pcall(function()
+        lightingTechnology = Lighting.Technology
+    end)
 
     State.OptimizerOriginal = {
         Brightness = Lighting.Brightness,
@@ -1410,6 +1485,9 @@ function applyEliteOptimizer()
         RenderQuality = renderQuality,
         PhysicsThrottle = physicsThrottle,
         FpsCap = fpsCap,
+        SavedQualityLevel = savedQualityLevel,
+        MeshPartDetailLevel = meshPartDetailLevel,
+        LightingTechnology = lightingTechnology,
     }
 
     pcall(function()
@@ -1417,6 +1495,15 @@ function applyEliteOptimizer()
     end)
     pcall(function()
         settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    end)
+    pcall(function()
+        UserSettings():GetService('UserGameSettings').SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+    end)
+    pcall(function()
+        settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level04
+    end)
+    pcall(function()
+        Lighting.Technology = Enum.Technology.Compatibility
     end)
 
     Lighting.GlobalShadows = false
@@ -1450,17 +1537,34 @@ function applyEliteOptimizer()
         State.OptimizerBoostConnection = nil
     end
 
+    if State.OptimizerWorldFlushConnection then
+        State.OptimizerWorldFlushConnection:Disconnect()
+        State.OptimizerWorldFlushConnection = nil
+    end
+
+    State.OptimizerWorldQueue = {}
+
     State.OptimizerBoostConnection = workspace.DescendantAdded:Connect(function(desc)
-        if State.OptimizerEnabled then
-            eliteOptimizeInstance(desc)
-            if _G.ExtremeBoost then
-                eliteBoostInstance(desc)
-            end
+        if not State.OptimizerEnabled or isGardenDescendant(desc) then
+            return
         end
+
+        table.insert(State.OptimizerWorldQueue, desc)
     end)
 
-    task.spawn(eliteScanWorldGraphics)
-    task.spawn(eliteScanWorldBoost)
+    State.OptimizerWorldFlushConnection = RunService.Heartbeat:Connect(function()
+        flushOptimizerWorldQueue()
+    end)
+
+    if State.OptimizerWorldScanThread then
+        pcall(task.cancel, State.OptimizerWorldScanThread)
+        State.OptimizerWorldScanThread = nil
+    end
+
+    State.OptimizerWorldScanThread = task.spawn(function()
+        eliteScanWorld(applyToken)
+        State.OptimizerWorldScanThread = nil
+    end)
 end
 
 function restoreEliteOptimizer()
@@ -1468,6 +1572,18 @@ function restoreEliteOptimizer()
         State.OptimizerBoostConnection:Disconnect()
         State.OptimizerBoostConnection = nil
     end
+
+    if State.OptimizerWorldFlushConnection then
+        State.OptimizerWorldFlushConnection:Disconnect()
+        State.OptimizerWorldFlushConnection = nil
+    end
+
+    if State.OptimizerWorldScanThread then
+        pcall(task.cancel, State.OptimizerWorldScanThread)
+        State.OptimizerWorldScanThread = nil
+    end
+
+    State.OptimizerWorldQueue = nil
 
     _G.ExtremeBoost = false
 
@@ -1481,6 +1597,12 @@ function restoreEliteOptimizer()
         end)
 
         pcall(function()
+            if o.LightingTechnology then
+                Lighting.Technology = o.LightingTechnology
+            end
+        end)
+
+        pcall(function()
             if o.PhysicsThrottle then
                 settings().Physics.PhysicsEnvironmentalThrottle = o.PhysicsThrottle
             end
@@ -1489,6 +1611,18 @@ function restoreEliteOptimizer()
         pcall(function()
             if o.RenderQuality then
                 settings().Rendering.QualityLevel = o.RenderQuality
+            end
+        end)
+
+        pcall(function()
+            if o.SavedQualityLevel then
+                UserSettings():GetService('UserGameSettings').SavedQualityLevel = o.SavedQualityLevel
+            end
+        end)
+
+        pcall(function()
+            if o.MeshPartDetailLevel then
+                settings().Rendering.MeshPartDetailLevel = o.MeshPartDetailLevel
             end
         end)
 
@@ -1546,19 +1680,6 @@ function restoreOptimizer()
 
     stopPlantEffectMaintain()
 
-    if State.OptimizerChanged then
-        for _, entry in ipairs(State.OptimizerChanged) do
-            local inst = entry.inst
-            if inst and inst.Parent then
-                for prop, val in entry.props do
-                    pcall(function()
-                        inst[prop] = val
-                    end)
-                end
-            end
-        end
-    end
-
     for inst, props in State.OptimizerPlantRecordCache do
         if inst and inst.Parent then
             for prop, val in props do
@@ -1573,7 +1694,6 @@ function restoreOptimizer()
 
     State.OptimizerEnabled = false
     State.OptimizerOriginal = nil
-    State.OptimizerChanged = nil
     State.OptimizerPlantRecordCache = {}
 end
 
@@ -1590,14 +1710,16 @@ function setOptimizer(enabled)
 
     local startingFresh = not State.OptimizerEnabled
     State.OptimizerEnabled = true
-    State.OptimizerPlantRecordCache = {}
 
     if startingFresh then
-        State.OptimizerChanged = {}
+        State.OptimizerPlantRecordCache = {}
+        State.OptimizerPlantIncomingQueue = {}
+        State.PlantEmitterSet = {}
+        State.PlantEmitterCache = {}
         State.OptimizerElitePartCache = {}
         State.OptimizerEliteBoostCache = {}
         State.OptimizerEliteEffectCache = {}
-        applyEliteOptimizer()
+        applyEliteOptimizer(applyToken)
     end
 
     updatePlantEffectMaintain()
@@ -1615,7 +1737,6 @@ function setOptimizer(enabled)
 
         ensurePlantWatchers()
         ensureFruitsFolderWatchers()
-        refreshPlantEmitterCache()
         State.OptimizerScanThread = nil
     end)
 end
@@ -1656,14 +1777,11 @@ function resolveRecipientId(input)
 end
 
 function isGiftableEntry(category, key, value)
-    -- Many categories are stored as number counts.
     if typeof(value) == 'number' then
         return value > 0
     end
 
-    -- Some categories (fruits, pets, possibly eggs/other uniques) are stored as tables with an Id.
     if typeof(value) == 'table' and value.Id ~= nil then
-        -- Pets/uniques should not send equipped ones.
         if value.Equipped == true then
             return false
         end
@@ -1713,7 +1831,6 @@ function getGiftableInventory()
         end
     end
 
-    -- If the game adds new giftable categories (e.g. eggs), include them even if the catalog list is out of date.
     for categoryName in inventory do
         if typeof(categoryName) == 'string' and not seenCategory[categoryName] then
             seenCategory[categoryName] = true
@@ -1740,8 +1857,6 @@ function getGiftableInventory()
         end
     end
 
-    -- Harvested fruits are often only present as Tools (not in replica inventory).
-    -- Mailbox expects ItemKey = fruit Tool's Id attribute (string UUID).
     pcall(function()
         local backpack = LocalPlayer:FindFirstChild('Backpack')
         local character = LocalPlayer.Character
@@ -2610,7 +2725,6 @@ function tryPurchaseSeed(itemName)
 end
 
 function tryPurchaseProp(itemName)
-    -- Crate shop (props). Prices aren't exposed consistently; rely on server to reject if unaffordable.
     tryPurchaseItem('CrateShop', itemName, nil, function()
         Networking.CrateShop.PurchaseCrate:Fire(itemName)
     end)
@@ -2657,6 +2771,8 @@ local AUCTION_GEAR_CATEGORIES = {
     gear = true,
     wateringcans = true,
     wateringcan = true,
+    cans = true,
+    can = true,
     sprinklers = true,
     sprinkler = true,
     mushrooms = true,
@@ -4288,20 +4404,20 @@ getgenv().GG2_FromAutoExec = true
 getgenv().GG2_SkipRemoteUpdate = true
 local commit = %q
 local ok, err = pcall(function()
-    local url = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/' .. commit .. '/loader.lua'
+    local url = 'https://raw.githubusercontent.com/%s/' .. commit .. '/%s'
     local source = game:HttpGet(url, true)
     if type(source) ~= 'string' or source == '' or source == '404: Not Found' then
         error('loader download failed for commit ' .. commit)
     end
-    loadstring(source, 'loader.lua')()
+    loadstring(source, '%s')()
 end)
 if not ok and commit ~= 'main' then
     pcall(function()
-        local source = game:HttpGet('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/loader.lua', true)
-        loadstring(source, 'loader.lua')()
+        local source = game:HttpGet('https://raw.githubusercontent.com/%s/main/%s', true)
+        loadstring(source, '%s')()
     end)
 end
-]], commit)
+]], commit, GG2_REPO, GG2_LOADER_SCRIPT, GG2_LOADER_SCRIPT, GG2_REPO, GG2_LOADER_SCRIPT, GG2_LOADER_SCRIPT)
 end
 
 function queueTeleportScript()
@@ -5292,7 +5408,6 @@ MenuBox:AddButton({
     end,
 })
 
--- Mail UI (Linoria)
 local MailClaimStatus = MailClaimBox:AddLabel('Claimed: 0 | Failed: 0 | Status: Idle', true)
 local MailProgressLabel = MailClaimBox:AddLabel('Progress: -', true)
 
