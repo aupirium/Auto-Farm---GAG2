@@ -403,6 +403,8 @@ end
 
 function saveConfigBeforeTeleport()
     pcall(function()
+        captureConfigTargetPlant()
+
         if not SaveManager or not isfile then
             return
         end
@@ -758,6 +760,8 @@ local State = {
     WateringStop = false,
     WateringBusy = false,
     GearWalkBusy = false,
+    ConfigTargetPlant = nil,
+    LastGearWalkAttempt = 0,
     SprinklerPlacePending = false,
     WeatherHiding = false,
     ReturnJobId = nil,
@@ -2254,13 +2258,38 @@ function findPlantModelById(plantsFolder, plantId)
         return nil
     end
 
+    plantId = tostring(plantId)
+
     for _, model in plantsFolder:GetChildren() do
-        if model:GetAttribute('PlantId') == plantId then
+        local attr = model:GetAttribute('PlantId')
+        if attr and tostring(attr) == plantId then
+            return model
+        end
+        if string.find(model.Name, plantId, 1, true) then
             return model
         end
     end
 
     return nil
+end
+
+function waitForGardenReady(timeout)
+    timeout = timeout or 60
+    local deadline = os.clock() + timeout
+
+    while os.clock() < deadline do
+        local plot = getPlot()
+        local plants = plot and plot:FindFirstChild('Plants')
+        local garden = GardenSync:GetGarden(LocalPlayer.UserId)
+
+        if plants and typeof(garden) == 'table' and next(garden) ~= nil then
+            return true
+        end
+
+        task.wait(0.25)
+    end
+
+    return false
 end
 
 function getPlantModelsByType(plantName)
@@ -2308,6 +2337,10 @@ function getClusterCenter(positions)
 end
 
 function getSelectedTargetPlant()
+    if State.ConfigTargetPlant and State.ConfigTargetPlant ~= 'None' then
+        return State.ConfigTargetPlant
+    end
+
     if not Options or not Options.TargetPlant then
         return nil
     end
@@ -2318,6 +2351,17 @@ function getSelectedTargetPlant()
     end
 
     return plantName
+end
+
+function captureConfigTargetPlant()
+    if not Options or not Options.TargetPlant then
+        return
+    end
+
+    local plantName = Options.TargetPlant.Value
+    if type(plantName) == 'string' and plantName ~= '' and plantName ~= 'None' then
+        State.ConfigTargetPlant = plantName
+    end
 end
 
 function getGearTargetPosition()
@@ -2342,24 +2386,33 @@ function refreshTargetPlantDropdown()
         return
     end
 
-    local current = Options.TargetPlant.Value
+    local preferred = State.ConfigTargetPlant
+    if not preferred or preferred == 'None' then
+        preferred = Options.TargetPlant.Value
+    end
+
     local values = { 'None' }
+    local seen = { None = true }
+
     for _, plantName in getGardenPlantTypes() do
-        table.insert(values, plantName)
+        if not seen[plantName] then
+            seen[plantName] = true
+            table.insert(values, plantName)
+        end
+    end
+
+    if preferred and preferred ~= 'None' and not seen[preferred] then
+        table.insert(values, preferred)
     end
 
     Options.TargetPlant:SetValues(values)
 
-    if current then
-        for _, value in values do
-            if value == current then
-                Options.TargetPlant:SetValue(current)
-                return
-            end
-        end
+    if preferred and preferred ~= 'None' and preferred ~= '' then
+        Options.TargetPlant:SetValue(preferred)
+        State.ConfigTargetPlant = preferred
+    else
+        Options.TargetPlant:SetValue('None')
     end
-
-    Options.TargetPlant:SetValue('None')
 end
 
 function ensureAtGearTarget()
@@ -2387,7 +2440,12 @@ function ensureAtGearTarget()
         return true
     end
 
+    if os.clock() - (State.LastGearWalkAttempt or 0) < 8 then
+        return false
+    end
+
     State.GearWalkBusy = true
+    State.LastGearWalkAttempt = os.clock()
     local ok = walkNearPosition(walkTarget, 8)
     State.GearWalkBusy = false
     return ok
@@ -4566,11 +4624,13 @@ function doStartupWalk()
         char:WaitForChild('HumanoidRootPart', 15)
         task.wait(0.5)
 
+        waitForGardenReady(30)
+        captureConfigTargetPlant()
         refreshTargetPlantDropdown()
         loadWeatherState()
 
         local basePos = getGearTargetPosition()
-        if State.PendingWalkBack and State.ReturnPosX and State.ReturnPosY and State.ReturnPosZ then
+        if not basePos and State.PendingWalkBack and State.ReturnPosX and State.ReturnPosY and State.ReturnPosZ then
             basePos = Vector3.new(State.ReturnPosX, State.ReturnPosY, State.ReturnPosZ)
         end
 
@@ -4644,6 +4704,20 @@ local function httpGet(url)
 end
 
 local function tryRun()
+    for _, path in {
+        'GG2/loader.lua',
+        'loader.lua',
+        'GG2/gag2.lua',
+        'gag2.lua',
+        'GG2/grow_garden_autofarm.lua',
+        'grow_garden_autofarm.lua',
+    } do
+        local src = canRead(path)
+        if src and runSource(src, path) then
+            return true
+        end
+    end
+
     local urls = {
         'https://raw.githubusercontent.com/' .. repo .. '/' .. commit .. '/loader.lua',
         'https://raw.githubusercontent.com/' .. repo .. '/main/loader.lua',
@@ -4654,18 +4728,6 @@ local function tryRun()
     for _, url in urls do
         local src = httpGet(url)
         if src and runSource(src, 'gg2-loader') then
-            return true
-        end
-    end
-
-    for _, path in {
-        'GG2/gag2.lua',
-        'gag2.lua',
-        'GG2/grow_garden_autofarm.lua',
-        'grow_garden_autofarm.lua',
-    } do
-        local src = canRead(path)
-        if src and runSource(src, path) then
             return true
         end
     end
@@ -5387,6 +5449,13 @@ GearBox:AddDropdown('TargetPlant', {
     Values = { 'None' },
     Default = 'None',
     Tooltip = 'Centers sprinkler/watering on this plant type on your current plot',
+    Callback = function(value)
+        if type(value) == 'string' and value ~= '' and value ~= 'None' then
+            State.ConfigTargetPlant = value
+        else
+            State.ConfigTargetPlant = nil
+        end
+    end,
 })
 
 GearBox:AddButton({
@@ -5899,13 +5968,15 @@ end
 
 task.defer(function()
     SaveManager:LoadAutoloadConfig()
+    captureConfigTargetPlant()
     if Options.MenuKeybind then
         Library.ToggleKeybind = Options.MenuKeybind
     end
     if Toggles.AntiAfk and Toggles.AntiAfk.Value then
         setAntiAfk(true)
     end
-    task.wait(0.25)
+
+    waitForGardenReady(45)
     refreshTargetPlantDropdown()
     doStartupWalk()
 
@@ -5970,7 +6041,10 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
-    task.defer(refreshTargetPlantDropdown)
+    task.defer(function()
+        waitForGardenReady(20)
+        refreshTargetPlantDropdown()
+    end)
     if Toggles.Noclip and Toggles.Noclip.Value then
         task.defer(function()
             setNoclip(true)
