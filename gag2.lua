@@ -745,7 +745,6 @@ for _, entry in SprinklerData do
 end
 
 local State = {
-    SavedPosition = nil,
     LastSprinklerPlace = 0,
     LastWatering = 0,
     LastSell = 0,
@@ -2334,7 +2333,7 @@ function getGearTargetPosition()
         end
     end
 
-    return State.SavedPosition
+    return nil
 end
 
 function refreshTargetPlantDropdown()
@@ -4407,7 +4406,6 @@ function isWeatherHideTimerElapsed()
 end
 
 function saveWeatherState()
-    local savedPos = State.SavedPosition
     local data = {
         Hiding = State.WeatherHiding,
         ReturnJobId = State.ReturnJobId,
@@ -4419,9 +4417,6 @@ function saveWeatherState()
         ReturnPosX = State.ReturnPosX,
         ReturnPosY = State.ReturnPosY,
         ReturnPosZ = State.ReturnPosZ,
-        SavedPosX = savedPos and savedPos.X,
-        SavedPosY = savedPos and savedPos.Y,
-        SavedPosZ = savedPos and savedPos.Z,
     }
 
     GENV.GG2_WeatherState = data
@@ -4444,13 +4439,6 @@ function loadWeatherState()
     State.ReturnPosX = tonumber(saved.ReturnPosX)
     State.ReturnPosY = tonumber(saved.ReturnPosY)
     State.ReturnPosZ = tonumber(saved.ReturnPosZ)
-
-    local sx = tonumber(saved.SavedPosX)
-    local sy = tonumber(saved.SavedPosY)
-    local sz = tonumber(saved.SavedPosZ)
-    if sx and sy and sz and not State.SavedPosition then
-        State.SavedPosition = Vector3.new(sx, sy, sz)
-    end
 
     GENV.GG2_WeatherState = saved
 end
@@ -4487,14 +4475,14 @@ function clearWeatherState(options)
 end
 
 function saveAutoExecWalkState()
-    State.PendingWalkToSaved = State.SavedPosition ~= nil
+    State.PendingWalkToSaved = getGearTargetPosition() ~= nil
         or (State.ReturnPosX ~= nil and State.ReturnPosY ~= nil and State.ReturnPosZ ~= nil)
     saveWeatherState()
 end
 
 function saveWeatherReturnPosition()
     local root = getCharacter() and getCharacter():FindFirstChild('HumanoidRootPart')
-    local pos = root and root.Position or State.SavedPosition
+    local pos = root and root.Position or getGearTargetPosition()
 
     if not pos then
         return false
@@ -4556,11 +4544,8 @@ function doStartupWalk()
         char:WaitForChild('HumanoidRootPart', 15)
         task.wait(0.5)
 
-        loadPositionFromConfig()
         refreshTargetPlantDropdown()
-        if not State.SavedPosition then
-            loadWeatherState()
-        end
+        loadWeatherState()
 
         local basePos = getGearTargetPosition()
         if State.PendingWalkBack and State.ReturnPosX and State.ReturnPosY and State.ReturnPosZ then
@@ -5284,30 +5269,6 @@ function setWeatherDodge(enabled)
     end)
 end
 
-function savePositionToConfig(pos)
-    if not pos or not Options.SavedPosX then
-        return
-    end
-
-    Options.SavedPosX:SetValue(string.format('%.3f', pos.X))
-    Options.SavedPosY:SetValue(string.format('%.3f', pos.Y))
-    Options.SavedPosZ:SetValue(string.format('%.3f', pos.Z))
-end
-
-function loadPositionFromConfig()
-    if not Options.SavedPosX then
-        return
-    end
-
-    local x = tonumber(Options.SavedPosX.Value)
-    local y = tonumber(Options.SavedPosY.Value)
-    local z = tonumber(Options.SavedPosZ.Value)
-
-    if x and y and z then
-        State.SavedPosition = Vector3.new(x, y, z)
-    end
-end
-
 local Window = Library:CreateWindow({
     Title = 'Grow a Garden 2 - Auto Farm',
     Center = true,
@@ -5366,46 +5327,6 @@ hookFruitsTabAutoScan(Tabs.Fruits)
 
 local OptimizerBox = Tabs.Settings:AddLeftGroupbox('Optimizer')
 local MenuBox = Tabs.Settings:AddRightGroupbox('Menu')
-
-GearBox:AddButton({
-    Text = 'Save Current Position',
-    Func = function()
-        local root = getCharacter() and getCharacter():FindFirstChild('HumanoidRootPart')
-        if root then
-            State.SavedPosition = root.Position
-            savePositionToConfig(State.SavedPosition)
-            Library:Notify('Saved position for sprinkler & watering can')
-        else
-            Library:Notify('No character found')
-        end
-    end,
-})
-
-GearBox:AddInput('SavedPosX', {
-    Text = 'SavedPosX',
-    Default = '',
-    Visible = false,
-})
-
-GearBox:AddInput('SavedPosY', {
-    Text = 'SavedPosY',
-    Default = '',
-    Visible = false,
-})
-
-GearBox:AddInput('SavedPosZ', {
-    Text = 'SavedPosZ',
-    Default = '',
-    Visible = false,
-})
-
-for _, optionName in { 'SavedPosX', 'SavedPosY', 'SavedPosZ' } do
-    if Options[optionName] then
-        Options[optionName]:OnChanged(function()
-            loadPositionFromConfig()
-        end)
-    end
-end
 
 GearBox:AddToggle('Noclip', {
     Text = 'Noclip',
@@ -5942,7 +5863,6 @@ task.defer(function()
         setAntiAfk(true)
     end
     task.wait(0.25)
-    loadPositionFromConfig()
     refreshTargetPlantDropdown()
     doStartupWalk()
 
@@ -6040,4 +5960,4 @@ task.spawn(function()
     end
 end)
 
-Library:Notify('Grow a Garden 2 Auto Farm loaded! Save your position first.')
+Library:Notify('Grow a Garden 2 Auto Farm loaded! Pick a target plant in Gear.')
