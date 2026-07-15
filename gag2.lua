@@ -8,6 +8,10 @@ if GENV.GG2_AutoFarmShutdown then
     task.wait(0.05)
 end
 
+if GENV.GG2_FromAutoExec then
+    GENV.GG2_AutoFarmRunning = nil
+end
+
 if GENV.GG2_AutoFarmRunning then
     return
 end
@@ -78,7 +82,7 @@ if not GENV.GG2_SkipRemoteUpdate and not GENV.GG2_FromAutoExec and type(writefil
         remote = stripBomEarly(remote)
         local localSrc = nil
 
-        for _, path in { 'GG2/grow_garden_autofarm.lua', 'grow_garden_autofarm.lua' } do
+        for _, path in { 'GG2/gag2.lua', 'gag2.lua', 'GG2/grow_garden_autofarm.lua', 'grow_garden_autofarm.lua' } do
             local readOk, content = pcall(function()
                 return readfile(path)
             end)
@@ -92,8 +96,8 @@ if not GENV.GG2_SkipRemoteUpdate and not GENV.GG2_FromAutoExec and type(writefil
             if makefolder and (not isfolder or not isfolder('GG2')) then
                 makefolder('GG2')
             end
-            writefile('GG2/grow_garden_autofarm.lua', remote)
-            writefile('grow_garden_autofarm.lua', remote)
+            writefile('GG2/gag2.lua', remote)
+            writefile('gag2.lua', remote)
         end)
 
         if localSrc and localSrc ~= remote then
@@ -103,7 +107,7 @@ if not GENV.GG2_SkipRemoteUpdate and not GENV.GG2_FromAutoExec and type(writefil
                 task.wait(0.05)
             end
             GENV.GG2_AutoFarmRunning = false
-            local func = loadstring(remote, 'grow_garden_autofarm.lua')
+            local func = loadstring(remote, 'gag2.lua')
             if func then
                 func()
                 return
@@ -177,8 +181,8 @@ local BLOCKABLE_WEATHERS = {
 }
 
 local WEATHER_STATE_FILE = 'GG2_WeatherState.json'
-local AUTO_FARM_SCRIPT = 'grow_garden_autofarm.lua'
-local GG2_SCRIPT_PATH = 'GG2/grow_garden_autofarm.lua'
+local AUTO_FARM_SCRIPT = 'gag2.lua'
+local GG2_SCRIPT_PATH = 'GG2/gag2.lua'
 local GG2_COMMIT_FILE = 'GG2/commit.txt'
 local GG2_PLACE_ID = 97598239454123
 local GG2_REPO = 'aupirium/Auto-Farm---GAG2'
@@ -229,8 +233,24 @@ function ensureCommitFile()
     ensureGg2Folders()
     local commit = getRemoteCommit()
     return pcall(function()
-        writefile(GG2_COMMIT_FILE, commit)
+        writefile(GG2_COMMIT_FILE, commit:gsub('%s+', ''))
     end)
+end
+
+function readCommitFile()
+    if not readfile then
+        return 'main'
+    end
+
+    local ok, raw = pcall(readfile, GG2_COMMIT_FILE)
+    if ok and type(raw) == 'string' then
+        local commit = raw:gsub('%s+', '')
+        if commit ~= '' then
+            return commit
+        end
+    end
+
+    return 'main'
 end
 
 function httpGet(url)
@@ -333,6 +353,10 @@ function persistAutoFarmScript()
         GG2_SCRIPT_PATH,
         'workspace/' .. AUTO_FARM_SCRIPT,
         'scripts/' .. AUTO_FARM_SCRIPT,
+        'grow_garden_autofarm.lua',
+        'GG2/grow_garden_autofarm.lua',
+        'workspace/grow_garden_autofarm.lua',
+        'scripts/grow_garden_autofarm.lua',
     } do
         if isfile(path) then
             local ok, source = pcall(readfile, path)
@@ -4257,12 +4281,27 @@ function doStartupWalk()
 end
 
 function getAutoExecQueueScript()
-    return [[
+    local commit = readCommitFile()
+    return string.format([[
 getgenv().GG2_AutoFarmRunning = nil
 getgenv().GG2_FromAutoExec = true
 getgenv().GG2_SkipRemoteUpdate = true
-loadstring(game:HttpGet('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/'..readfile('GG2/commit.txt')..'/loader.lua', true))()
-]]
+local commit = %q
+local ok, err = pcall(function()
+    local url = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/' .. commit .. '/loader.lua'
+    local source = game:HttpGet(url, true)
+    if type(source) ~= 'string' or source == '' or source == '404: Not Found' then
+        error('loader download failed for commit ' .. commit)
+    end
+    loadstring(source, 'loader.lua')()
+end)
+if not ok and commit ~= 'main' then
+    pcall(function()
+        local source = game:HttpGet('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/loader.lua', true)
+        loadstring(source, 'loader.lua')()
+    end)
+end
+]], commit)
 end
 
 function queueTeleportScript()
@@ -4289,16 +4328,11 @@ function setupAutoExecute()
     queueTeleportScript()
 
     if State.AutoExecTeleportConnection then
-        return
+        State.AutoExecTeleportConnection:Disconnect()
+        State.AutoExecTeleportConnection = nil
     end
 
-    local teleportedOnce = false
     State.AutoExecTeleportConnection = LocalPlayer.OnTeleport:Connect(function()
-        if teleportedOnce then
-            return
-        end
-        teleportedOnce = true
-
         saveAutoExecWalkState()
         saveConfigBeforeTeleport()
         queueTeleportScript()
