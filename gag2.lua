@@ -875,6 +875,8 @@ local State = {
     OptimizerCameraShakeConnection = nil,
     OptimizerParticleConnection = nil,
     OptimizerCharacterConnection = nil,
+    OptimizerPendingApply = nil,
+    ConfigLoading = false,
     OptimizerPlantIncomingQueue = nil,
     PlantEmitterSet = {},
     OptimizerPartCache = {},
@@ -1420,22 +1422,19 @@ end
 
 function scanOptimizerWorldClean(applyToken)
     local descendants = workspace:GetDescendants()
-    local index = 1
-    local total = #descendants
-
-    while index <= total do
+    for i = 1, #descendants do
         if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-            return
+            return false
         end
 
-        local frameStart = os.clock()
-        while index <= total and os.clock() - frameStart < OPTIMIZER_FRAME_BUDGET do
-            optimizerCleanPart(descendants[index])
-            index += 1
-        end
+        optimizerCleanPart(descendants[i])
 
-        RunService.Heartbeat:Wait()
+        if i % 800 == 0 then
+            RunService.Heartbeat:Wait()
+        end
     end
+
+    return true
 end
 
 function applyOptimizerLighting()
@@ -1685,8 +1684,6 @@ function applyWorldOptimizer()
         optimizerSafeSet(terrain, 'WaterWaveSpeed', 0)
         optimizerSafeSet(terrain, 'WaterReflectance', 0)
     end
-
-    startOptimizerExtras()
 end
 
 function startWorldOptimizerMaintenance(applyToken)
@@ -1700,16 +1697,21 @@ function startWorldOptimizerMaintenance(applyToken)
         State.OptimizerWorldDescendantConnection = nil
     end
 
-    State.OptimizerWorldDescendantConnection = workspace.DescendantAdded:Connect(function(desc)
-        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+    State.OptimizerWorldScanThread = task.spawn(function()
+        local finished = scanOptimizerWorldClean(applyToken)
+        if not finished or applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
             return
         end
 
-        optimizerCleanPart(desc)
-    end)
+        startOptimizerExtras()
 
-    State.OptimizerWorldScanThread = task.spawn(function()
-        scanOptimizerWorldClean(applyToken)
+        State.OptimizerWorldDescendantConnection = workspace.DescendantAdded:Connect(function(desc)
+            if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+                return
+            end
+
+            optimizerCleanPart(desc)
+        end)
 
         if applyToken == State.OptimizerApplyToken and State.OptimizerEnabled then
             State.OptimizerWorldScanThread = nil
@@ -1802,26 +1804,60 @@ function restoreOptimizer()
     State.OptimizerPlantRecordCache = {}
 end
 
+function cancelOptimizerPendingApply()
+    if State.OptimizerPendingApply then
+        pcall(task.cancel, State.OptimizerPendingApply)
+        State.OptimizerPendingApply = nil
+    end
+end
+
+function scheduleOptimizerApply()
+    cancelOptimizerPendingApply()
+
+    State.OptimizerPendingApply = task.spawn(function()
+        waitForLoadingScreenDismiss(180)
+
+        if Library.Unloaded or not Toggles.Optimizer or not Toggles.Optimizer.Value then
+            State.OptimizerPendingApply = nil
+            return
+        end
+
+        waitForGardenReady(90)
+        task.wait(5)
+
+        if Library.Unloaded or not Toggles.Optimizer or not Toggles.Optimizer.Value then
+            State.OptimizerPendingApply = nil
+            return
+        end
+
+        State.OptimizerPendingApply = nil
+        setOptimizer(true)
+    end)
+end
+
 function setOptimizer(enabled)
     enabled = enabled == true
+
+    if enabled and State.OptimizerEnabled then
+        return
+    end
+
+    if not enabled and not State.OptimizerEnabled then
+        return
+    end
 
     State.OptimizerApplyToken += 1
     local applyToken = State.OptimizerApplyToken
 
     if not enabled then
+        cancelOptimizerPendingApply()
         restoreOptimizer()
         return
     end
 
-    local startingFresh = not State.OptimizerEnabled
     State.OptimizerEnabled = true
-
-    if startingFresh then
-        applyWorldOptimizer()
-        startWorldOptimizerMaintenance(applyToken)
-    end
-
-    updatePlantEffectMaintain()
+    applyWorldOptimizer()
+    startWorldOptimizerMaintenance(applyToken)
 end
 
 function abbreviate(n)
@@ -5865,11 +5901,17 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Full FPS optimizer: textures, particles, sounds, lighting, terrain, anti-fling, hides garden plants.',
+    Tooltip = 'Client FPS boost: smooth plastic world, custom sky/lighting, terrain, glow trail.',
     Callback = function(value)
-        task.defer(function()
-            setOptimizer(value)
-        end)
+        if State.ConfigLoading then
+            return
+        end
+
+        if value then
+            scheduleOptimizerApply()
+        else
+            setOptimizer(false)
+        end
     end,
 })
 
@@ -5885,6 +5927,7 @@ function shutdownScript()
 
     pcall(stopPlantEffectMaintain)
     pcall(setNoclip, false)
+    cancelOptimizerPendingApply()
     pcall(setOptimizer, false)
     pcall(setAutoHarvestLoop, false)
     pcall(setAutoWateringLoop, false)
@@ -6210,7 +6253,9 @@ elseif not isfile(GG2_SCRIPT_PATH) and not isfile(AUTO_FARM_SCRIPT) and not pers
 end
 
 task.defer(function()
+    State.ConfigLoading = true
     SaveManager:LoadAutoloadConfig()
+    State.ConfigLoading = false
     syncTargetPlantFromSavedConfig()
     captureConfigTargetPlant()
     if Options.MenuKeybind then
@@ -6264,18 +6309,14 @@ task.defer(function()
         end)
     end
 
-    task.wait(1)
-
-    if Toggles.Optimizer and Toggles.Optimizer.Value then
-        task.spawn(function()
-            setOptimizer(true)
-        end)
-    end
-
     task.wait(0.1)
     pcall(refreshMailInventory)
     updateWeatherLabels()
     queueTeleportScript()
+
+    if Toggles.Optimizer and Toggles.Optimizer.Value then
+        scheduleOptimizerApply()
+    end
 end)
 
 LocalPlayer.CharacterAdded:Connect(function()
