@@ -734,10 +734,12 @@ local SUPER_SPRINKLER = 'Super Sprinkler'
 local SUPER_CAN = 'Super Watering Can'
 
 local sprinklerLifetime = 120
+local sprinklerRadius = 55
 
 for _, entry in SprinklerData do
     if entry.SprinklerName == SUPER_SPRINKLER then
         sprinklerLifetime = entry.Lifetime or sprinklerLifetime
+        sprinklerRadius = entry.Radius or sprinklerRadius
         break
     end
 end
@@ -756,6 +758,7 @@ local State = {
     WateringConnection = nil,
     WateringStop = false,
     WateringBusy = false,
+    GearWalkBusy = false,
     SprinklerPlacePending = false,
     WeatherHiding = false,
     ReturnJobId = nil,
@@ -904,8 +907,43 @@ function startLoadingScreenAutoDismiss()
     end)
 end
 
-local OPTIMIZER_FRAME_BUDGET = 0.007
-local OPTIMIZER_WORLD_QUEUE_FLUSH = 48
+local OPTIMIZER_FRAME_BUDGET = 0.012
+
+function optimizerHideFast(inst)
+    if not inst or not inst.Parent then
+        return
+    end
+
+    if State.OptimizerPlantRecordCache[inst] then
+        if inst:IsA('BasePart') then
+            inst.LocalTransparencyModifier = 1
+            inst.CastShadow = false
+            inst.CanCollide = false
+        elseif inst:IsA('ParticleEmitter') then
+            inst.Enabled = false
+            inst.Rate = 0
+        end
+        return
+    end
+
+    if inst:IsA('BasePart') then
+        State.OptimizerPlantRecordCache[inst] = {
+            LocalTransparencyModifier = inst.LocalTransparencyModifier,
+            CastShadow = inst.CastShadow,
+            CanCollide = inst.CanCollide,
+        }
+        inst.LocalTransparencyModifier = 1
+        inst.CastShadow = false
+        inst.CanCollide = false
+    elseif inst:IsA('ParticleEmitter') then
+        State.OptimizerPlantRecordCache[inst] = {
+            Enabled = inst.Enabled,
+            Rate = inst.Rate,
+        }
+        inst.Enabled = false
+        inst.Rate = 0
+    end
+end
 
 function isGardenDescendant(inst)
     return inst == Gardens or inst:IsDescendantOf(Gardens)
@@ -1176,8 +1214,8 @@ end
 
 function hideWatchedPlantInstance(desc)
     if State.OptimizerEnabled and isPlantInstance(desc) then
-        suppressPlantVisual(desc, State.OptimizerPlantRecordCache)
-        trackPlantEmitter(desc)
+        optimizerHideFast(desc)
+        return
     end
 
     if Toggles.Noclip and Toggles.Noclip.Value then
@@ -1223,7 +1261,7 @@ function flushOptimizerPlantIncomingQueue(batchSize)
     batchSize = batchSize or 64
     local count = math.min(#queue, batchSize)
     for _ = 1, count do
-        local inst = table.remove(queue, 1)
+        local inst = table.remove(queue)
         if inst and inst.Parent then
             hideWatchedPlantInstance(inst)
         end
@@ -1266,7 +1304,15 @@ function ensurePlantWatchers()
     end
 
     for _, plants in getWatchedPlantsFolders() do
-        if not State.PlantWatchConnections[plants] then
+        if State.OptimizerEnabled then
+            if not State.PlantChildConnections[plants] then
+                State.PlantChildConnections[plants] = plants.ChildAdded:Connect(function(plantModel)
+                    task.defer(function()
+                        hideWatchedPlantTree(plantModel)
+                    end)
+                end)
+            end
+        elseif not State.PlantWatchConnections[plants] then
             State.PlantWatchConnections[plants] = plants.DescendantAdded:Connect(onPlantDescendantAdded)
         end
     end
@@ -1308,20 +1354,14 @@ function updatePlantEffectMaintain()
     end
 
     if not State.PlantEffectMaintainConnection then
-        local lastEmitterClear = 0
-
         State.PlantEffectMaintainConnection = RunService.Heartbeat:Connect(function()
             if not shouldMaintainPlantEffects() then
                 stopPlantEffectMaintain()
                 return
             end
 
-            flushOptimizerPlantIncomingQueue(64)
-
-            local now = os.clock()
-            if now - lastEmitterClear >= 3 then
-                lastEmitterClear = now
-                clearCachedPlantEmittersBatch(12)
+            if not State.OptimizerEnabled then
+                flushOptimizerPlantIncomingQueue(64)
             end
         end)
     end
@@ -1529,42 +1569,6 @@ function applyEliteOptimizer(applyToken)
             setfpscap(9999)
         end
     end)
-
-    _G.ExtremeBoost = true
-
-    if State.OptimizerBoostConnection then
-        State.OptimizerBoostConnection:Disconnect()
-        State.OptimizerBoostConnection = nil
-    end
-
-    if State.OptimizerWorldFlushConnection then
-        State.OptimizerWorldFlushConnection:Disconnect()
-        State.OptimizerWorldFlushConnection = nil
-    end
-
-    State.OptimizerWorldQueue = {}
-
-    State.OptimizerBoostConnection = workspace.DescendantAdded:Connect(function(desc)
-        if not State.OptimizerEnabled or isGardenDescendant(desc) then
-            return
-        end
-
-        table.insert(State.OptimizerWorldQueue, desc)
-    end)
-
-    State.OptimizerWorldFlushConnection = RunService.Heartbeat:Connect(function()
-        flushOptimizerWorldQueue()
-    end)
-
-    if State.OptimizerWorldScanThread then
-        pcall(task.cancel, State.OptimizerWorldScanThread)
-        State.OptimizerWorldScanThread = nil
-    end
-
-    State.OptimizerWorldScanThread = task.spawn(function()
-        eliteScanWorld(applyToken)
-        State.OptimizerWorldScanThread = nil
-    end)
 end
 
 function restoreEliteOptimizer()
@@ -1584,8 +1588,6 @@ function restoreEliteOptimizer()
     end
 
     State.OptimizerWorldQueue = nil
-
-    _G.ExtremeBoost = false
 
     if State.OptimizerOriginal then
         local o = State.OptimizerOriginal
@@ -2221,6 +2223,176 @@ function equipTool(tool)
     return getCharacter() and getCharacter():FindFirstChild(tool.Name) ~= nil
 end
 
+function getPlotPlantsFolder()
+    local plot = getPlot()
+    return plot and plot:FindFirstChild('Plants')
+end
+
+function getGardenPlantTypes()
+    local types = {}
+    local seen = {}
+
+    local garden = GardenSync:GetGarden(LocalPlayer.UserId)
+    if typeof(garden) ~= 'table' then
+        return types
+    end
+
+    for _, plant in garden do
+        local name = plant and plant.PlantName
+        if type(name) == 'string' and name ~= '' and not seen[name] then
+            seen[name] = true
+            table.insert(types, name)
+        end
+    end
+
+    table.sort(types)
+    return types
+end
+
+function findPlantModelById(plantsFolder, plantId)
+    if not plantsFolder or not plantId then
+        return nil
+    end
+
+    for _, model in plantsFolder:GetChildren() do
+        if model:GetAttribute('PlantId') == plantId then
+            return model
+        end
+    end
+
+    return nil
+end
+
+function getPlantModelsByType(plantName)
+    local models = {}
+    if type(plantName) ~= 'string' or plantName == '' or plantName == 'None' then
+        return models
+    end
+
+    local plantsFolder = getPlotPlantsFolder()
+    if not plantsFolder then
+        return models
+    end
+
+    local garden = GardenSync:GetGarden(LocalPlayer.UserId)
+    if typeof(garden) ~= 'table' then
+        return models
+    end
+
+    for plantId, plant in garden do
+        if plant and plant.PlantName == plantName then
+            local model = findPlantModelById(plantsFolder, plantId)
+            if model then
+                table.insert(models, model)
+            end
+        end
+    end
+
+    return models
+end
+
+function getClusterCenter(positions)
+    if #positions == 0 then
+        return nil
+    end
+
+    local sumX, sumY, sumZ = 0, 0, 0
+    for _, pos in positions do
+        sumX += pos.X
+        sumY += pos.Y
+        sumZ += pos.Z
+    end
+
+    local count = #positions
+    return Vector3.new(sumX / count, sumY / count, sumZ / count)
+end
+
+function getSelectedTargetPlant()
+    if not Options or not Options.TargetPlant then
+        return nil
+    end
+
+    local plantName = Options.TargetPlant.Value
+    if type(plantName) ~= 'string' or plantName == '' or plantName == 'None' then
+        return nil
+    end
+
+    return plantName
+end
+
+function getGearTargetPosition()
+    local plantName = getSelectedTargetPlant()
+    if plantName then
+        local positions = {}
+        for _, model in getPlantModelsByType(plantName) do
+            table.insert(positions, model:GetPivot().Position)
+        end
+
+        local center = getClusterCenter(positions)
+        if center then
+            return center
+        end
+    end
+
+    return State.SavedPosition
+end
+
+function refreshTargetPlantDropdown()
+    if not Options or not Options.TargetPlant then
+        return
+    end
+
+    local current = Options.TargetPlant.Value
+    local values = { 'None' }
+    for _, plantName in getGardenPlantTypes() do
+        table.insert(values, plantName)
+    end
+
+    Options.TargetPlant:SetValues(values)
+
+    if current then
+        for _, value in values do
+            if value == current then
+                Options.TargetPlant:SetValue(current)
+                return
+            end
+        end
+    end
+
+    Options.TargetPlant:SetValue('None')
+end
+
+function ensureAtGearTarget()
+    local targetPos = getGearTargetPosition()
+    if not targetPos then
+        return false
+    end
+
+    if not Toggles.AutoWalkToPlant or not Toggles.AutoWalkToPlant.Value then
+        return true
+    end
+
+    if State.GearWalkBusy then
+        return false
+    end
+
+    local char = getCharacter()
+    local root = char and char:FindFirstChild('HumanoidRootPart')
+    if not root then
+        return false
+    end
+
+    local walkTarget = getOutsideWalkTarget(targetPos, 10) or targetPos
+    if (root.Position - walkTarget).Magnitude <= 12 then
+        return true
+    end
+
+    State.GearWalkBusy = true
+    local ok = walkNearPosition(walkTarget, 8)
+    State.GearWalkBusy = false
+    return ok
+end
+
 function getPlacementPosition(savedPos)
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Include
@@ -2233,7 +2405,13 @@ function getPlacementPosition(savedPos)
         return result.Position
     end
 
-    return Vector3.new(savedPos.X, 142.602, savedPos.Z)
+    local plot = getPlot()
+    if plot then
+        local plotY = plot:GetPivot().Position.Y
+        return Vector3.new(savedPos.X, plotY + 2.35, savedPos.Z)
+    end
+
+    return Vector3.new(savedPos.X, savedPos.Y, savedPos.Z)
 end
 
 function getActiveSuperSprinkler()
@@ -2258,7 +2436,8 @@ function getActiveSuperSprinkler()
 end
 
 function placeSuperSprinkler()
-    if not State.SavedPosition then
+    local targetPos = getGearTargetPosition()
+    if not targetPos then
         return false
     end
 
@@ -2268,6 +2447,10 @@ function placeSuperSprinkler()
 
     local active = getActiveSuperSprinkler()
     if active then
+        return false
+    end
+
+    if not ensureAtGearTarget() then
         return false
     end
 
@@ -2290,7 +2473,7 @@ function placeSuperSprinkler()
         return false
     end
 
-    local position = getPlacementPosition(State.SavedPosition)
+    local position = getPlacementPosition(targetPos)
     Networking.Place.PlaceSprinkler:Fire(position, SUPER_SPRINKLER, tool, plotId)
     State.LastSprinklerPlace = os.clock()
     State.SprinklerPlacePending = true
@@ -2306,7 +2489,12 @@ function getWateringInterval()
 end
 
 function useSuperWateringCan()
-    if not State.SavedPosition or State.WateringBusy then
+    local targetPos = getGearTargetPosition()
+    if not targetPos or State.WateringBusy then
+        return false
+    end
+
+    if not ensureAtGearTarget() then
         return false
     end
 
@@ -2324,7 +2512,7 @@ function useSuperWateringCan()
         task.wait(0.05)
     end
 
-    local position = getPlacementPosition(State.SavedPosition)
+    local position = getPlacementPosition(targetPos)
     Networking.WateringCan.UseWateringCan:Fire(position - Vector3.new(0, 0.3, 0), SUPER_CAN, tool)
 
     State.WateringBusy = false
@@ -4369,11 +4557,12 @@ function doStartupWalk()
         task.wait(0.5)
 
         loadPositionFromConfig()
+        refreshTargetPlantDropdown()
         if not State.SavedPosition then
             loadWeatherState()
         end
 
-        local basePos = State.SavedPosition
+        local basePos = getGearTargetPosition()
         if State.PendingWalkBack and State.ReturnPosX and State.ReturnPosY and State.ReturnPosZ then
             basePos = Vector3.new(State.ReturnPosX, State.ReturnPosY, State.ReturnPosZ)
         end
@@ -4399,25 +4588,84 @@ end
 function getAutoExecQueueScript()
     local commit = readCommitFile()
     return string.format([[
+repeat task.wait() until game:IsLoaded()
+local Players = game:GetService('Players')
+if not Players.LocalPlayer then
+    Players.PlayerAdded:Wait()
+end
+
 getgenv().GG2_AutoFarmRunning = nil
 getgenv().GG2_FromAutoExec = true
 getgenv().GG2_SkipRemoteUpdate = true
+
 local commit = %q
-local ok, err = pcall(function()
-    local url = 'https://raw.githubusercontent.com/%s/' .. commit .. '/%s'
-    local source = game:HttpGet(url, true)
-    if type(source) ~= 'string' or source == '' or source == '404: Not Found' then
-        error('loader download failed for commit ' .. commit)
+local repo = %q
+
+local function canRead(path)
+    if typeof(isfile) ~= 'function' or typeof(readfile) ~= 'function' then
+        return nil
     end
-    loadstring(source, '%s')()
-end)
-if not ok and commit ~= 'main' then
-    pcall(function()
-        local source = game:HttpGet('https://raw.githubusercontent.com/%s/main/%s', true)
-        loadstring(source, '%s')()
-    end)
+    if not isfile(path) then
+        return nil
+    end
+    local ok, src = pcall(readfile, path)
+    if ok and type(src) == 'string' and src ~= '' then
+        return src
+    end
+    return nil
 end
-]], commit, GG2_REPO, GG2_LOADER_SCRIPT, GG2_LOADER_SCRIPT, GG2_REPO, GG2_LOADER_SCRIPT, GG2_LOADER_SCRIPT)
+
+local function runSource(src, label)
+    local func, err = loadstring(src, label or 'gg2')
+    if not func then
+        return false, err
+    end
+    local ok, runErr = pcall(func)
+    return ok, runErr
+end
+
+local function httpGet(url)
+    local ok, src = pcall(function()
+        return game:HttpGet(url, true)
+    end)
+    if ok and type(src) == 'string' and src ~= '' and src ~= '404: Not Found' then
+        return src
+    end
+    return nil
+end
+
+local function tryRun()
+    local urls = {
+        'https://raw.githubusercontent.com/' .. repo .. '/' .. commit .. '/loader.lua',
+        'https://raw.githubusercontent.com/' .. repo .. '/main/loader.lua',
+        'https://raw.githubusercontent.com/' .. repo .. '/' .. commit .. '/gag2.lua',
+        'https://raw.githubusercontent.com/' .. repo .. '/main/gag2.lua',
+    }
+
+    for _, url in urls do
+        local src = httpGet(url)
+        if src and runSource(src, 'gg2-loader') then
+            return true
+        end
+    end
+
+    for _, path in {
+        'GG2/gag2.lua',
+        'gag2.lua',
+        'GG2/grow_garden_autofarm.lua',
+        'grow_garden_autofarm.lua',
+    } do
+        local src = canRead(path)
+        if src and runSource(src, path) then
+            return true
+        end
+    end
+
+    return false
+end
+
+tryRun()
+]], commit, GG2_REPO)
 end
 
 function queueTeleportScript()
@@ -4452,6 +4700,15 @@ function setupAutoExecute()
         saveAutoExecWalkState()
         saveConfigBeforeTeleport()
         queueTeleportScript()
+    end)
+
+    task.defer(function()
+        task.wait(3)
+        queueTeleportScript()
+    end)
+
+    LocalPlayer.CharacterAdded:Connect(function()
+        task.delay(2, queueTeleportScript)
     end)
 end
 
@@ -5161,16 +5418,37 @@ GearBox:AddToggle('Noclip', {
     end,
 })
 
+GearBox:AddDropdown('TargetPlant', {
+    Text = 'Target Plant',
+    Values = { 'None' },
+    Default = 'None',
+    Tooltip = 'Centers sprinkler/watering on this plant type on your current plot',
+})
+
+GearBox:AddButton({
+    Text = 'Refresh Plant List',
+    Func = function()
+        refreshTargetPlantDropdown()
+        Library:Notify('Plant list refreshed')
+    end,
+})
+
+GearBox:AddToggle('AutoWalkToPlant', {
+    Text = 'Walk To Target',
+    Default = true,
+    Tooltip = 'Walks to the plant cluster before using sprinkler or watering can',
+})
+
 GearBox:AddToggle('AutoSprinkler', {
     Text = 'Auto Super Sprinkler',
     Default = false,
-    Tooltip = 'Keeps 1 Super Sprinkler active at your saved position',
+    Tooltip = 'Keeps 1 Super Sprinkler at the target plant center (radius ' .. tostring(sprinklerRadius) .. ')',
 })
 
 GearBox:AddToggle('AutoWateringCan', {
     Text = 'Auto Super Watering Can',
     Default = false,
-    Tooltip = 'Uses 1 Super Watering Can at saved position on the interval below',
+    Tooltip = 'Uses 1 Super Watering Can at the target plant center on the interval below',
     Callback = function(value)
         setAutoWateringLoop(value)
     end,
@@ -5665,6 +5943,7 @@ task.defer(function()
     end
     task.wait(0.25)
     loadPositionFromConfig()
+    refreshTargetPlantDropdown()
     doStartupWalk()
 
     if Toggles.AutoWateringCan and Toggles.AutoWateringCan.Value then
@@ -5728,6 +6007,7 @@ LocalPlayer.CharacterAdded:Connect(function()
 end)
 
 LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
+    task.defer(refreshTargetPlantDropdown)
     if Toggles.Noclip and Toggles.Noclip.Value then
         task.defer(function()
             setNoclip(true)
