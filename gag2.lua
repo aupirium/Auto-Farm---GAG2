@@ -1811,19 +1811,19 @@ function cancelOptimizerPendingApply()
     end
 end
 
-function scheduleOptimizerApply()
+function scheduleOptimizerApply(fast)
     cancelOptimizerPendingApply()
 
     State.OptimizerPendingApply = task.spawn(function()
-        waitForLoadingScreenDismiss(180)
-
-        if Library.Unloaded or not Toggles.Optimizer or not Toggles.Optimizer.Value then
-            State.OptimizerPendingApply = nil
-            return
+        if not fast then
+            if LocalPlayer:GetAttribute('LoadingScreenDone') ~= true then
+                waitForLoadingScreenDismiss(120)
+            end
+            waitForGardenReady(30)
+            task.wait(1)
+        else
+            task.wait(0.5)
         end
-
-        waitForGardenReady(90)
-        task.wait(5)
 
         if Library.Unloaded or not Toggles.Optimizer or not Toggles.Optimizer.Value then
             State.OptimizerPendingApply = nil
@@ -2675,20 +2675,18 @@ function ensureAtGearTarget()
         return false
     end
 
-    local walkTarget = getOutsideWalkTarget(targetPos, 10) or targetPos
-    if (root.Position - walkTarget).Magnitude <= 12 then
+    local standoff = 12
+    local walkTarget = getOutsideWalkTarget(targetPos, standoff) or targetPos
+    local flatDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(walkTarget.X, 0, walkTarget.Z)).Magnitude
+    if flatDist <= 12 then
         return true
-    end
-
-    if os.clock() - (State.LastGearWalkAttempt or 0) < 8 then
-        return false
     end
 
     State.GearWalkBusy = true
     State.LastGearWalkAttempt = os.clock()
-    local ok = walkNearPosition(walkTarget, 8)
+    walkNearPosition(targetPos, standoff)
     State.GearWalkBusy = false
-    return ok
+    return true
 end
 
 function getPlacementPosition(savedPos)
@@ -4650,24 +4648,24 @@ function getOutsideWalkTarget(basePos, standoff)
         return nil
     end
 
-    local char = getCharacter()
-    local root = char and char:FindFirstChild('HumanoidRootPart')
-    if root then
-        local flatTo = Vector3.new(basePos.X - root.Position.X, 0, basePos.Z - root.Position.Z)
-        local dist = flatTo.Magnitude
-        if dist > standoff + 2 then
-            local flatPos = root.Position + flatTo.Unit * (dist - standoff)
-            return Vector3.new(flatPos.X, basePos.Y, flatPos.Z)
-        end
-    end
-
     local plot = getPlot()
     if plot then
         local plotPivot = plot:GetPivot().Position
         local fromCenter = Vector3.new(basePos.X - plotPivot.X, 0, basePos.Z - plotPivot.Z)
         if fromCenter.Magnitude > 0.5 then
-            local edge = plotPivot + fromCenter.Unit * (fromCenter.Magnitude + standoff)
-            return Vector3.new(edge.X, basePos.Y, edge.Z)
+            local outside = basePos + fromCenter.Unit * standoff
+            return Vector3.new(outside.X, basePos.Y, outside.Z)
+        end
+    end
+
+    local char = getCharacter()
+    local root = char and char:FindFirstChild('HumanoidRootPart')
+    if root then
+        local flatTo = Vector3.new(basePos.X - root.Position.X, 0, basePos.Z - root.Position.Z)
+        local dist = flatTo.Magnitude
+        if dist > 0.5 then
+            local outside = basePos - flatTo.Unit * math.min(standoff, math.max(dist - 1, 1))
+            return Vector3.new(outside.X, basePos.Y, outside.Z)
         end
     end
 
@@ -4851,6 +4849,7 @@ function walkNearPosition(basePos, standoff)
         pcall(function()
             root.CFrame = CFrame.new(target + Vector3.new(0, 3, 0))
         end)
+        walked = true
     end
 
     return walked
@@ -6315,7 +6314,7 @@ task.defer(function()
     queueTeleportScript()
 
     if Toggles.Optimizer and Toggles.Optimizer.Value then
-        scheduleOptimizerApply()
+        scheduleOptimizerApply(true)
     end
 end)
 
