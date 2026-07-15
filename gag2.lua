@@ -191,6 +191,7 @@ local Gardens = workspace:WaitForChild('Gardens')
 local WeatherValues = ReplicatedStorage:WaitForChild('WeatherValues')
 local StockValues = ReplicatedStorage:WaitForChild('StockValues')
 local Lighting = game:GetService('Lighting')
+local CoreGui = game:GetService('CoreGui')
 
 local EVENT_WEATHERS = {
     'Lightning',
@@ -862,16 +863,18 @@ local State = {
     OptimizerApplyToken = 0,
     OptimizerScanThread = nil,
     OptimizerWorldScanThread = nil,
-    OptimizerBoostConnection = nil,
-    OptimizerWorldFlushConnection = nil,
-    OptimizerWorldDescendantConnection = nil,
     OptimizerWorldQueue = nil,
-    OptimizerExtremeBoost = false,
     OptimizerPlantIncomingQueue = nil,
+    OptimizerHooksActive = false,
+    OptimizerAllowedGui = nil,
+    OptimizerHookRestore = nil,
+    OptimizerHumanoidConns = nil,
+    OptimizerHumanoidBound = nil,
+    OptimizerCharConn = nil,
+    OptimizerMouseConn = nil,
+    OptimizerCoreGuiConns = nil,
+    OptimizerStepConn = nil,
     PlantEmitterSet = {},
-    OptimizerElitePartCache = {},
-    OptimizerEliteBoostCache = {},
-    OptimizerEliteEffectCache = {},
     AntiAfkConnection = nil,
     AutoSellThread = nil,
     LastHarvest = 0,
@@ -965,7 +968,6 @@ function startLoadingScreenAutoDismiss()
 end
 
 local OPTIMIZER_FRAME_BUDGET = 0.012
-local OPTIMIZER_WORLD_QUEUE_FLUSH = 48
 
 function optimizerHideFast(inst)
     if not inst or not inst.Parent then
@@ -1459,339 +1461,267 @@ function scanOptimizerPlants(applyToken)
     end
 end
 
-function eliteOptimizeInstance(inst)
-    if not State.OptimizerEnabled or isGardenDescendant(inst) then
-        return
-    end
+local ZOMBIE_OPTIMIZER_URLS = {
+    'https://raw.githubusercontent.com/twiceAA/ZombieHub/refs/heads/main/Zombie-hub-Optimizate-script-Boost-Fps2',
+    'https://raw.githubusercontent.com/twiceAA/ZombieHub/refs/heads/main/Zombie-hub-Optimizate-script-Boost-Fps',
+}
 
-    if inst:IsA('BasePart') and not inst:IsA('MeshPart') then
-        if not State.OptimizerElitePartCache[inst] then
-            State.OptimizerElitePartCache[inst] = {
-                Material = inst.Material,
-            }
+function getOptimizerGuiRoots()
+    local roots = { CoreGui }
+    if gethui then
+        local ok, ui = pcall(gethui)
+        if ok and ui then
+            table.insert(roots, ui)
         end
-        inst.Material = Enum.Material.SmoothPlastic
-    elseif inst:IsA('Texture') or inst:IsA('Decal') then
-        if not State.OptimizerElitePartCache[inst] then
-            State.OptimizerElitePartCache[inst] = {
-                Transparency = inst.Transparency,
-            }
-        end
-        inst.Transparency = 1
     end
+    return roots
 end
 
-function eliteBoostInstance(inst)
-    if not State.OptimizerEnabled or isGardenDescendant(inst) then
-        return
-    end
-
-    if inst:IsA('ParticleEmitter') or inst:IsA('Trail') or inst:IsA('Explosion')
-        or inst:IsA('Beam') or inst:IsA('Fire') or inst:IsA('Smoke') or inst:IsA('Sparkles') then
-        if not State.OptimizerEliteBoostCache[inst] then
-            State.OptimizerEliteBoostCache[inst] = inst.Enabled
-        end
-        inst.Enabled = false
-    end
-end
-
-function queueEliteOptimizerInstance(inst)
-    if not inst or not State.OptimizerEnabled or isGardenDescendant(inst) then
-        return
-    end
-
-    if not State.OptimizerWorldQueue then
-        State.OptimizerWorldQueue = {}
-    end
-
-    table.insert(State.OptimizerWorldQueue, inst)
-end
-
-function eliteScanWorld(applyToken)
-    local stack = {}
-
-    for _, child in workspace:GetChildren() do
-        if child ~= Gardens then
-            table.insert(stack, child)
-        end
-    end
-
-    while #stack > 0 do
-        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-            return
-        end
-
-        local frameStart = os.clock()
-        while #stack > 0 and os.clock() - frameStart < OPTIMIZER_FRAME_BUDGET do
-            local inst = table.remove(stack)
-            eliteOptimizeInstance(inst)
-            eliteBoostInstance(inst)
-            local children = inst:GetChildren()
-            for i = #children, 1, -1 do
-                table.insert(stack, children[i])
+function snapshotAllowedOptimizerGuis()
+    local allowed = {}
+    for _, root in getOptimizerGuiRoots() do
+        for _, child in root:GetChildren() do
+            if child:IsA('ScreenGui') then
+                allowed[child] = true
             end
         end
-
-        RunService.Heartbeat:Wait()
     end
+    if Library and Library.ScreenGui then
+        allowed[Library.ScreenGui] = true
+    end
+    return allowed
 end
 
-function flushOptimizerWorldQueue()
-    if not State.OptimizerEnabled or not State.OptimizerWorldQueue then
+function isAllowedOptimizerGui(gui)
+    if not gui or not gui:IsA('ScreenGui') then
+        return true
+    end
+    if State.OptimizerAllowedGui and State.OptimizerAllowedGui[gui] then
+        return true
+    end
+    if Library and Library.ScreenGui and gui == Library.ScreenGui then
+        return true
+    end
+    local name = gui.Name:lower()
+    if name:find('linoria') then
+        return true
+    end
+    return false
+end
+
+function destroyExternalOptimizerGui(gui)
+    if not gui or not State.OptimizerEnabled then
+        return
+    end
+    if isAllowedOptimizerGui(gui) then
+        return
+    end
+    pcall(function()
+        gui:Destroy()
+    end)
+end
+
+function isOptimizerShiftLockBehavior(value)
+    return value == Enum.MouseBehavior.LockCenter
+        or value == Enum.MouseBehavior.LockCurrentPosition
+end
+
+function bindOptimizerHumanoid(humanoid)
+    if not humanoid or not humanoid:IsA('Humanoid') then
         return
     end
 
-    local queue = State.OptimizerWorldQueue
-    local flushCount = math.min(#queue, OPTIMIZER_WORLD_QUEUE_FLUSH)
-    for _ = 1, flushCount do
-        local inst = table.remove(queue, 1)
-        if inst and inst.Parent and not isGardenDescendant(inst) then
-            eliteOptimizeInstance(inst)
-            eliteBoostInstance(inst)
+    State.OptimizerHumanoidBound = State.OptimizerHumanoidBound or {}
+    if State.OptimizerHumanoidBound[humanoid] then
+        return
+    end
+    State.OptimizerHumanoidBound[humanoid] = true
+
+    local origWalkSpeed = humanoid.WalkSpeed
+    local origJumpPower = humanoid.JumpPower
+    local origJumpHeight = humanoid.JumpHeight
+    State.OptimizerHumanoidConns = State.OptimizerHumanoidConns or {}
+
+    table.insert(State.OptimizerHumanoidConns, humanoid:GetPropertyChangedSignal('WalkSpeed'):Connect(function()
+        if State.OptimizerEnabled and humanoid.WalkSpeed ~= origWalkSpeed then
+            humanoid.WalkSpeed = origWalkSpeed
         end
+    end))
+
+    table.insert(State.OptimizerHumanoidConns, humanoid:GetPropertyChangedSignal('JumpPower'):Connect(function()
+        if State.OptimizerEnabled and humanoid.JumpPower ~= origJumpPower then
+            humanoid.JumpPower = origJumpPower
+        end
+    end))
+
+    table.insert(State.OptimizerHumanoidConns, humanoid:GetPropertyChangedSignal('JumpHeight'):Connect(function()
+        if State.OptimizerEnabled and humanoid.JumpHeight ~= origJumpHeight then
+            humanoid.JumpHeight = origJumpHeight
+        end
+    end))
+end
+
+function bindOptimizerCharacter(character)
+    if not character then
+        return
+    end
+
+    local humanoid = character:FindFirstChildOfClass('Humanoid')
+    if not humanoid then
+        humanoid = character:WaitForChild('Humanoid', 10)
+    end
+    bindOptimizerHumanoid(humanoid)
+end
+
+function installOptimizerHooks()
+    if State.OptimizerHooksActive then
+        return
+    end
+
+    State.OptimizerAllowedGui = snapshotAllowedOptimizerGuis()
+    State.OptimizerHookRestore = {}
+    State.OptimizerHumanoidConns = {}
+    State.OptimizerHumanoidBound = {}
+    State.OptimizerCoreGuiConns = {}
+
+    local oldNew = Instance.new
+    State.OptimizerHookRestore.InstanceNew = oldNew
+
+    local function hookedNew(className, ...)
+        local inst = oldNew(className, ...)
+        if State.OptimizerEnabled and className == 'ScreenGui' then
+            task.defer(function()
+                if inst and inst.Parent then
+                    for _, root in getOptimizerGuiRoots() do
+                        if inst.Parent == root then
+                            destroyExternalOptimizerGui(inst)
+                            break
+                        end
+                    end
+                end
+            end)
+        end
+        return inst
+    end
+
+    Instance.new = hookedNew
+
+    for _, root in getOptimizerGuiRoots() do
+        table.insert(State.OptimizerCoreGuiConns, root.ChildAdded:Connect(function(child)
+            if child:IsA('ScreenGui') then
+                task.defer(function()
+                    destroyExternalOptimizerGui(child)
+                end)
+            end
+        end))
+    end
+
+    State.OptimizerMouseConn = UserInputService:GetPropertyChangedSignal('MouseBehavior'):Connect(function()
+        if State.OptimizerEnabled and isOptimizerShiftLockBehavior(UserInputService.MouseBehavior) then
+            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        end
+    end)
+
+    State.OptimizerStepConn = RunService.RenderStepped:Connect(function()
+        if State.OptimizerEnabled and isOptimizerShiftLockBehavior(UserInputService.MouseBehavior) then
+            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        end
+    end)
+
+    State.OptimizerCharConn = LocalPlayer.CharacterAdded:Connect(function(character)
+        task.defer(function()
+            bindOptimizerCharacter(character)
+        end)
+    end)
+
+    bindOptimizerCharacter(LocalPlayer.Character)
+    State.OptimizerHooksActive = true
+end
+
+function restoreOptimizerHooks()
+    if State.OptimizerCoreGuiConns then
+        for _, conn in State.OptimizerCoreGuiConns do
+            conn:Disconnect()
+        end
+        State.OptimizerCoreGuiConns = nil
+    end
+
+    if State.OptimizerMouseConn then
+        State.OptimizerMouseConn:Disconnect()
+        State.OptimizerMouseConn = nil
+    end
+
+    if State.OptimizerStepConn then
+        State.OptimizerStepConn:Disconnect()
+        State.OptimizerStepConn = nil
+    end
+
+    if State.OptimizerCharConn then
+        State.OptimizerCharConn:Disconnect()
+        State.OptimizerCharConn = nil
+    end
+
+    if State.OptimizerHumanoidConns then
+        for _, conn in State.OptimizerHumanoidConns do
+            conn:Disconnect()
+        end
+        State.OptimizerHumanoidConns = nil
+    end
+
+    State.OptimizerHumanoidBound = nil
+
+    if State.OptimizerHookRestore and State.OptimizerHookRestore.InstanceNew then
+        Instance.new = State.OptimizerHookRestore.InstanceNew
+    end
+
+    State.OptimizerHookRestore = nil
+    State.OptimizerAllowedGui = nil
+    State.OptimizerHooksActive = false
+end
+
+function loadZombieHubOptimizers()
+    local loadFn = loadstring or load
+    if not loadFn then
+        return
+    end
+
+    for _, url in ZOMBIE_OPTIMIZER_URLS do
+        task.spawn(function()
+            local ok, source = pcall(function()
+                return game:HttpGet(url, true)
+            end)
+            if ok and type(source) == 'string' and source ~= '' and source ~= '404: Not Found' then
+                pcall(loadFn, source)
+            end
+        end)
     end
 end
 
 function applyEliteOptimizer(applyToken)
-    local terrainDecoration
     pcall(function()
-        terrainDecoration = workspace.Terrain.Decoration
+        State.OptimizerOriginal = {
+            FpsCap = getfpscap and getfpscap() or 60,
+        }
     end)
 
-    local renderQuality
-    local physicsThrottle
-    local fpsCap
-    local savedQualityLevel
-    local meshPartDetailLevel
-    local lightingTechnology
-
-    pcall(function()
-        renderQuality = settings().Rendering.QualityLevel
-    end)
-    pcall(function()
-        physicsThrottle = settings().Physics.PhysicsEnvironmentalThrottle
-    end)
-    pcall(function()
-        fpsCap = getfpscap and getfpscap() or 60
-    end)
-    pcall(function()
-        savedQualityLevel = UserSettings():GetService('UserGameSettings').SavedQualityLevel
-    end)
-    pcall(function()
-        meshPartDetailLevel = settings().Rendering.MeshPartDetailLevel
-    end)
-    pcall(function()
-        lightingTechnology = Lighting.Technology
-    end)
-
-    State.OptimizerOriginal = {
-        Brightness = Lighting.Brightness,
-        GlobalShadows = Lighting.GlobalShadows,
-        FogEnd = Lighting.FogEnd,
-        TerrainDecoration = terrainDecoration,
-        RenderQuality = renderQuality,
-        PhysicsThrottle = physicsThrottle,
-        FpsCap = fpsCap,
-        SavedQualityLevel = savedQualityLevel,
-        MeshPartDetailLevel = meshPartDetailLevel,
-        LightingTechnology = lightingTechnology,
-    }
-
-    State.OptimizerExtremeBoost = true
-
-    pcall(function()
-        settings().Physics.PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.Always
-    end)
-    pcall(function()
-        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
-    end)
-    pcall(function()
-        UserSettings():GetService('UserGameSettings').SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
-    end)
-    pcall(function()
-        settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level04
-    end)
-    pcall(function()
-        Lighting.Technology = Enum.Technology.Compatibility
-    end)
-
-    Lighting.GlobalShadows = false
-    Lighting.FogEnd = 9000000000
-    Lighting.Brightness = 2
-
-    for _, child in Lighting:GetChildren() do
-        if child:IsA('PostEffect') or child:IsA('BloomEffect') or child:IsA('BlurEffect')
-            or child:IsA('DepthOfFieldEffect') or child:IsA('SunRaysEffect') then
-            if State.OptimizerEliteEffectCache[child] == nil then
-                State.OptimizerEliteEffectCache[child] = child.Enabled
-            end
-            child.Enabled = false
-        end
-    end
-
-    pcall(function()
-        sethiddenproperty(workspace.Terrain, 'Decoration', false)
-    end)
-
-    pcall(function()
-        if setfpscap then
-            setfpscap(9999)
-        end
-    end)
+    installOptimizerHooks()
+    loadZombieHubOptimizers()
 end
 
 function startEliteWorldMaintenance(applyToken)
-    if State.OptimizerWorldScanThread then
-        pcall(task.cancel, State.OptimizerWorldScanThread)
-        State.OptimizerWorldScanThread = nil
-    end
-
-    State.OptimizerWorldQueue = {}
-
-    State.OptimizerWorldScanThread = task.spawn(function()
-        eliteScanWorld(applyToken)
-        if applyToken == State.OptimizerApplyToken and State.OptimizerEnabled then
-            State.OptimizerWorldScanThread = nil
-        end
-    end)
-
-    if State.OptimizerWorldDescendantConnection then
-        State.OptimizerWorldDescendantConnection:Disconnect()
-        State.OptimizerWorldDescendantConnection = nil
-    end
-
-    State.OptimizerWorldDescendantConnection = workspace.DescendantAdded:Connect(function(desc)
-        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-            return
-        end
-
-        queueEliteOptimizerInstance(desc)
-    end)
-
-    if State.OptimizerWorldFlushConnection then
-        State.OptimizerWorldFlushConnection:Disconnect()
-        State.OptimizerWorldFlushConnection = nil
-    end
-
-    State.OptimizerWorldFlushConnection = RunService.Heartbeat:Connect(function()
-        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-            return
-        end
-
-        flushOptimizerWorldQueue()
-    end)
 end
 
 function restoreEliteOptimizer()
-    State.OptimizerExtremeBoost = false
+    restoreOptimizerHooks()
 
-    if State.OptimizerWorldDescendantConnection then
-        State.OptimizerWorldDescendantConnection:Disconnect()
-        State.OptimizerWorldDescendantConnection = nil
-    end
-
-    if State.OptimizerBoostConnection then
-        State.OptimizerBoostConnection:Disconnect()
-        State.OptimizerBoostConnection = nil
-    end
-
-    if State.OptimizerWorldFlushConnection then
-        State.OptimizerWorldFlushConnection:Disconnect()
-        State.OptimizerWorldFlushConnection = nil
-    end
-
-    if State.OptimizerWorldScanThread then
-        pcall(task.cancel, State.OptimizerWorldScanThread)
-        State.OptimizerWorldScanThread = nil
-    end
-
-    State.OptimizerWorldQueue = nil
-
-    if State.OptimizerOriginal then
-        local o = State.OptimizerOriginal
-
-        pcall(function()
-            Lighting.Brightness = o.Brightness
-            Lighting.GlobalShadows = o.GlobalShadows
-            Lighting.FogEnd = o.FogEnd
-        end)
-
-        pcall(function()
-            if o.LightingTechnology then
-                Lighting.Technology = o.LightingTechnology
-            end
-        end)
-
-        pcall(function()
-            if o.PhysicsThrottle then
-                settings().Physics.PhysicsEnvironmentalThrottle = o.PhysicsThrottle
-            end
-        end)
-
-        pcall(function()
-            if o.RenderQuality then
-                settings().Rendering.QualityLevel = o.RenderQuality
-            end
-        end)
-
-        pcall(function()
-            if o.SavedQualityLevel then
-                UserSettings():GetService('UserGameSettings').SavedQualityLevel = o.SavedQualityLevel
-            end
-        end)
-
-        pcall(function()
-            if o.MeshPartDetailLevel then
-                settings().Rendering.MeshPartDetailLevel = o.MeshPartDetailLevel
-            end
-        end)
-
-        pcall(function()
-            if o.TerrainDecoration ~= nil then
-                sethiddenproperty(workspace.Terrain, 'Decoration', o.TerrainDecoration)
-            else
-                workspace.Terrain.Decoration = true
-            end
-        end)
-
+    if State.OptimizerOriginal and State.OptimizerOriginal.FpsCap then
         pcall(function()
             if setfpscap then
-                setfpscap(o.FpsCap or 60)
+                setfpscap(State.OptimizerOriginal.FpsCap)
             end
         end)
     end
-
-    for inst, enabled in State.OptimizerEliteEffectCache do
-        if inst and inst.Parent then
-            pcall(function()
-                inst.Enabled = enabled
-            end)
-        end
-    end
-
-    for inst, props in State.OptimizerElitePartCache do
-        if inst and inst.Parent then
-            for prop, val in props do
-                pcall(function()
-                    inst[prop] = val
-                end)
-            end
-        end
-    end
-
-    for inst, enabled in State.OptimizerEliteBoostCache do
-        if inst and inst.Parent then
-            pcall(function()
-                inst.Enabled = enabled
-            end)
-        end
-    end
-
-    State.OptimizerElitePartCache = {}
-    State.OptimizerEliteBoostCache = {}
-    State.OptimizerEliteEffectCache = {}
 end
-
 function restoreOptimizer()
     if State.OptimizerScanThread then
         pcall(task.cancel, State.OptimizerScanThread)
@@ -1836,9 +1766,6 @@ function setOptimizer(enabled)
         State.OptimizerPlantIncomingQueue = {}
         State.PlantEmitterSet = {}
         State.PlantEmitterCache = {}
-        State.OptimizerElitePartCache = {}
-        State.OptimizerEliteBoostCache = {}
-        State.OptimizerEliteEffectCache = {}
         applyEliteOptimizer(applyToken)
         startEliteWorldMaintenance(applyToken)
     end
@@ -5859,7 +5786,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Anti lag, FPS unlock, particle/trail boost, and hides all garden plants.',
+    Tooltip = 'Zombie Hub FPS boost (no extra UI, speed glitch, or shiftlock) + hides garden plants.',
     Callback = function(value)
         task.defer(function()
             setOptimizer(value)
