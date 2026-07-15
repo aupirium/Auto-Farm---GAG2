@@ -9,9 +9,11 @@ if GENV.GG2_AutoFarmShutdown then
     task.wait(0.05)
 end
 
-GENV.GG2_SkipRemoteUpdate = nil
 if not queuedAutoExec then
+    GENV.GG2_SkipRemoteUpdate = nil
     GENV.GG2_FromAutoExec = nil
+else
+    GENV.GG2_AutoFarmRunning = nil
 end
 
 local REPO = 'aupirium/Auto-Farm---GAG2'
@@ -80,7 +82,8 @@ if makefolder and (not isfolder or not isfolder('GG2')) then
 end
 
 local commit = getCommit()
-local oldCommit = isfile(COMMIT_FILE) and readfile(COMMIT_FILE) or ''
+local oldCommit = isfile(COMMIT_FILE) and readfile(COMMIT_FILE):gsub('%s+', '') or ''
+commit = commit:gsub('%s+', '')
 if oldCommit ~= commit then
     pcall(function()
         writefile(COMMIT_FILE, commit)
@@ -95,7 +98,7 @@ if not source and commit ~= 'main' then
 end
 
 if not source then
-    for _, path in { 'grow_garden_autofarm.lua', 'GG2/grow_garden_autofarm.lua' } do
+    for _, path in { 'gag2.lua', 'GG2/gag2.lua', 'grow_garden_autofarm.lua', 'GG2/grow_garden_autofarm.lua' } do
         if isfile(path) then
             local ok, cached = pcall(readfile, path)
             if ok and type(cached) == 'string' and cached ~= '' then
@@ -110,15 +113,15 @@ if not source then
     error('Failed to download script from GitHub (' .. tostring(triedUrl) .. ')')
 end
 
-writefile('GG2/grow_garden_autofarm.lua', source)
-writefile('grow_garden_autofarm.lua', source)
+writefile('GG2/gag2.lua', source)
+writefile('gag2.lua', source)
 
 GENV.GG2_SkipRemoteUpdate = true
 if queuedAutoExec then
     GENV.GG2_FromAutoExec = true
 end
 
-local func, err = loadstring(source, 'grow_garden_autofarm.lua')
+local func, err = loadstring(source, 'gag2.lua')
 if not func then
     error('Failed to load script: ' .. tostring(err))
 end
