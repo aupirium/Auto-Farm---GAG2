@@ -874,6 +874,7 @@ local State = {
     OptimizerMouseConn = nil,
     OptimizerCoreGuiConns = nil,
     OptimizerStepConn = nil,
+    OptimizerGuiSweepThread = nil,
     PlantEmitterSet = {},
     AntiAfkConnection = nil,
     AutoSellThread = nil,
@@ -1573,6 +1574,20 @@ function bindOptimizerCharacter(character)
     bindOptimizerHumanoid(humanoid)
 end
 
+function sweepExternalOptimizerGuis()
+    if not State.OptimizerEnabled then
+        return
+    end
+
+    for _, root in getOptimizerGuiRoots() do
+        for _, child in root:GetChildren() do
+            if child:IsA('ScreenGui') then
+                destroyExternalOptimizerGui(child)
+            end
+        end
+    end
+end
+
 function installOptimizerHooks()
     if State.OptimizerHooksActive then
         return
@@ -1584,8 +1599,7 @@ function installOptimizerHooks()
     State.OptimizerHumanoidBound = {}
     State.OptimizerCoreGuiConns = {}
 
-    local oldNew = Instance.new
-    State.OptimizerHookRestore.InstanceNew = oldNew
+    local oldNew = (clonefunction and clonefunction(Instance.new)) or Instance.new
 
     local function hookedNew(className, ...)
         local inst = oldNew(className, ...)
@@ -1604,7 +1618,14 @@ function installOptimizerHooks()
         return inst
     end
 
-    Instance.new = hookedNew
+    local wrappedNew = (newcclosure and newcclosure(hookedNew)) or hookedNew
+    if hookfunction then
+        pcall(function()
+            local original = hookfunction(oldNew, wrappedNew)
+            State.OptimizerHookRestore.HookTarget = oldNew
+            State.OptimizerHookRestore.OriginalNew = original
+        end)
+    end
 
     for _, root in getOptimizerGuiRoots() do
         table.insert(State.OptimizerCoreGuiConns, root.ChildAdded:Connect(function(child)
@@ -1615,6 +1636,14 @@ function installOptimizerHooks()
             end
         end))
     end
+
+    State.OptimizerGuiSweepThread = task.spawn(function()
+        while State.OptimizerEnabled do
+            sweepExternalOptimizerGuis()
+            task.wait(1)
+        end
+        State.OptimizerGuiSweepThread = nil
+    end)
 
     State.OptimizerMouseConn = UserInputService:GetPropertyChangedSignal('MouseBehavior'):Connect(function()
         if State.OptimizerEnabled and isOptimizerShiftLockBehavior(UserInputService.MouseBehavior) then
@@ -1639,6 +1668,11 @@ function installOptimizerHooks()
 end
 
 function restoreOptimizerHooks()
+    if State.OptimizerGuiSweepThread then
+        pcall(task.cancel, State.OptimizerGuiSweepThread)
+        State.OptimizerGuiSweepThread = nil
+    end
+
     if State.OptimizerCoreGuiConns then
         for _, conn in State.OptimizerCoreGuiConns do
             conn:Disconnect()
@@ -1670,8 +1704,13 @@ function restoreOptimizerHooks()
 
     State.OptimizerHumanoidBound = nil
 
-    if State.OptimizerHookRestore and State.OptimizerHookRestore.InstanceNew then
-        Instance.new = State.OptimizerHookRestore.InstanceNew
+    if State.OptimizerHookRestore
+        and State.OptimizerHookRestore.HookTarget
+        and State.OptimizerHookRestore.OriginalNew
+        and hookfunction then
+        pcall(function()
+            hookfunction(State.OptimizerHookRestore.HookTarget, State.OptimizerHookRestore.OriginalNew)
+        end)
     end
 
     State.OptimizerHookRestore = nil
