@@ -9,6 +9,15 @@ if GENV.GG2_FromAutoExec then
     GENV.GG2_AutoFarmRunning = nil
 end
 
+if identifyexecutor then
+    local ok, executorName = pcall(function()
+        return select(1, identifyexecutor())
+    end)
+    if ok and table.find({ 'Wave', 'Seliware', 'Volt' }, executorName) then
+        GENV.setthreadidentity = nil
+    end
+end
+
 if GENV.GG2_AutoFarmRunning then
     return
 end
@@ -27,6 +36,12 @@ local GG2_REPO = 'aupirium/Auto-Farm---GAG2'
 local AUTO_FARM_SCRIPT = 'gag2.lua'
 local GG2_SCRIPT_PATH = 'GG2/gag2.lua'
 local GG2_LOADER_SCRIPT = 'loader.lua'
+local GG2_LOADER_PATH = 'GG2/loader.lua'
+local GG2_AUTOEXEC_PATHS = {
+    GG2_LOADER_SCRIPT,
+    GG2_LOADER_PATH,
+    'workspace/' .. GG2_LOADER_SCRIPT,
+}
 local GG2_COMMIT_FILE = 'GG2/commit.txt'
 local GG2_TARGET_PLANT_FILE = 'GG2/target_plant.txt'
 local GG2_CONFIG_FOLDER = 'GrowGarden2AutoFarm'
@@ -402,18 +417,13 @@ function persistLoaderScript()
 
     ensureGg2Folders()
 
-    for _, path in {
-        'GG2/loader.lua',
-        GG2_LOADER_SCRIPT,
-        'workspace/' .. GG2_LOADER_SCRIPT,
-        'scripts/' .. GG2_LOADER_SCRIPT,
-    } do
+    for _, path in GG2_AUTOEXEC_PATHS do
         if isfile(path) then
             local ok, source = pcall(readfile, path)
             if ok and type(source) == 'string' and source ~= '' then
                 local cleaned = stripBom(source)
                 pcall(function()
-                    writefile('GG2/loader.lua', cleaned)
+                    writefile(GG2_LOADER_PATH, cleaned)
                     writefile(GG2_LOADER_SCRIPT, cleaned)
                 end)
                 return true
@@ -425,7 +435,7 @@ function persistLoaderScript()
     if remote then
         remote = stripBom(remote)
         pcall(function()
-            writefile('GG2/loader.lua', remote)
+            writefile(GG2_LOADER_PATH, remote)
             writefile(GG2_LOADER_SCRIPT, remote)
         end)
         return true
@@ -854,7 +864,9 @@ local State = {
     OptimizerWorldScanThread = nil,
     OptimizerBoostConnection = nil,
     OptimizerWorldFlushConnection = nil,
+    OptimizerWorldDescendantConnection = nil,
     OptimizerWorldQueue = nil,
+    OptimizerExtremeBoost = false,
     OptimizerPlantIncomingQueue = nil,
     PlantEmitterSet = {},
     OptimizerElitePartCache = {},
@@ -953,6 +965,7 @@ function startLoadingScreenAutoDismiss()
 end
 
 local OPTIMIZER_FRAME_BUDGET = 0.012
+local OPTIMIZER_WORLD_QUEUE_FLUSH = 48
 
 function optimizerHideFast(inst)
     if not inst or not inst.Parent then
@@ -1473,12 +1486,25 @@ function eliteBoostInstance(inst)
         return
     end
 
-    if inst:IsA('ParticleEmitter') or inst:IsA('Trail') or inst:IsA('Explosion') then
+    if inst:IsA('ParticleEmitter') or inst:IsA('Trail') or inst:IsA('Explosion')
+        or inst:IsA('Beam') or inst:IsA('Fire') or inst:IsA('Smoke') or inst:IsA('Sparkles') then
         if not State.OptimizerEliteBoostCache[inst] then
             State.OptimizerEliteBoostCache[inst] = inst.Enabled
         end
         inst.Enabled = false
     end
+end
+
+function queueEliteOptimizerInstance(inst)
+    if not inst or not State.OptimizerEnabled or isGardenDescendant(inst) then
+        return
+    end
+
+    if not State.OptimizerWorldQueue then
+        State.OptimizerWorldQueue = {}
+    end
+
+    table.insert(State.OptimizerWorldQueue, inst)
 end
 
 function eliteScanWorld(applyToken)
@@ -1499,9 +1525,7 @@ function eliteScanWorld(applyToken)
         while #stack > 0 and os.clock() - frameStart < OPTIMIZER_FRAME_BUDGET do
             local inst = table.remove(stack)
             eliteOptimizeInstance(inst)
-            if _G.ExtremeBoost then
-                eliteBoostInstance(inst)
-            end
+            eliteBoostInstance(inst)
             local children = inst:GetChildren()
             for i = #children, 1, -1 do
                 table.insert(stack, children[i])
@@ -1523,9 +1547,7 @@ function flushOptimizerWorldQueue()
         local inst = table.remove(queue, 1)
         if inst and inst.Parent and not isGardenDescendant(inst) then
             eliteOptimizeInstance(inst)
-            if _G.ExtremeBoost then
-                eliteBoostInstance(inst)
-            end
+            eliteBoostInstance(inst)
         end
     end
 end
@@ -1575,6 +1597,8 @@ function applyEliteOptimizer(applyToken)
         LightingTechnology = lightingTechnology,
     }
 
+    State.OptimizerExtremeBoost = true
+
     pcall(function()
         settings().Physics.PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.Always
     end)
@@ -1616,7 +1640,56 @@ function applyEliteOptimizer(applyToken)
     end)
 end
 
+function startEliteWorldMaintenance(applyToken)
+    if State.OptimizerWorldScanThread then
+        pcall(task.cancel, State.OptimizerWorldScanThread)
+        State.OptimizerWorldScanThread = nil
+    end
+
+    State.OptimizerWorldQueue = {}
+
+    State.OptimizerWorldScanThread = task.spawn(function()
+        eliteScanWorld(applyToken)
+        if applyToken == State.OptimizerApplyToken and State.OptimizerEnabled then
+            State.OptimizerWorldScanThread = nil
+        end
+    end)
+
+    if State.OptimizerWorldDescendantConnection then
+        State.OptimizerWorldDescendantConnection:Disconnect()
+        State.OptimizerWorldDescendantConnection = nil
+    end
+
+    State.OptimizerWorldDescendantConnection = workspace.DescendantAdded:Connect(function(desc)
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+
+        queueEliteOptimizerInstance(desc)
+    end)
+
+    if State.OptimizerWorldFlushConnection then
+        State.OptimizerWorldFlushConnection:Disconnect()
+        State.OptimizerWorldFlushConnection = nil
+    end
+
+    State.OptimizerWorldFlushConnection = RunService.Heartbeat:Connect(function()
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+
+        flushOptimizerWorldQueue()
+    end)
+end
+
 function restoreEliteOptimizer()
+    State.OptimizerExtremeBoost = false
+
+    if State.OptimizerWorldDescendantConnection then
+        State.OptimizerWorldDescendantConnection:Disconnect()
+        State.OptimizerWorldDescendantConnection = nil
+    end
+
     if State.OptimizerBoostConnection then
         State.OptimizerBoostConnection:Disconnect()
         State.OptimizerBoostConnection = nil
@@ -1767,6 +1840,7 @@ function setOptimizer(enabled)
         State.OptimizerEliteBoostCache = {}
         State.OptimizerEliteEffectCache = {}
         applyEliteOptimizer(applyToken)
+        startEliteWorldMaintenance(applyToken)
     end
 
     updatePlantEffectMaintain()
@@ -4826,107 +4900,63 @@ function doStartupWalk()
 end
 
 function getAutoExecQueueScript()
-    local commit = readCommitFile()
-    return string.format([[
+    return [[
 repeat task.wait() until game:IsLoaded()
-local Players = game:GetService('Players')
-if not Players.LocalPlayer then
-    Players.PlayerAdded:Wait()
+
+getgenv().GG2_AutoFarmRunning = nil
+getgenv().GG2_FromAutoExec = true
+getgenv().GG2_SkipRemoteUpdate = true
+
+local isfile = isfile or function(file)
+    local suc, res = pcall(function()
+        return readfile(file)
+    end)
+    return suc and res ~= nil and res ~= ''
 end
-
-local genv = getgenv()
-genv.GG2_AutoFarmRunning = nil
-genv.GG2_FromAutoExec = true
-genv.GG2_SkipRemoteUpdate = true
-
-local commit = %q
-local repo = %q
 
 local loadFn = loadstring or load
-if syn and syn.loadstring then
-    loadFn = syn.loadstring
-end
 
-local function canRead(path)
-    if typeof(isfile) ~= 'function' or typeof(readfile) ~= 'function' then
-        return nil
+local function runLoader(source)
+    if not loadFn or type(source) ~= 'string' or source == '' then
+        return false
     end
-    if not isfile(path) then
-        return nil
-    end
-    local ok, src = pcall(readfile, path)
-    if ok and type(src) == 'string' and src ~= '' then
-        return src
-    end
-    return nil
-end
 
-local function runSource(src, label)
-    if not loadFn then
-        return false, 'no loadstring'
-    end
-    local func, err = loadFn(src, label or 'gg2')
+    getgenv().GG2_AutoFarmRunning = nil
+    getgenv().GG2_FromAutoExec = true
+    getgenv().GG2_SkipRemoteUpdate = true
+
+    local func, err = loadFn(source, 'gg2-loader')
     if not func then
-        return false, err
+        return false
     end
-    genv.GG2_AutoFarmRunning = nil
-    genv.GG2_FromAutoExec = true
-    genv.GG2_SkipRemoteUpdate = true
-    local ok, runErr = pcall(func)
-    return ok, runErr
+
+    return pcall(func)
 end
 
-local function httpGet(url)
-    local ok, src = pcall(function()
-        return game:HttpGet(url, true)
-    end)
-    if ok and type(src) == 'string' and src ~= '' and src ~= '404: Not Found' then
-        return src
-    end
-    return nil
-end
-
-local paths = {
-    'GG2/gag2.lua',
-    'gag2.lua',
-    'GG2/loader.lua',
-    'loader.lua',
-    'GG2/grow_garden_autofarm.lua',
-    'grow_garden_autofarm.lua',
-}
-
-local urls = {
-    'https://raw.githubusercontent.com/' .. repo .. '/' .. commit .. '/gag2.lua',
-    'https://raw.githubusercontent.com/' .. repo .. '/main/gag2.lua',
-    'https://raw.githubusercontent.com/' .. repo .. '/' .. commit .. '/loader.lua',
-    'https://raw.githubusercontent.com/' .. repo .. '/main/loader.lua',
-}
-
-local function tryRun()
-    for _, path in paths do
-        local src = canRead(path)
-        if src and runSource(src, path) then
-            return true
+for _, path in { 'loader.lua', 'GG2/loader.lua' } do
+    if isfile(path) then
+        if runLoader(readfile(path)) then
+            return
         end
     end
-
-    for _, url in urls do
-        local src = httpGet(url)
-        if src and runSource(src, url) then
-            return true
-        end
-    end
-
-    return false
 end
 
-for attempt = 1, 8 do
-    if tryRun() then
-        return
-    end
-    task.wait(2)
+local commit = 'main'
+if isfile('GG2/commit.txt') then
+    commit = readfile('GG2/commit.txt'):gsub('%s+', '')
 end
-]], commit, GG2_REPO)
+if commit == '' then
+    commit = 'main'
+end
+
+local url = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/' .. commit .. '/loader.lua'
+local ok, source = pcall(function()
+    return game:HttpGet(url, true)
+end)
+if ok and type(source) == 'string' and source ~= '' and source ~= '404: Not Found' then
+    runLoader(source)
+end
+]]
 end
 
 function queueTeleportScript()
@@ -4936,6 +4966,7 @@ function queueTeleportScript()
     end
 
     ensureCommitFile()
+    persistLoaderScript()
 
     return pcall(function()
         queue(getAutoExecQueueScript())
@@ -4963,15 +4994,6 @@ function setupAutoExecute()
         saveAutoExecWalkState()
         saveConfigBeforeTeleport()
         queueTeleportScript()
-    end)
-
-    task.defer(function()
-        task.wait(1)
-        queueTeleportScript()
-    end)
-
-    LocalPlayer.CharacterAdded:Connect(function()
-        task.delay(1, queueTeleportScript)
     end)
 end
 
@@ -5837,7 +5859,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Elite optimizer: Anti LAG + FPS unlock + FPS booster, and hides all garden plants.',
+    Tooltip = 'Anti lag, FPS unlock, particle/trail boost, and hides all garden plants.',
     Callback = function(value)
         task.defer(function()
             setOptimizer(value)
@@ -6153,7 +6175,7 @@ persistLoaderScript()
 if getQueueOnTeleport() and writefile then
     task.defer(function()
         if Library and Library.Notify then
-            Library:Notify('Auto-exec queued (queue_on_teleport + GitHub loader)')
+            Library:Notify('Auto-exec queued (loads loader.lua from workspace on rejoin)')
         end
     end)
 end
