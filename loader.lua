@@ -1,6 +1,15 @@
 local GENV = getgenv()
 local queuedAutoExec = GENV.GG2_FromAutoExec == true
 
+if identifyexecutor then
+    local ok, executorName = pcall(function()
+        return select(1, identifyexecutor())
+    end)
+    if ok and table.find({ 'Wave', 'Seliware', 'Volt' }, executorName) then
+        GENV.setthreadidentity = nil
+    end
+end
+
 if GENV.GG2_AutoFarmShutdown then
     pcall(GENV.GG2_AutoFarmShutdown)
     task.wait(0.05)
