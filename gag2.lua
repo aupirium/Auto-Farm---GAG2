@@ -28,6 +28,8 @@ local AUTO_FARM_SCRIPT = 'gag2.lua'
 local GG2_SCRIPT_PATH = 'GG2/gag2.lua'
 local GG2_LOADER_SCRIPT = 'loader.lua'
 local GG2_COMMIT_FILE = 'GG2/commit.txt'
+local GG2_TARGET_PLANT_FILE = 'GG2/target_plant.txt'
+local GG2_CONFIG_FOLDER = 'GrowGarden2AutoFarm'
 local LEGACY_SCRIPT_PATHS = {
     'GG2/grow_garden_autofarm.lua',
     'grow_garden_autofarm.lua',
@@ -393,6 +395,45 @@ function persistAutoFarmScript()
     return false
 end
 
+function persistLoaderScript()
+    if not writefile then
+        return false
+    end
+
+    ensureGg2Folders()
+
+    for _, path in {
+        'GG2/loader.lua',
+        GG2_LOADER_SCRIPT,
+        'workspace/' .. GG2_LOADER_SCRIPT,
+        'scripts/' .. GG2_LOADER_SCRIPT,
+    } do
+        if isfile(path) then
+            local ok, source = pcall(readfile, path)
+            if ok and type(source) == 'string' and source ~= '' then
+                local cleaned = stripBom(source)
+                pcall(function()
+                    writefile('GG2/loader.lua', cleaned)
+                    writefile(GG2_LOADER_SCRIPT, cleaned)
+                end)
+                return true
+            end
+        end
+    end
+
+    local remote = httpGet(gg2RawUrl(GG2_LOADER_SCRIPT, 'main'))
+    if remote then
+        remote = stripBom(remote)
+        pcall(function()
+            writefile('GG2/loader.lua', remote)
+            writefile(GG2_LOADER_SCRIPT, remote)
+        end)
+        return true
+    end
+
+    return false
+end
+
 function tryUpdateFromRemote()
     if GENV.GG2_SkipRemoteUpdate or GENV.GG2_FromAutoExec then
         return false, 'skipped'
@@ -409,7 +450,7 @@ function saveConfigBeforeTeleport()
             return
         end
 
-        local autoloadPath = 'GrowGarden2AutoFarm/settings/autoload.txt'
+        local autoloadPath = GG2_CONFIG_FOLDER .. '/settings/autoload.txt'
         if isfile(autoloadPath) then
             local name = readfile(autoloadPath):gsub('%s+', '')
             if name ~= '' then
@@ -2353,6 +2394,124 @@ function getSelectedTargetPlant()
     return plantName
 end
 
+function saveTargetPlantFile(plantName)
+    if not writefile then
+        return
+    end
+
+    ensureGg2Folders()
+    pcall(function()
+        writefile(GG2_TARGET_PLANT_FILE, plantName or '')
+    end)
+end
+
+function readTargetPlantFromAutoloadConfig()
+    if not readfile or not isfile or not HttpService then
+        return nil
+    end
+
+    local autoloadPath = GG2_CONFIG_FOLDER .. '/settings/autoload.txt'
+    if not isfile(autoloadPath) then
+        return nil
+    end
+
+    local configName = readfile(autoloadPath):gsub('%s+', '')
+    if configName == '' then
+        return nil
+    end
+
+    local configPath = GG2_CONFIG_FOLDER .. '/settings/' .. configName .. '.json'
+    if not isfile(configPath) then
+        return nil
+    end
+
+    local ok, raw = pcall(readfile, configPath)
+    if not ok or type(raw) ~= 'string' or raw == '' then
+        return nil
+    end
+
+    local decodeOk, data = pcall(function()
+        return HttpService:JSONDecode(raw)
+    end)
+    if not decodeOk or type(data) ~= 'table' then
+        return nil
+    end
+
+    for _, obj in data.objects or {} do
+        if obj.idx == 'TargetPlant'
+            and type(obj.value) == 'string'
+            and obj.value ~= ''
+            and obj.value ~= 'None' then
+            return obj.value
+        end
+    end
+
+    return nil
+end
+
+function loadConfigTargetPlant()
+    local plantName = nil
+
+    if isfile and readfile and isfile(GG2_TARGET_PLANT_FILE) then
+        local ok, raw = pcall(readfile, GG2_TARGET_PLANT_FILE)
+        if ok and type(raw) == 'string' then
+            local trimmed = raw:gsub('^%s+', ''):gsub('%s+$', '')
+            if trimmed ~= '' and trimmed ~= 'None' then
+                plantName = trimmed
+            end
+        end
+    end
+
+    if not plantName then
+        plantName = readTargetPlantFromAutoloadConfig()
+    end
+
+    if plantName then
+        State.ConfigTargetPlant = plantName
+        saveTargetPlantFile(plantName)
+    end
+
+    return plantName
+end
+
+function applyTargetPlantToDropdown(plantName)
+    if not plantName or plantName == '' or plantName == 'None' then
+        return false
+    end
+
+    if not Options or not Options.TargetPlant then
+        State.ConfigTargetPlant = plantName
+        return true
+    end
+
+    local values = { 'None' }
+    local seen = { None = true }
+
+    for _, name in getGardenPlantTypes() do
+        if not seen[name] then
+            seen[name] = true
+            table.insert(values, name)
+        end
+    end
+
+    if not seen[plantName] then
+        table.insert(values, plantName)
+    end
+
+    Options.TargetPlant:SetValues(values)
+    Options.TargetPlant:SetValue(plantName)
+    State.ConfigTargetPlant = plantName
+    return true
+end
+
+function syncTargetPlantFromSavedConfig()
+    local plantName = loadConfigTargetPlant()
+    if plantName then
+        applyTargetPlantToDropdown(plantName)
+    end
+    return plantName
+end
+
 function captureConfigTargetPlant()
     if not Options or not Options.TargetPlant then
         return
@@ -2361,6 +2520,7 @@ function captureConfigTargetPlant()
     local plantName = Options.TargetPlant.Value
     if type(plantName) == 'string' and plantName ~= '' and plantName ~= 'None' then
         State.ConfigTargetPlant = plantName
+        saveTargetPlantFile(plantName)
     end
 end
 
@@ -2386,9 +2546,16 @@ function refreshTargetPlantDropdown()
         return
     end
 
+    if not State.ConfigTargetPlant or State.ConfigTargetPlant == 'None' then
+        loadConfigTargetPlant()
+    end
+
     local preferred = State.ConfigTargetPlant
     if not preferred or preferred == 'None' then
-        preferred = Options.TargetPlant.Value
+        local current = Options.TargetPlant.Value
+        if type(current) == 'string' and current ~= '' and current ~= 'None' then
+            preferred = current
+        end
     end
 
     local values = { 'None' }
@@ -2410,6 +2577,7 @@ function refreshTargetPlantDropdown()
     if preferred and preferred ~= 'None' and preferred ~= '' then
         Options.TargetPlant:SetValue(preferred)
         State.ConfigTargetPlant = preferred
+        saveTargetPlantFile(preferred)
     else
         Options.TargetPlant:SetValue('None')
     end
@@ -4390,13 +4558,16 @@ local WeatherStatusLabel
 local CurrentWeatherLabel
 
 function getQueueOnTeleport()
+    local genv = getgenv()
     return queue_on_teleport
         or queueteleport
+        or QueueOnTeleport
         or (syn and syn.queue_on_teleport)
         or (fluxus and fluxus.queue_on_teleport)
-        or (getgenv().queue_on_teleport)
-        or (getgenv().queueteleport)
-        or (getgenv().queueonteleport)
+        or genv.queue_on_teleport
+        or genv.queueteleport
+        or genv.queueonteleport
+        or genv.QueueOnTeleport
 end
 
 function getOutsideWalkTarget(basePos, standoff)
@@ -4625,7 +4796,7 @@ function doStartupWalk()
         task.wait(0.5)
 
         waitForGardenReady(30)
-        captureConfigTargetPlant()
+        syncTargetPlantFromSavedConfig()
         refreshTargetPlantDropdown()
         loadWeatherState()
 
@@ -4663,12 +4834,18 @@ if not Players.LocalPlayer then
     Players.PlayerAdded:Wait()
 end
 
-getgenv().GG2_AutoFarmRunning = nil
-getgenv().GG2_FromAutoExec = true
-getgenv().GG2_SkipRemoteUpdate = true
+local genv = getgenv()
+genv.GG2_AutoFarmRunning = nil
+genv.GG2_FromAutoExec = true
+genv.GG2_SkipRemoteUpdate = true
 
 local commit = %q
 local repo = %q
+
+local loadFn = loadstring or load
+if syn and syn.loadstring then
+    loadFn = syn.loadstring
+end
 
 local function canRead(path)
     if typeof(isfile) ~= 'function' or typeof(readfile) ~= 'function' then
@@ -4685,10 +4862,16 @@ local function canRead(path)
 end
 
 local function runSource(src, label)
-    local func, err = loadstring(src, label or 'gg2')
+    if not loadFn then
+        return false, 'no loadstring'
+    end
+    local func, err = loadFn(src, label or 'gg2')
     if not func then
         return false, err
     end
+    genv.GG2_AutoFarmRunning = nil
+    genv.GG2_FromAutoExec = true
+    genv.GG2_SkipRemoteUpdate = true
     local ok, runErr = pcall(func)
     return ok, runErr
 end
@@ -4703,31 +4886,33 @@ local function httpGet(url)
     return nil
 end
 
+local paths = {
+    'GG2/gag2.lua',
+    'gag2.lua',
+    'GG2/loader.lua',
+    'loader.lua',
+    'GG2/grow_garden_autofarm.lua',
+    'grow_garden_autofarm.lua',
+}
+
+local urls = {
+    'https://raw.githubusercontent.com/' .. repo .. '/' .. commit .. '/gag2.lua',
+    'https://raw.githubusercontent.com/' .. repo .. '/main/gag2.lua',
+    'https://raw.githubusercontent.com/' .. repo .. '/' .. commit .. '/loader.lua',
+    'https://raw.githubusercontent.com/' .. repo .. '/main/loader.lua',
+}
+
 local function tryRun()
-    for _, path in {
-        'GG2/loader.lua',
-        'loader.lua',
-        'GG2/gag2.lua',
-        'gag2.lua',
-        'GG2/grow_garden_autofarm.lua',
-        'grow_garden_autofarm.lua',
-    } do
+    for _, path in paths do
         local src = canRead(path)
         if src and runSource(src, path) then
             return true
         end
     end
 
-    local urls = {
-        'https://raw.githubusercontent.com/' .. repo .. '/' .. commit .. '/loader.lua',
-        'https://raw.githubusercontent.com/' .. repo .. '/main/loader.lua',
-        'https://raw.githubusercontent.com/' .. repo .. '/' .. commit .. '/gag2.lua',
-        'https://raw.githubusercontent.com/' .. repo .. '/main/gag2.lua',
-    }
-
     for _, url in urls do
         local src = httpGet(url)
-        if src and runSource(src, 'gg2-loader') then
+        if src and runSource(src, url) then
             return true
         end
     end
@@ -4735,7 +4920,12 @@ local function tryRun()
     return false
 end
 
-tryRun()
+for attempt = 1, 8 do
+    if tryRun() then
+        return
+    end
+    task.wait(2)
+end
 ]], commit, GG2_REPO)
 end
 
@@ -4755,6 +4945,8 @@ end
 function setupAutoExecute()
     ensureGg2Folders()
     ensureCommitFile()
+    persistAutoFarmScript()
+    persistLoaderScript()
 
     if not getQueueOnTeleport() then
         return
@@ -4774,12 +4966,12 @@ function setupAutoExecute()
     end)
 
     task.defer(function()
-        task.wait(3)
+        task.wait(1)
         queueTeleportScript()
     end)
 
     LocalPlayer.CharacterAdded:Connect(function()
-        task.delay(2, queueTeleportScript)
+        task.delay(1, queueTeleportScript)
     end)
 end
 
@@ -5452,8 +5644,10 @@ GearBox:AddDropdown('TargetPlant', {
     Callback = function(value)
         if type(value) == 'string' and value ~= '' and value ~= 'None' then
             State.ConfigTargetPlant = value
+            saveTargetPlantFile(value)
         else
             State.ConfigTargetPlant = nil
+            saveTargetPlantFile('')
         end
     end,
 })
@@ -5898,6 +6092,26 @@ SaveManager:SetIgnoreIndexes({})
 ThemeManager:SetFolder('GrowGarden2AutoFarm')
 SaveManager:SetFolder('GrowGarden2AutoFarm')
 SaveManager:BuildConfigSection(Tabs.Settings)
+
+do
+    local rawSave = SaveManager.Save
+    function SaveManager:Save(name)
+        captureConfigTargetPlant()
+        return rawSave(self, name)
+    end
+
+    local rawLoad = SaveManager.Load
+    function SaveManager:Load(name)
+        local ok, err = rawLoad(self, name)
+        task.defer(function()
+            task.wait(0.05)
+            syncTargetPlantFromSavedConfig()
+            refreshTargetPlantDropdown()
+        end)
+        return ok, err
+    end
+end
+
 ThemeManager:ApplyToTab(Tabs.Settings)
 
 loadWeatherState()
@@ -5934,6 +6148,7 @@ end
 setupAutoExecute()
 startLoadingScreenAutoDismiss()
 persistAutoFarmScript()
+persistLoaderScript()
 
 if getQueueOnTeleport() and writefile then
     task.defer(function()
@@ -5968,6 +6183,7 @@ end
 
 task.defer(function()
     SaveManager:LoadAutoloadConfig()
+    syncTargetPlantFromSavedConfig()
     captureConfigTargetPlant()
     if Options.MenuKeybind then
         Library.ToggleKeybind = Options.MenuKeybind
@@ -6031,6 +6247,7 @@ task.defer(function()
     task.wait(0.1)
     pcall(refreshMailInventory)
     updateWeatherLabels()
+    queueTeleportScript()
 end)
 
 LocalPlayer.CharacterAdded:Connect(function()
@@ -6043,6 +6260,7 @@ end)
 LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
     task.defer(function()
         waitForGardenReady(20)
+        syncTargetPlantFromSavedConfig()
         refreshTargetPlantDropdown()
     end)
     if Toggles.Noclip and Toggles.Noclip.Value then
