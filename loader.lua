@@ -1,6 +1,3 @@
--- Grow a Garden 2 Auto Farm loader
--- loadstring(game:HttpGet('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/loader.lua', true))()
-
 local GENV = getgenv()
 local queuedAutoExec = GENV.GG2_FromAutoExec == true
 
@@ -18,7 +15,24 @@ end
 
 local REPO = 'aupirium/Auto-Farm---GAG2'
 local SCRIPT_FILE = 'gag2.lua'
+local SCRIPT_PATH = 'GG2/gag2.lua'
 local COMMIT_FILE = 'GG2/commit.txt'
+local LEGACY_SCRIPT_PATHS = {
+    'grow_garden_autofarm.lua',
+    'GG2/grow_garden_autofarm.lua',
+}
+
+local function gg2RawUrl(scriptName, commit)
+    return string.format('https://raw.githubusercontent.com/%s/%s/%s', REPO, commit or 'main', scriptName)
+end
+
+local function getScriptReadPaths()
+    local paths = { SCRIPT_FILE, SCRIPT_PATH }
+    for _, legacyPath in LEGACY_SCRIPT_PATHS do
+        table.insert(paths, legacyPath)
+    end
+    return paths
+end
 
 local isfile = isfile or function(file)
     local suc, res = pcall(function()
@@ -60,7 +74,7 @@ local function getCommit()
 end
 
 local function downloadScript(commit)
-    local url = 'https://raw.githubusercontent.com/' .. REPO .. '/' .. commit .. '/' .. SCRIPT_FILE
+    local url = gg2RawUrl(SCRIPT_FILE, commit)
 
     local ok, source = pcall(function()
         return game:HttpGet(url, true)
@@ -90,7 +104,7 @@ if oldCommit ~= commit then
     end)
 end
 
-GENV.GG2_ScriptUrl = 'https://raw.githubusercontent.com/' .. REPO .. '/' .. commit .. '/' .. SCRIPT_FILE
+GENV.GG2_ScriptUrl = gg2RawUrl(SCRIPT_FILE, commit)
 
 local source, triedUrl = downloadScript(commit)
 if not source and commit ~= 'main' then
@@ -98,7 +112,7 @@ if not source and commit ~= 'main' then
 end
 
 if not source then
-    for _, path in { 'gag2.lua', 'GG2/gag2.lua', 'grow_garden_autofarm.lua', 'GG2/grow_garden_autofarm.lua' } do
+    for _, path in getScriptReadPaths() do
         if isfile(path) then
             local ok, cached = pcall(readfile, path)
             if ok and type(cached) == 'string' and cached ~= '' then
@@ -113,15 +127,15 @@ if not source then
     error('Failed to download script from GitHub (' .. tostring(triedUrl) .. ')')
 end
 
-writefile('GG2/gag2.lua', source)
-writefile('gag2.lua', source)
+writefile(SCRIPT_PATH, source)
+writefile(SCRIPT_FILE, source)
 
 GENV.GG2_SkipRemoteUpdate = true
 if queuedAutoExec then
     GENV.GG2_FromAutoExec = true
 end
 
-local func, err = loadstring(source, 'gag2.lua')
+local func, err = loadstring(source, SCRIPT_FILE)
 if not func then
     error('Failed to load script: ' .. tostring(err))
 end
