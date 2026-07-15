@@ -1,4 +1,4 @@
-﻿-- Grow a Garden 2 - Auto Farm (LinoriaLib)
+-- Grow a Garden 2 - Auto Farm (LinoriaLib)
 -- Auto Super Sprinkler / Watering Can at saved position, auto harvest, auto sell, earnings/min
 
 local GENV = getgenv()
@@ -738,6 +738,9 @@ local State = {
     AutoBuyThread = nil,
     AutoBuyTracker = {},
     AutoAuctionThread = nil,
+    AutoHatchThread = nil,
+    EggHatchPending = false,
+    EggHatchTimes = {},
     AuctionLots = {},
     AuctionStock = {},
     AuctionPurchaseTimes = {},
@@ -3142,6 +3145,225 @@ function setAutoAuctionLoop(enabled)
     end)
 end
 
+function getEggHatchCooldownKey(key)
+    return tostring(key)
+end
+
+function canTryEggHatch(key, cooldown)
+    cooldown = cooldown or 3
+    local last = State.EggHatchTimes[getEggHatchCooldownKey(key)]
+    return not last or os.clock() - last >= cooldown
+end
+
+function markEggHatchAttempt(key)
+    State.EggHatchTimes[getEggHatchCooldownKey(key)] = os.clock()
+end
+
+function findEggTools()
+    local tools = {}
+    local seen = {}
+
+    local function scan(container)
+        if not container then
+            return
+        end
+
+        for _, item in container:GetChildren() do
+            if item:IsA('Tool') and not seen[item] then
+                local eggName = item:GetAttribute('Egg')
+                if type(eggName) == 'string' and eggName ~= '' then
+                    local uses = item:GetAttribute('Uses')
+                    if uses == nil or tonumber(uses) == nil or tonumber(uses) > 0 then
+                        seen[item] = true
+                        table.insert(tools, item)
+                    end
+                end
+            end
+        end
+    end
+
+    scan(LocalPlayer.Backpack)
+    scan(LocalPlayer.Character)
+
+    return tools
+end
+
+function findOwnedDragonEggs()
+    local eggs = {}
+
+    for _, egg in CollectionService:GetTagged('DragonEggInstance') do
+        if egg:IsA('Model') and egg:GetAttribute('DragonEggOwner') == LocalPlayer.UserId then
+            table.insert(eggs, egg)
+        end
+    end
+
+    return eggs
+end
+
+function triggerProximityPrompt(prompt)
+    if not prompt or not prompt.Enabled then
+        return false
+    end
+
+    if type(firesignal) == 'function' then
+        local ok = pcall(function()
+            firesignal(prompt.Triggered, LocalPlayer)
+        end)
+        if ok then
+            return true
+        end
+    end
+
+    local ok = pcall(function()
+        prompt:InputHoldBegin()
+    end)
+
+    if not ok then
+        return false
+    end
+
+    task.wait((prompt.HoldDuration or 0) + 0.05)
+    pcall(function()
+        prompt:InputHoldEnd()
+    end)
+
+    return true
+end
+
+function tryOpenEggById(eggId)
+    if type(eggId) ~= 'string' or eggId == '' then
+        return false
+    end
+
+    if not canTryEggHatch(eggId, 2.5) then
+        return false
+    end
+
+    local ok, result = pcall(function()
+        return Networking.Egg.OpenEgg:Fire(eggId)
+    end)
+
+    if ok and type(result) == 'table' and result.Success then
+        markEggHatchAttempt(eggId)
+        return true, result
+    end
+
+    return false, result
+end
+
+function tryHatchEggTool(tool)
+    if not tool or not tool:IsA('Tool') then
+        return false
+    end
+
+    local eggName = tool:GetAttribute('Egg')
+    if type(eggName) ~= 'string' or eggName == '' then
+        return false
+    end
+
+    if LocalPlayer:GetAttribute('LoadingScreenActive') then
+        return false
+    end
+
+    if not canTryEggHatch(tool, 3) then
+        return false
+    end
+
+    State.EggHatchPending = true
+    local ok, result = tryOpenEggById(eggName)
+    State.EggHatchPending = false
+
+    if ok then
+        markEggHatchAttempt(tool)
+        return true, result
+    end
+
+    return false, result
+end
+
+function tryHatchDragonWorldEgg(eggModel)
+    if not eggModel or not eggModel:IsA('Model') then
+        return false
+    end
+
+    if eggModel:GetAttribute('DragonEggOwner') ~= LocalPlayer.UserId then
+        return false
+    end
+
+    if LocalPlayer:GetAttribute('LoadingScreenActive') then
+        return false
+    end
+
+    local eggKey = eggModel:GetFullName()
+    if not canTryEggHatch(eggKey, 5) then
+        return false
+    end
+
+    for _, descendant in eggModel:GetDescendants() do
+        if descendant:IsA('ProximityPrompt') then
+            if triggerProximityPrompt(descendant) then
+                markEggHatchAttempt(eggKey)
+                return true
+            end
+        end
+    end
+
+    local candidates = {
+        eggModel:GetAttribute('Egg'),
+        eggModel:GetAttribute('EggId'),
+        eggModel:GetAttribute('EggName'),
+        eggModel:GetAttribute('DragonEggId'),
+        eggModel:GetAttribute('Id'),
+    }
+
+    for _, eggId in candidates do
+        local ok, result = tryOpenEggById(eggId)
+        if ok then
+            markEggHatchAttempt(eggKey)
+            return true, result
+        end
+    end
+
+    return false
+end
+
+function runAutoHatch()
+    if not isActiveSession() or State.EggHatchPending then
+        return
+    end
+
+    for _, eggModel in findOwnedDragonEggs() do
+        if tryHatchDragonWorldEgg(eggModel) then
+            return
+        end
+    end
+
+    for _, tool in findEggTools() do
+        if tryHatchEggTool(tool) then
+            return
+        end
+    end
+end
+
+function setAutoHatchLoop(enabled)
+    if State.AutoHatchThread then
+        pcall(task.cancel, State.AutoHatchThread)
+        State.AutoHatchThread = nil
+    end
+
+    if not enabled then
+        return
+    end
+
+    State.AutoHatchThread = task.spawn(function()
+        while isActiveSession() and Toggles.AutoHatchEggs and Toggles.AutoHatchEggs.Value do
+            runAutoHatch()
+            task.wait(0.5)
+        end
+        State.AutoHatchThread = nil
+    end)
+end
+
 function recordEarnings(amount)
     if not amount or amount <= 0 then
         return
@@ -4843,6 +5065,15 @@ FarmBox:AddToggle('AutoSell', {
     end,
 })
 
+FarmBox:AddToggle('AutoHatchEggs', {
+    Text = 'Auto Hatch Eggs',
+    Default = false,
+    Tooltip = 'Auto-hatches Black Dragon eggs in your garden and egg tools in your backpack',
+    Callback = function(value)
+        setAutoHatchLoop(value)
+    end,
+})
+
 WeatherBox:AddToggle('WeatherDodge', {
     Text = 'Enable Weather Dodge',
     Default = false,
@@ -4976,6 +5207,7 @@ function shutdownScript()
     pcall(setAutoWateringLoop, false)
     pcall(setAutoBuyLoop, false)
     pcall(setAutoAuctionLoop, false)
+    pcall(setAutoHatchLoop, false)
     pcall(setAutoSellLoop, false)
     pcall(setWeatherDodge, false)
     pcall(stopWeatherErrorReconnect)
@@ -5297,6 +5529,9 @@ task.defer(function()
     end
     if Toggles.AutoBuyAuction and Toggles.AutoBuyAuction.Value then
         setAutoAuctionLoop(true)
+    end
+    if Toggles.AutoHatchEggs and Toggles.AutoHatchEggs.Value then
+        setAutoHatchLoop(true)
     end
 
     task.defer(refreshAuctionItemListsFromCatalog)
