@@ -87,18 +87,18 @@ local function downloadScript(commit)
     return stripBom(source), url
 end
 
-if type(writefile) ~= 'function' then
+if type(writefile) ~= 'function' and not queuedAutoExec then
     error('Grow a Garden 2 Auto Farm needs writefile support')
 end
 
-if makefolder and (not isfolder or not isfolder('GG2')) then
+if makefolder and type(writefile) == 'function' and (not isfolder or not isfolder('GG2')) then
     makefolder('GG2')
 end
 
 local commit = getCommit()
 local oldCommit = isfile(COMMIT_FILE) and readfile(COMMIT_FILE):gsub('%s+', '') or ''
 commit = commit:gsub('%s+', '')
-if oldCommit ~= commit then
+if type(writefile) == 'function' and oldCommit ~= commit then
     pcall(function()
         writefile(COMMIT_FILE, commit)
     end)
@@ -127,15 +127,20 @@ if not source then
     error('Failed to download script from GitHub (' .. tostring(triedUrl) .. ')')
 end
 
-writefile(SCRIPT_PATH, source)
-writefile(SCRIPT_FILE, source)
+if type(writefile) == 'function' then
+    writefile(SCRIPT_PATH, source)
+    writefile(SCRIPT_FILE, source)
+end
 
 GENV.GG2_SkipRemoteUpdate = true
 if queuedAutoExec then
     GENV.GG2_FromAutoExec = true
 end
 
-local func, err = loadstring(source, SCRIPT_FILE)
+local func, err = (loadstring or load)(source, SCRIPT_FILE)
+if syn and syn.loadstring and not func then
+    func, err = syn.loadstring(source, SCRIPT_FILE)
+end
 if not func then
     error('Failed to load script: ' .. tostring(err))
 end
