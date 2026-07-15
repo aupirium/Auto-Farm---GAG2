@@ -43,6 +43,7 @@ local GG2_AUTOEXEC_PATHS = {
     'workspace/' .. GG2_LOADER_SCRIPT,
 }
 local GG2_COMMIT_FILE = 'GG2/commit.txt'
+local GG2_AUTOEXEC_FILE = 'GG2/rejoin.lua'
 local GG2_TARGET_PLANT_FILE = 'GG2/target_plant.txt'
 local GG2_CONFIG_FOLDER = 'GrowGarden2AutoFarm'
 local LEGACY_SCRIPT_PATHS = {
@@ -191,6 +192,7 @@ local Gardens = workspace:WaitForChild('Gardens')
 local WeatherValues = ReplicatedStorage:WaitForChild('WeatherValues')
 local StockValues = ReplicatedStorage:WaitForChild('StockValues')
 local Lighting = game:GetService('Lighting')
+local SoundService = game:GetService('SoundService')
 
 local EVENT_WEATHERS = {
     'Lightning',
@@ -867,9 +869,13 @@ local State = {
     OptimizerWorldDescendantConnection = nil,
     OptimizerWorldQueue = nil,
     OptimizerVelocityConnection = nil,
+    OptimizerMaintainThread = nil,
+    OptimizerSoundDescendantConnection = nil,
     OptimizerPlantIncomingQueue = nil,
     PlantEmitterSet = {},
     OptimizerPartCache = {},
+    OptimizerVisualCache = {},
+    OptimizerSoundCache = {},
     AntiAfkConnection = nil,
     AutoSellThread = nil,
     LastHarvest = 0,
@@ -1486,23 +1492,104 @@ function isCharacterPart(part)
     return false
 end
 
-function optimizerCleanPart(part)
-    if not State.OptimizerEnabled then
+function optimizerKillHeavyVisual(inst)
+    if not State.OptimizerEnabled or isGardenDescendant(inst) or isLocalPlayerDescendant(inst) or isCharacterPart(inst) then
         return
     end
 
-    if isGardenDescendant(part) or isLocalPlayerDescendant(part) or isCharacterPart(part) then
+    local killClasses = {
+        ParticleEmitter = true,
+        Beam = true,
+        Trail = true,
+        Explosion = true,
+        Fire = true,
+        Smoke = true,
+        Sparkles = true,
+        PointLight = true,
+        SpotLight = true,
+        SurfaceLight = true,
+        SelectionBox = true,
+        SelectionSphere = true,
+    }
+
+    if not killClasses[inst.ClassName] then
         return
     end
 
-    if part:IsA('BasePart') then
-        if not State.OptimizerPartCache[part] then
-            State.OptimizerPartCache[part] = {
-                Material = part.Material,
+    if not State.OptimizerVisualCache[inst] then
+        local props = { Enabled = inst.Enabled }
+        if inst:IsA('ParticleEmitter') then
+            props.Rate = inst.Rate
+        end
+        if inst:IsA('GuiObject') then
+            props.Visible = inst.Visible
+        end
+        State.OptimizerVisualCache[inst] = props
+    end
+
+    optimizerSafeSet(inst, 'Enabled', false)
+    if inst:IsA('GuiObject') then
+        optimizerSafeSet(inst, 'Visible', false)
+    end
+    if inst:IsA('ParticleEmitter') then
+        optimizerSafeSet(inst, 'Rate', 0)
+    end
+end
+
+function optimizerMuteSound(inst)
+    if not State.OptimizerEnabled or not inst:IsA('Sound') then
+        return
+    end
+
+    if isLocalPlayerDescendant(inst) then
+        return
+    end
+
+    if not State.OptimizerSoundCache[inst] then
+        State.OptimizerSoundCache[inst] = {
+            Volume = inst.Volume,
+            PlaybackSpeed = inst.PlaybackSpeed,
+        }
+    end
+
+    pcall(function()
+        inst:Stop()
+    end)
+    optimizerSafeSet(inst, 'Volume', 0)
+    optimizerSafeSet(inst, 'PlaybackSpeed', 0)
+end
+
+function optimizerProcessInstance(inst)
+    if not State.OptimizerEnabled or isGardenDescendant(inst) or isLocalPlayerDescendant(inst) or isCharacterPart(inst) then
+        return
+    end
+
+    if inst:IsA('Decal') or inst:IsA('Texture') then
+        if not State.OptimizerPartCache[inst] then
+            State.OptimizerPartCache[inst] = {
+                Transparency = inst.Transparency,
+                Texture = inst.Texture,
             }
         end
-        part.Material = Enum.Material.SmoothPlastic
-        for _, child in part:GetChildren() do
+        inst.Transparency = 1
+        optimizerSafeSet(inst, 'Texture', '')
+    elseif inst:IsA('SpecialMesh') then
+        if not State.OptimizerPartCache[inst] then
+            State.OptimizerPartCache[inst] = {
+                TextureId = inst.TextureId,
+            }
+        end
+        inst.TextureId = ''
+    elseif inst:IsA('BasePart') then
+        if not State.OptimizerPartCache[inst] then
+            State.OptimizerPartCache[inst] = {
+                Material = inst.Material,
+                CastShadow = inst.CastShadow,
+            }
+        end
+        inst.Material = Enum.Material.SmoothPlastic
+        inst.CastShadow = false
+        for _, child in inst:GetChildren() do
             if child:IsA('Texture') or child:IsA('Decal') then
                 pcall(function()
                     child:Destroy()
@@ -1510,6 +1597,9 @@ function optimizerCleanPart(part)
             end
         end
     end
+
+    optimizerKillHeavyVisual(inst)
+    optimizerMuteSound(inst)
 end
 
 function queueOptimizerCleanPart(inst)
@@ -1540,7 +1630,7 @@ function scanOptimizerWorld(applyToken)
         local frameStart = os.clock()
         while #stack > 0 and os.clock() - frameStart < OPTIMIZER_FRAME_BUDGET do
             local inst = table.remove(stack)
-            optimizerCleanPart(inst)
+            optimizerProcessInstance(inst)
             local children = inst:GetChildren()
             for i = #children, 1, -1 do
                 table.insert(stack, children[i])
@@ -1561,7 +1651,30 @@ function flushOptimizerWorldQueue()
     for _ = 1, flushCount do
         local inst = table.remove(queue, 1)
         if inst and inst.Parent then
-            optimizerCleanPart(inst)
+            optimizerProcessInstance(inst)
+        end
+    end
+end
+
+function applyOptimizerPostEffects()
+    for _, child in Lighting:GetChildren() do
+        if child:IsA('PostEffect') or child:IsA('BloomEffect') or child:IsA('BlurEffect')
+            or child:IsA('DepthOfFieldEffect') or child:IsA('SunRaysEffect') then
+            if State.OptimizerPartCache[child] == nil then
+                State.OptimizerPartCache[child] = { Enabled = child.Enabled }
+            end
+            child.Enabled = false
+        elseif child:IsA('Atmosphere') then
+            if State.OptimizerPartCache[child] == nil then
+                State.OptimizerPartCache[child] = {
+                    Density = child.Density,
+                    Haze = child.Haze,
+                    Glare = child.Glare,
+                }
+            end
+            optimizerSafeSet(child, 'Density', 0)
+            optimizerSafeSet(child, 'Haze', 0)
+            optimizerSafeSet(child, 'Glare', 0)
         end
     end
 end
@@ -1604,6 +1717,13 @@ function applyOptimizerLighting()
     Lighting.Ambient = Color3.fromRGB(80, 80, 95)
     Lighting.OutdoorAmbient = Color3.fromRGB(60, 60, 70)
     Lighting.ShadowColor = Color3.fromRGB(30, 30, 40)
+    Lighting.GlobalShadows = false
+
+    applyOptimizerPostEffects()
+
+    pcall(function()
+        Lighting.Technology = Enum.Technology.Compatibility
+    end)
 end
 
 function applyWorldOptimizer()
@@ -1614,6 +1734,42 @@ function applyWorldOptimizer()
         terrainDecoration = terrain and terrain.Decoration
     end)
 
+    local renderQuality
+    local physicsThrottle
+    local fpsCap
+    local savedQualityLevel
+    local meshPartDetailLevel
+    local lightingTechnology
+    local ambientReverb
+    local terrainCastShadow
+
+    pcall(function()
+        renderQuality = settings().Rendering.QualityLevel
+    end)
+    pcall(function()
+        physicsThrottle = settings().Physics.PhysicsEnvironmentalThrottle
+    end)
+    pcall(function()
+        fpsCap = getfpscap and getfpscap() or 60
+    end)
+    pcall(function()
+        savedQualityLevel = UserSettings():GetService('UserGameSettings').SavedQualityLevel
+    end)
+    pcall(function()
+        meshPartDetailLevel = settings().Rendering.MeshPartDetailLevel
+    end)
+    pcall(function()
+        lightingTechnology = Lighting.Technology
+    end)
+    pcall(function()
+        ambientReverb = SoundService.AmbientReverb
+    end)
+    pcall(function()
+        if terrain then
+            terrainCastShadow = terrain.CastShadow
+        end
+    end)
+
     State.OptimizerOriginal = {
         Brightness = Lighting.Brightness,
         GeographicLatitude = Lighting.GeographicLatitude,
@@ -1621,12 +1777,34 @@ function applyWorldOptimizer()
         Ambient = Lighting.Ambient,
         OutdoorAmbient = Lighting.OutdoorAmbient,
         ShadowColor = Lighting.ShadowColor,
+        GlobalShadows = Lighting.GlobalShadows,
         TerrainDecoration = terrainDecoration,
         WaterWaveSize = terrain and terrain.WaterWaveSize,
         WaterWaveSpeed = terrain and terrain.WaterWaveSpeed,
         WaterReflectance = terrain and terrain.WaterReflectance,
+        TerrainCastShadow = terrainCastShadow,
+        RenderQuality = renderQuality,
+        PhysicsThrottle = physicsThrottle,
+        FpsCap = fpsCap,
+        SavedQualityLevel = savedQualityLevel,
+        MeshPartDetailLevel = meshPartDetailLevel,
+        LightingTechnology = lightingTechnology,
+        AmbientReverb = ambientReverb,
         SkyClones = {},
     }
+
+    pcall(function()
+        settings().Physics.PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.Always
+    end)
+    pcall(function()
+        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
+    end)
+    pcall(function()
+        UserSettings():GetService('UserGameSettings').SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+    end)
+    pcall(function()
+        settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level04
+    end)
 
     applyOptimizerLighting()
 
@@ -1635,7 +1813,18 @@ function applyWorldOptimizer()
         optimizerSafeSet(terrain, 'WaterWaveSize', 0)
         optimizerSafeSet(terrain, 'WaterWaveSpeed', 0)
         optimizerSafeSet(terrain, 'WaterReflectance', 0)
+        optimizerSafeSet(terrain, 'CastShadow', false)
     end
+
+    pcall(function()
+        SoundService.AmbientReverb = Enum.ReverbType.NoReverb
+    end)
+
+    pcall(function()
+        if setfpscap then
+            setfpscap(9999)
+        end
+    end)
 
     if State.OptimizerVelocityConnection then
         State.OptimizerVelocityConnection:Disconnect()
@@ -1671,6 +1860,11 @@ function startWorldOptimizerMaintenance(applyToken)
         State.OptimizerWorldScanThread = nil
     end
 
+    if State.OptimizerMaintainThread then
+        pcall(task.cancel, State.OptimizerMaintainThread)
+        State.OptimizerMaintainThread = nil
+    end
+
     State.OptimizerWorldQueue = {}
 
     if State.OptimizerWorldDescendantConnection then
@@ -1684,6 +1878,19 @@ function startWorldOptimizerMaintenance(applyToken)
         end
 
         queueOptimizerCleanPart(desc)
+    end)
+
+    if State.OptimizerSoundDescendantConnection then
+        State.OptimizerSoundDescendantConnection:Disconnect()
+        State.OptimizerSoundDescendantConnection = nil
+    end
+
+    State.OptimizerSoundDescendantConnection = SoundService.DescendantAdded:Connect(function(desc)
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+
+        optimizerMuteSound(desc)
     end)
 
     if State.OptimizerWorldFlushConnection then
@@ -1701,8 +1908,27 @@ function startWorldOptimizerMaintenance(applyToken)
 
     State.OptimizerWorldScanThread = task.spawn(function()
         scanOptimizerWorld(applyToken)
+
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+
+        for _, child in SoundService:GetDescendants() do
+            optimizerMuteSound(child)
+        end
+
         if applyToken == State.OptimizerApplyToken and State.OptimizerEnabled then
             State.OptimizerWorldScanThread = nil
+        end
+    end)
+
+    State.OptimizerMaintainThread = task.spawn(function()
+        while applyToken == State.OptimizerApplyToken and State.OptimizerEnabled do
+            task.wait(5)
+            applyOptimizerPostEffects()
+            pcall(function()
+                SoundService.AmbientReverb = Enum.ReverbType.NoReverb
+            end)
         end
     end)
 end
@@ -1713,9 +1939,19 @@ function restoreWorldOptimizer()
         State.OptimizerVelocityConnection = nil
     end
 
+    if State.OptimizerMaintainThread then
+        pcall(task.cancel, State.OptimizerMaintainThread)
+        State.OptimizerMaintainThread = nil
+    end
+
     if State.OptimizerWorldDescendantConnection then
         State.OptimizerWorldDescendantConnection:Disconnect()
         State.OptimizerWorldDescendantConnection = nil
+    end
+
+    if State.OptimizerSoundDescendantConnection then
+        State.OptimizerSoundDescendantConnection:Disconnect()
+        State.OptimizerSoundDescendantConnection = nil
     end
 
     if State.OptimizerWorldFlushConnection then
@@ -1740,6 +1976,51 @@ function restoreWorldOptimizer()
             Lighting.Ambient = o.Ambient
             Lighting.OutdoorAmbient = o.OutdoorAmbient
             Lighting.ShadowColor = o.ShadowColor
+            if o.GlobalShadows ~= nil then
+                Lighting.GlobalShadows = o.GlobalShadows
+            end
+        end)
+
+        pcall(function()
+            if o.LightingTechnology then
+                Lighting.Technology = o.LightingTechnology
+            end
+        end)
+
+        pcall(function()
+            if o.PhysicsThrottle then
+                settings().Physics.PhysicsEnvironmentalThrottle = o.PhysicsThrottle
+            end
+        end)
+
+        pcall(function()
+            if o.RenderQuality then
+                settings().Rendering.QualityLevel = o.RenderQuality
+            end
+        end)
+
+        pcall(function()
+            if o.SavedQualityLevel then
+                UserSettings():GetService('UserGameSettings').SavedQualityLevel = o.SavedQualityLevel
+            end
+        end)
+
+        pcall(function()
+            if o.MeshPartDetailLevel then
+                settings().Rendering.MeshPartDetailLevel = o.MeshPartDetailLevel
+            end
+        end)
+
+        pcall(function()
+            if o.AmbientReverb then
+                SoundService.AmbientReverb = o.AmbientReverb
+            end
+        end)
+
+        pcall(function()
+            if setfpscap then
+                setfpscap(o.FpsCap or 60)
+            end
         end)
 
         local customSky = Lighting:FindFirstChild(OPTIMIZER_SKY_NAME)
@@ -1772,6 +2053,9 @@ function restoreWorldOptimizer()
                 if o.WaterReflectance ~= nil then
                     terrain.WaterReflectance = o.WaterReflectance
                 end
+                if o.TerrainCastShadow ~= nil then
+                    terrain.CastShadow = o.TerrainCastShadow
+                end
             end
         end)
     end
@@ -1786,9 +2070,30 @@ function restoreWorldOptimizer()
         end
     end
 
-    State.OptimizerPartCache = {}
-end
+    for inst, props in State.OptimizerVisualCache do
+        if inst and inst.Parent then
+            for prop, val in props do
+                pcall(function()
+                    inst[prop] = val
+                end)
+            end
+        end
+    end
 
+    for inst, props in State.OptimizerSoundCache do
+        if inst and inst.Parent then
+            for prop, val in props do
+                pcall(function()
+                    inst[prop] = val
+                end)
+            end
+        end
+    end
+
+    State.OptimizerPartCache = {}
+    State.OptimizerVisualCache = {}
+    State.OptimizerSoundCache = {}
+end
 function restoreOptimizer()
     if State.OptimizerScanThread then
         pcall(task.cancel, State.OptimizerScanThread)
@@ -1834,6 +2139,8 @@ function setOptimizer(enabled)
         State.PlantEmitterSet = {}
         State.PlantEmitterCache = {}
         State.OptimizerPartCache = {}
+        State.OptimizerVisualCache = {}
+        State.OptimizerSoundCache = {}
         applyWorldOptimizer()
         startWorldOptimizerMaintenance(applyToken)
     end
@@ -4628,11 +4935,13 @@ local CurrentWeatherLabel
 
 function getQueueOnTeleport()
     local genv = getgenv()
-    return queue_on_teleport
+    return queueonteleport
+        or queue_on_teleport
         or queueteleport
         or QueueOnTeleport
         or (syn and syn.queue_on_teleport)
         or (fluxus and fluxus.queue_on_teleport)
+        or genv.queueonteleport
         or genv.queue_on_teleport
         or genv.queueteleport
         or genv.queueonteleport
@@ -4897,6 +5206,10 @@ end
 function getAutoExecQueueScript()
     return [[
 repeat task.wait() until game:IsLoaded()
+local Players = game:GetService('Players')
+if not Players.LocalPlayer then
+    Players.PlayerAdded:Wait()
+end
 
 getgenv().GG2_AutoFarmRunning = nil
 getgenv().GG2_FromAutoExec = true
@@ -4911,7 +5224,7 @@ end
 
 local loadFn = loadstring or load
 
-local function runLoader(source)
+local function runSource(source, label)
     if not loadFn or type(source) ~= 'string' or source == '' then
         return false
     end
@@ -4920,7 +5233,7 @@ local function runLoader(source)
     getgenv().GG2_FromAutoExec = true
     getgenv().GG2_SkipRemoteUpdate = true
 
-    local func, err = loadFn(source, 'gg2-loader')
+    local func, err = loadFn(source, label or 'gg2')
     if not func then
         return false
     end
@@ -4928,9 +5241,9 @@ local function runLoader(source)
     return pcall(func)
 end
 
-for _, path in { 'loader.lua', 'GG2/loader.lua' } do
+for _, path in { 'GG2/gag2.lua', 'gag2.lua', 'GG2/loader.lua', 'loader.lua' } do
     if isfile(path) then
-        if runLoader(readfile(path)) then
+        if runSource(readfile(path), path) then
             return
         end
     end
@@ -4944,14 +5257,47 @@ if commit == '' then
     commit = 'main'
 end
 
-local url = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/' .. commit .. '/loader.lua'
+local loaderUrl = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/' .. commit .. '/loader.lua'
 local ok, source = pcall(function()
-    return game:HttpGet(url, true)
+    return game:HttpGet(loaderUrl, true)
 end)
 if ok and type(source) == 'string' and source ~= '' and source ~= '404: Not Found' then
-    runLoader(source)
+    runSource(source, 'gg2-loader')
+    return
+end
+
+local okMain, sourceMain = pcall(function()
+    return game:HttpGet('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/loader.lua', true)
+end)
+if okMain and type(sourceMain) == 'string' and sourceMain ~= '' and sourceMain ~= '404: Not Found' then
+    runSource(sourceMain, 'gg2-loader-main')
 end
 ]]
+end
+
+function persistAutoExecBootstrap()
+    if not writefile then
+        return false
+    end
+
+    ensureGg2Folders()
+    local scriptBody = getAutoExecQueueScript()
+    local paths = {
+        GG2_AUTOEXEC_FILE,
+        'rejoin.lua',
+        'autoexec/rejoin.lua',
+        'Autoexec/rejoin.lua',
+        'autoexec/GG2.lua',
+        'Autoexec/GG2.lua',
+    }
+
+    for _, path in paths do
+        pcall(function()
+            writefile(path, scriptBody)
+        end)
+    end
+
+    return true
 end
 
 function queueTeleportScript()
@@ -4961,7 +5307,9 @@ function queueTeleportScript()
     end
 
     ensureCommitFile()
+    persistAutoFarmScript()
     persistLoaderScript()
+    persistAutoExecBootstrap()
 
     return pcall(function()
         queue(getAutoExecQueueScript())
@@ -4973,9 +5321,10 @@ function setupAutoExecute()
     ensureCommitFile()
     persistAutoFarmScript()
     persistLoaderScript()
+    persistAutoExecBootstrap()
 
     if not getQueueOnTeleport() then
-        return
+        return false
     end
 
     queueTeleportScript()
@@ -4990,6 +5339,8 @@ function setupAutoExecute()
         saveConfigBeforeTeleport()
         queueTeleportScript()
     end)
+
+    return true
 end
 
 function stopAutoExecute()
@@ -5854,7 +6205,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'SmoothPlastic world cleanup, custom sky/lighting, terrain trim, anti-fling, hides garden plants.',
+    Tooltip = 'Full FPS optimizer: textures, particles, sounds, lighting, terrain, anti-fling, hides garden plants.',
     Callback = function(value)
         task.defer(function()
             setOptimizer(value)
@@ -6170,7 +6521,7 @@ persistLoaderScript()
 if getQueueOnTeleport() and writefile then
     task.defer(function()
         if Library and Library.Notify then
-            Library:Notify('Auto-exec queued (loads loader.lua from workspace on rejoin)')
+            Library:Notify('Auto-exec queued. For menu rejoin: add GG2/rejoin.lua to Volt autoexec folder')
         end
     end)
 end
