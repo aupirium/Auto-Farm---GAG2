@@ -191,7 +191,6 @@ local Gardens = workspace:WaitForChild('Gardens')
 local WeatherValues = ReplicatedStorage:WaitForChild('WeatherValues')
 local StockValues = ReplicatedStorage:WaitForChild('StockValues')
 local Lighting = game:GetService('Lighting')
-local CoreGui = game:GetService('CoreGui')
 
 local EVENT_WEATHERS = {
     'Lightning',
@@ -863,19 +862,14 @@ local State = {
     OptimizerApplyToken = 0,
     OptimizerScanThread = nil,
     OptimizerWorldScanThread = nil,
+    OptimizerBoostConnection = nil,
+    OptimizerWorldFlushConnection = nil,
+    OptimizerWorldDescendantConnection = nil,
     OptimizerWorldQueue = nil,
+    OptimizerVelocityConnection = nil,
     OptimizerPlantIncomingQueue = nil,
-    OptimizerHooksActive = false,
-    OptimizerAllowedGui = nil,
-    OptimizerHookRestore = nil,
-    OptimizerHumanoidConns = nil,
-    OptimizerHumanoidBound = nil,
-    OptimizerCharConn = nil,
-    OptimizerMouseConn = nil,
-    OptimizerCoreGuiConns = nil,
-    OptimizerStepConn = nil,
-    OptimizerGuiSweepThread = nil,
     PlantEmitterSet = {},
+    OptimizerPartCache = {},
     AntiAfkConnection = nil,
     AutoSellThread = nil,
     LastHarvest = 0,
@@ -969,6 +963,10 @@ function startLoadingScreenAutoDismiss()
 end
 
 local OPTIMIZER_FRAME_BUDGET = 0.012
+local OPTIMIZER_WORLD_QUEUE_FLUSH = 48
+local OPTIMIZER_SPEED_LIMIT = 850
+local OPTIMIZER_SKY_ASSET = 'rbxassetid://136622198885324'
+local OPTIMIZER_SKY_NAME = 'GG2OptimizerSky'
 
 function optimizerHideFast(inst)
     if not inst or not inst.Parent then
@@ -1008,6 +1006,21 @@ end
 
 function isGardenDescendant(inst)
     return inst == Gardens or inst:IsDescendantOf(Gardens)
+end
+
+function isLocalPlayerDescendant(inst)
+    local char = LocalPlayer.Character
+    if not char or not inst then
+        return false
+    end
+
+    return inst == char or inst:IsDescendantOf(char)
+end
+
+function optimizerSafeSet(obj, prop, value)
+    pcall(function()
+        obj[prop] = value
+    end)
 end
 
 function killPlantEmitter(emitter, skipClear)
@@ -1462,305 +1475,320 @@ function scanOptimizerPlants(applyToken)
     end
 end
 
-local ZOMBIE_OPTIMIZER_URLS = {
-    'https://raw.githubusercontent.com/twiceAA/ZombieHub/refs/heads/main/Zombie-hub-Optimizate-script-Boost-Fps2',
-    'https://raw.githubusercontent.com/twiceAA/ZombieHub/refs/heads/main/Zombie-hub-Optimizate-script-Boost-Fps',
-}
-
-function getOptimizerGuiRoots()
-    local roots = { CoreGui }
-    if gethui then
-        local ok, ui = pcall(gethui)
-        if ok and ui then
-            table.insert(roots, ui)
+function isCharacterPart(part)
+    local model = part.Parent
+    while model do
+        if model:IsA('Model') and model:FindFirstChildOfClass('Humanoid') then
+            return true
         end
-    end
-    return roots
-end
-
-function snapshotAllowedOptimizerGuis()
-    local allowed = {}
-    for _, root in getOptimizerGuiRoots() do
-        for _, child in root:GetChildren() do
-            if child:IsA('ScreenGui') then
-                allowed[child] = true
-            end
-        end
-    end
-    if Library and Library.ScreenGui then
-        allowed[Library.ScreenGui] = true
-    end
-    return allowed
-end
-
-function isAllowedOptimizerGui(gui)
-    if not gui or not gui:IsA('ScreenGui') then
-        return true
-    end
-    if State.OptimizerAllowedGui and State.OptimizerAllowedGui[gui] then
-        return true
-    end
-    if Library and Library.ScreenGui and gui == Library.ScreenGui then
-        return true
-    end
-    local name = gui.Name:lower()
-    if name:find('linoria') then
-        return true
+        model = model.Parent
     end
     return false
 end
 
-function destroyExternalOptimizerGui(gui)
-    if not gui or not State.OptimizerEnabled then
-        return
-    end
-    if isAllowedOptimizerGui(gui) then
-        return
-    end
-    pcall(function()
-        gui:Destroy()
-    end)
-end
-
-function isOptimizerShiftLockBehavior(value)
-    return value == Enum.MouseBehavior.LockCenter
-        or value == Enum.MouseBehavior.LockCurrentPosition
-end
-
-function bindOptimizerHumanoid(humanoid)
-    if not humanoid or not humanoid:IsA('Humanoid') then
-        return
-    end
-
-    State.OptimizerHumanoidBound = State.OptimizerHumanoidBound or {}
-    if State.OptimizerHumanoidBound[humanoid] then
-        return
-    end
-    State.OptimizerHumanoidBound[humanoid] = true
-
-    local origWalkSpeed = humanoid.WalkSpeed
-    local origJumpPower = humanoid.JumpPower
-    local origJumpHeight = humanoid.JumpHeight
-    State.OptimizerHumanoidConns = State.OptimizerHumanoidConns or {}
-
-    table.insert(State.OptimizerHumanoidConns, humanoid:GetPropertyChangedSignal('WalkSpeed'):Connect(function()
-        if State.OptimizerEnabled and humanoid.WalkSpeed ~= origWalkSpeed then
-            humanoid.WalkSpeed = origWalkSpeed
-        end
-    end))
-
-    table.insert(State.OptimizerHumanoidConns, humanoid:GetPropertyChangedSignal('JumpPower'):Connect(function()
-        if State.OptimizerEnabled and humanoid.JumpPower ~= origJumpPower then
-            humanoid.JumpPower = origJumpPower
-        end
-    end))
-
-    table.insert(State.OptimizerHumanoidConns, humanoid:GetPropertyChangedSignal('JumpHeight'):Connect(function()
-        if State.OptimizerEnabled and humanoid.JumpHeight ~= origJumpHeight then
-            humanoid.JumpHeight = origJumpHeight
-        end
-    end))
-end
-
-function bindOptimizerCharacter(character)
-    if not character then
-        return
-    end
-
-    local humanoid = character:FindFirstChildOfClass('Humanoid')
-    if not humanoid then
-        humanoid = character:WaitForChild('Humanoid', 10)
-    end
-    bindOptimizerHumanoid(humanoid)
-end
-
-function sweepExternalOptimizerGuis()
+function optimizerCleanPart(part)
     if not State.OptimizerEnabled then
         return
     end
 
-    for _, root in getOptimizerGuiRoots() do
-        for _, child in root:GetChildren() do
-            if child:IsA('ScreenGui') then
-                destroyExternalOptimizerGui(child)
-            end
-        end
-    end
-end
-
-function installOptimizerHooks()
-    if State.OptimizerHooksActive then
+    if isGardenDescendant(part) or isLocalPlayerDescendant(part) or isCharacterPart(part) then
         return
     end
 
-    State.OptimizerAllowedGui = snapshotAllowedOptimizerGuis()
-    State.OptimizerHookRestore = {}
-    State.OptimizerHumanoidConns = {}
-    State.OptimizerHumanoidBound = {}
-    State.OptimizerCoreGuiConns = {}
-
-    local oldNew = (clonefunction and clonefunction(Instance.new)) or Instance.new
-
-    local function hookedNew(className, ...)
-        local inst = oldNew(className, ...)
-        if State.OptimizerEnabled and className == 'ScreenGui' then
-            task.defer(function()
-                if inst and inst.Parent then
-                    for _, root in getOptimizerGuiRoots() do
-                        if inst.Parent == root then
-                            destroyExternalOptimizerGui(inst)
-                            break
-                        end
-                    end
-                end
-            end)
+    if part:IsA('BasePart') then
+        if not State.OptimizerPartCache[part] then
+            State.OptimizerPartCache[part] = {
+                Material = part.Material,
+            }
         end
-        return inst
-    end
-
-    local wrappedNew = (newcclosure and newcclosure(hookedNew)) or hookedNew
-    if hookfunction then
-        pcall(function()
-            local original = hookfunction(oldNew, wrappedNew)
-            State.OptimizerHookRestore.HookTarget = oldNew
-            State.OptimizerHookRestore.OriginalNew = original
-        end)
-    end
-
-    for _, root in getOptimizerGuiRoots() do
-        table.insert(State.OptimizerCoreGuiConns, root.ChildAdded:Connect(function(child)
-            if child:IsA('ScreenGui') then
-                task.defer(function()
-                    destroyExternalOptimizerGui(child)
+        part.Material = Enum.Material.SmoothPlastic
+        for _, child in part:GetChildren() do
+            if child:IsA('Texture') or child:IsA('Decal') then
+                pcall(function()
+                    child:Destroy()
                 end)
             end
-        end))
+        end
     end
-
-    State.OptimizerGuiSweepThread = task.spawn(function()
-        while State.OptimizerEnabled do
-            sweepExternalOptimizerGuis()
-            task.wait(1)
-        end
-        State.OptimizerGuiSweepThread = nil
-    end)
-
-    State.OptimizerMouseConn = UserInputService:GetPropertyChangedSignal('MouseBehavior'):Connect(function()
-        if State.OptimizerEnabled and isOptimizerShiftLockBehavior(UserInputService.MouseBehavior) then
-            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-        end
-    end)
-
-    State.OptimizerStepConn = RunService.RenderStepped:Connect(function()
-        if State.OptimizerEnabled and isOptimizerShiftLockBehavior(UserInputService.MouseBehavior) then
-            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
-        end
-    end)
-
-    State.OptimizerCharConn = LocalPlayer.CharacterAdded:Connect(function(character)
-        task.defer(function()
-            bindOptimizerCharacter(character)
-        end)
-    end)
-
-    bindOptimizerCharacter(LocalPlayer.Character)
-    State.OptimizerHooksActive = true
 end
 
-function restoreOptimizerHooks()
-    if State.OptimizerGuiSweepThread then
-        pcall(task.cancel, State.OptimizerGuiSweepThread)
-        State.OptimizerGuiSweepThread = nil
-    end
-
-    if State.OptimizerCoreGuiConns then
-        for _, conn in State.OptimizerCoreGuiConns do
-            conn:Disconnect()
-        end
-        State.OptimizerCoreGuiConns = nil
-    end
-
-    if State.OptimizerMouseConn then
-        State.OptimizerMouseConn:Disconnect()
-        State.OptimizerMouseConn = nil
-    end
-
-    if State.OptimizerStepConn then
-        State.OptimizerStepConn:Disconnect()
-        State.OptimizerStepConn = nil
-    end
-
-    if State.OptimizerCharConn then
-        State.OptimizerCharConn:Disconnect()
-        State.OptimizerCharConn = nil
-    end
-
-    if State.OptimizerHumanoidConns then
-        for _, conn in State.OptimizerHumanoidConns do
-            conn:Disconnect()
-        end
-        State.OptimizerHumanoidConns = nil
-    end
-
-    State.OptimizerHumanoidBound = nil
-
-    if State.OptimizerHookRestore
-        and State.OptimizerHookRestore.HookTarget
-        and State.OptimizerHookRestore.OriginalNew
-        and hookfunction then
-        pcall(function()
-            hookfunction(State.OptimizerHookRestore.HookTarget, State.OptimizerHookRestore.OriginalNew)
-        end)
-    end
-
-    State.OptimizerHookRestore = nil
-    State.OptimizerAllowedGui = nil
-    State.OptimizerHooksActive = false
-end
-
-function loadZombieHubOptimizers()
-    local loadFn = loadstring or load
-    if not loadFn then
+function queueOptimizerCleanPart(inst)
+    if not inst or not State.OptimizerEnabled or isGardenDescendant(inst) then
         return
     end
 
-    for _, url in ZOMBIE_OPTIMIZER_URLS do
-        task.spawn(function()
-            local ok, source = pcall(function()
-                return game:HttpGet(url, true)
-            end)
-            if ok and type(source) == 'string' and source ~= '' and source ~= '404: Not Found' then
-                pcall(loadFn, source)
+    if not State.OptimizerWorldQueue then
+        State.OptimizerWorldQueue = {}
+    end
+
+    table.insert(State.OptimizerWorldQueue, inst)
+end
+
+function scanOptimizerWorld(applyToken)
+    local stack = {}
+    for _, child in workspace:GetChildren() do
+        if child ~= Gardens then
+            table.insert(stack, child)
+        end
+    end
+
+    while #stack > 0 do
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+
+        local frameStart = os.clock()
+        while #stack > 0 and os.clock() - frameStart < OPTIMIZER_FRAME_BUDGET do
+            local inst = table.remove(stack)
+            optimizerCleanPart(inst)
+            local children = inst:GetChildren()
+            for i = #children, 1, -1 do
+                table.insert(stack, children[i])
             end
-        end)
+        end
+
+        RunService.Heartbeat:Wait()
     end
 end
 
-function applyEliteOptimizer(applyToken)
+function flushOptimizerWorldQueue()
+    if not State.OptimizerEnabled or not State.OptimizerWorldQueue then
+        return
+    end
+
+    local queue = State.OptimizerWorldQueue
+    local flushCount = math.min(#queue, OPTIMIZER_WORLD_QUEUE_FLUSH)
+    for _ = 1, flushCount do
+        local inst = table.remove(queue, 1)
+        if inst and inst.Parent then
+            optimizerCleanPart(inst)
+        end
+    end
+end
+
+function applyOptimizerLighting()
+    local skyClones = {}
+    for _, child in Lighting:GetChildren() do
+        if child:IsA('Sky') then
+            table.insert(skyClones, child:Clone())
+            pcall(function()
+                child:Destroy()
+            end)
+        end
+    end
+
+    State.OptimizerOriginal.SkyClones = skyClones
+
+    local existingSky = Lighting:FindFirstChild(OPTIMIZER_SKY_NAME)
+    if existingSky then
+        pcall(function()
+            existingSky:Destroy()
+        end)
+    end
+
+    local sky = Instance.new('Sky')
+    sky.Name = OPTIMIZER_SKY_NAME
+    sky.SkyboxBk = OPTIMIZER_SKY_ASSET
+    sky.SkyboxDn = OPTIMIZER_SKY_ASSET
+    sky.SkyboxFt = OPTIMIZER_SKY_ASSET
+    sky.SkyboxLf = OPTIMIZER_SKY_ASSET
+    sky.SkyboxRt = OPTIMIZER_SKY_ASSET
+    sky.SkyboxUp = OPTIMIZER_SKY_ASSET
+    sky.SunAngularSize = 0
+    sky.MoonAngularSize = 0
+    sky.Parent = Lighting
+
+    Lighting.GeographicLatitude = 41.75
+    Lighting.Brightness = 0
+    Lighting.ExposureCompensation = -0.5
+    Lighting.Ambient = Color3.fromRGB(80, 80, 95)
+    Lighting.OutdoorAmbient = Color3.fromRGB(60, 60, 70)
+    Lighting.ShadowColor = Color3.fromRGB(30, 30, 40)
+end
+
+function applyWorldOptimizer()
+    local terrain = workspace:FindFirstChildOfClass('Terrain') or workspace.Terrain
+
+    local terrainDecoration
     pcall(function()
-        State.OptimizerOriginal = {
-            FpsCap = getfpscap and getfpscap() or 60,
-        }
+        terrainDecoration = terrain and terrain.Decoration
     end)
 
-    installOptimizerHooks()
-    loadZombieHubOptimizers()
+    State.OptimizerOriginal = {
+        Brightness = Lighting.Brightness,
+        GeographicLatitude = Lighting.GeographicLatitude,
+        ExposureCompensation = Lighting.ExposureCompensation,
+        Ambient = Lighting.Ambient,
+        OutdoorAmbient = Lighting.OutdoorAmbient,
+        ShadowColor = Lighting.ShadowColor,
+        TerrainDecoration = terrainDecoration,
+        WaterWaveSize = terrain and terrain.WaterWaveSize,
+        WaterWaveSpeed = terrain and terrain.WaterWaveSpeed,
+        WaterReflectance = terrain and terrain.WaterReflectance,
+        SkyClones = {},
+    }
+
+    applyOptimizerLighting()
+
+    if terrain then
+        optimizerSafeSet(terrain, 'Decoration', false)
+        optimizerSafeSet(terrain, 'WaterWaveSize', 0)
+        optimizerSafeSet(terrain, 'WaterWaveSpeed', 0)
+        optimizerSafeSet(terrain, 'WaterReflectance', 0)
+    end
+
+    if State.OptimizerVelocityConnection then
+        State.OptimizerVelocityConnection:Disconnect()
+        State.OptimizerVelocityConnection = nil
+    end
+
+    State.OptimizerVelocityConnection = RunService.Heartbeat:Connect(function()
+        if not State.OptimizerEnabled then
+            return
+        end
+
+        local character = LocalPlayer.Character
+        if not character then
+            return
+        end
+
+        local rootPart = character:FindFirstChild('HumanoidRootPart')
+        local humanoid = character:FindFirstChildOfClass('Humanoid')
+        if not rootPart or not humanoid or humanoid.Health <= 0 then
+            return
+        end
+
+        if rootPart.AssemblyLinearVelocity.Magnitude >= OPTIMIZER_SPEED_LIMIT then
+            rootPart.AssemblyLinearVelocity = Vector3.zero
+            rootPart.AssemblyAngularVelocity = Vector3.zero
+        end
+    end)
 end
 
-function startEliteWorldMaintenance(applyToken)
+function startWorldOptimizerMaintenance(applyToken)
+    if State.OptimizerWorldScanThread then
+        pcall(task.cancel, State.OptimizerWorldScanThread)
+        State.OptimizerWorldScanThread = nil
+    end
+
+    State.OptimizerWorldQueue = {}
+
+    if State.OptimizerWorldDescendantConnection then
+        State.OptimizerWorldDescendantConnection:Disconnect()
+        State.OptimizerWorldDescendantConnection = nil
+    end
+
+    State.OptimizerWorldDescendantConnection = workspace.DescendantAdded:Connect(function(desc)
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+
+        queueOptimizerCleanPart(desc)
+    end)
+
+    if State.OptimizerWorldFlushConnection then
+        State.OptimizerWorldFlushConnection:Disconnect()
+        State.OptimizerWorldFlushConnection = nil
+    end
+
+    State.OptimizerWorldFlushConnection = RunService.Heartbeat:Connect(function()
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+
+        flushOptimizerWorldQueue()
+    end)
+
+    State.OptimizerWorldScanThread = task.spawn(function()
+        scanOptimizerWorld(applyToken)
+        if applyToken == State.OptimizerApplyToken and State.OptimizerEnabled then
+            State.OptimizerWorldScanThread = nil
+        end
+    end)
 end
 
-function restoreEliteOptimizer()
-    restoreOptimizerHooks()
+function restoreWorldOptimizer()
+    if State.OptimizerVelocityConnection then
+        State.OptimizerVelocityConnection:Disconnect()
+        State.OptimizerVelocityConnection = nil
+    end
 
-    if State.OptimizerOriginal and State.OptimizerOriginal.FpsCap then
+    if State.OptimizerWorldDescendantConnection then
+        State.OptimizerWorldDescendantConnection:Disconnect()
+        State.OptimizerWorldDescendantConnection = nil
+    end
+
+    if State.OptimizerWorldFlushConnection then
+        State.OptimizerWorldFlushConnection:Disconnect()
+        State.OptimizerWorldFlushConnection = nil
+    end
+
+    if State.OptimizerWorldScanThread then
+        pcall(task.cancel, State.OptimizerWorldScanThread)
+        State.OptimizerWorldScanThread = nil
+    end
+
+    State.OptimizerWorldQueue = nil
+
+    if State.OptimizerOriginal then
+        local o = State.OptimizerOriginal
+
         pcall(function()
-            if setfpscap then
-                setfpscap(State.OptimizerOriginal.FpsCap)
+            Lighting.Brightness = o.Brightness
+            Lighting.GeographicLatitude = o.GeographicLatitude
+            Lighting.ExposureCompensation = o.ExposureCompensation
+            Lighting.Ambient = o.Ambient
+            Lighting.OutdoorAmbient = o.OutdoorAmbient
+            Lighting.ShadowColor = o.ShadowColor
+        end)
+
+        local customSky = Lighting:FindFirstChild(OPTIMIZER_SKY_NAME)
+        if customSky then
+            pcall(function()
+                customSky:Destroy()
+            end)
+        end
+
+        if o.SkyClones then
+            for _, skyClone in o.SkyClones do
+                if skyClone and skyClone:IsA('Sky') then
+                    skyClone.Parent = Lighting
+                end
+            end
+        end
+
+        pcall(function()
+            local terrain = workspace:FindFirstChildOfClass('Terrain') or workspace.Terrain
+            if terrain then
+                if o.TerrainDecoration ~= nil then
+                    terrain.Decoration = o.TerrainDecoration
+                end
+                if o.WaterWaveSize ~= nil then
+                    terrain.WaterWaveSize = o.WaterWaveSize
+                end
+                if o.WaterWaveSpeed ~= nil then
+                    terrain.WaterWaveSpeed = o.WaterWaveSpeed
+                end
+                if o.WaterReflectance ~= nil then
+                    terrain.WaterReflectance = o.WaterReflectance
+                end
             end
         end)
     end
+
+    for inst, props in State.OptimizerPartCache do
+        if inst and inst.Parent then
+            for prop, val in props do
+                pcall(function()
+                    inst[prop] = val
+                end)
+            end
+        end
+    end
+
+    State.OptimizerPartCache = {}
 end
+
 function restoreOptimizer()
     if State.OptimizerScanThread then
         pcall(task.cancel, State.OptimizerScanThread)
@@ -1779,7 +1807,7 @@ function restoreOptimizer()
         end
     end
 
-    restoreEliteOptimizer()
+    restoreWorldOptimizer()
 
     State.OptimizerEnabled = false
     State.OptimizerOriginal = nil
@@ -1805,8 +1833,9 @@ function setOptimizer(enabled)
         State.OptimizerPlantIncomingQueue = {}
         State.PlantEmitterSet = {}
         State.PlantEmitterCache = {}
-        applyEliteOptimizer(applyToken)
-        startEliteWorldMaintenance(applyToken)
+        State.OptimizerPartCache = {}
+        applyWorldOptimizer()
+        startWorldOptimizerMaintenance(applyToken)
     end
 
     updatePlantEffectMaintain()
@@ -5825,7 +5854,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Zombie Hub FPS boost (no extra UI, speed glitch, or shiftlock) + hides garden plants.',
+    Tooltip = 'SmoothPlastic world cleanup, custom sky/lighting, terrain trim, anti-fling, hides garden plants.',
     Callback = function(value)
         task.defer(function()
             setOptimizer(value)
