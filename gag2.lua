@@ -1906,7 +1906,7 @@ function stopOptimizerExtras()
     end
 end
 
-function applyWorldOptimizer())
+function applyWorldOptimizer()
     local terrain = workspace:FindFirstChildOfClass('Terrain') or workspace.Terrain
 
     local terrainDecoration
