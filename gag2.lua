@@ -193,6 +193,8 @@ local WeatherValues = ReplicatedStorage:WaitForChild('WeatherValues')
 local StockValues = ReplicatedStorage:WaitForChild('StockValues')
 local Lighting = game:GetService('Lighting')
 local SoundService = game:GetService('SoundService')
+local TweenService = game:GetService('TweenService')
+local Debris = game:GetService('Debris')
 
 local EVENT_WEATHERS = {
     'Lightning',
@@ -868,9 +870,11 @@ local State = {
     OptimizerWorldFlushConnection = nil,
     OptimizerWorldDescendantConnection = nil,
     OptimizerWorldQueue = nil,
-    OptimizerVelocityConnection = nil,
     OptimizerMaintainThread = nil,
     OptimizerSoundDescendantConnection = nil,
+    OptimizerCameraShakeConnection = nil,
+    OptimizerParticleConnection = nil,
+    OptimizerCharacterConnection = nil,
     OptimizerPlantIncomingQueue = nil,
     PlantEmitterSet = {},
     OptimizerPartCache = {},
@@ -970,7 +974,6 @@ end
 
 local OPTIMIZER_FRAME_BUDGET = 0.012
 local OPTIMIZER_WORLD_QUEUE_FLUSH = 48
-local OPTIMIZER_SPEED_LIMIT = 850
 local OPTIMIZER_SKY_ASSET = 'rbxassetid://136622198885324'
 local OPTIMIZER_SKY_NAME = 'GG2OptimizerSky'
 
@@ -1726,7 +1729,184 @@ function applyOptimizerLighting()
     end)
 end
 
-function applyWorldOptimizer()
+local OPTIMIZER_GLOW_COLOR = Color3.fromRGB(110, 135, 170)
+local OPTIMIZER_CAMERA_SHAKE = 0.57
+local OPTIMIZER_PARTICLE_INTERVAL = 0.08
+local OPTIMIZER_PARTICLE_LIFETIME = 4.5
+
+function addOptimizerCharacterGlow(character)
+    if not State.OptimizerEnabled then
+        return
+    end
+
+    local rootPart = character:WaitForChild('HumanoidRootPart', 5)
+    if not rootPart then
+        return
+    end
+
+    local existing = rootPart:FindFirstChild('ZLocalGlow')
+    if existing then
+        existing:Destroy()
+    end
+
+    local glow = Instance.new('PointLight')
+    glow.Name = 'ZLocalGlow'
+    glow.Color = OPTIMIZER_GLOW_COLOR
+    glow.Brightness = 2.5
+    glow.Range = 16
+    glow.Shadows = false
+    glow.Enabled = true
+    glow.Parent = rootPart
+end
+
+function startOptimizerCharacterParticles(character)
+    if State.OptimizerParticleConnection then
+        State.OptimizerParticleConnection:Disconnect()
+        State.OptimizerParticleConnection = nil
+    end
+
+    if not State.OptimizerEnabled then
+        return
+    end
+
+    local rootPart = character:WaitForChild('HumanoidRootPart', 5)
+    if not rootPart then
+        return
+    end
+
+    local elapsed = 0
+    State.OptimizerParticleConnection = RunService.Heartbeat:Connect(function(delta)
+        if not State.OptimizerEnabled or not character.Parent or not rootPart.Parent then
+            if State.OptimizerParticleConnection then
+                State.OptimizerParticleConnection:Disconnect()
+                State.OptimizerParticleConnection = nil
+            end
+            return
+        end
+
+        local camera = workspace.CurrentCamera
+        if not camera then
+            return
+        end
+
+        if (camera.CFrame.Position - rootPart.Position).Magnitude > 40 then
+            return
+        end
+
+        elapsed += delta
+        if elapsed < OPTIMIZER_PARTICLE_INTERVAL then
+            return
+        end
+
+        elapsed = 0
+        local part = Instance.new('Part')
+        part.Shape = Enum.PartType.Ball
+        part.Size = Vector3.new(0.22, 0.22, 0.22)
+        part.Color = OPTIMIZER_GLOW_COLOR
+        part.Material = Enum.Material.Neon
+        part.CastShadow = false
+        part.CanCollide = false
+        part.CanTouch = false
+        part.CanQuery = false
+        part.Anchored = true
+        part.Position = rootPart.Position + Vector3.new(
+            math.random(-8, 8) / 10,
+            math.random(-12, 12) / 10,
+            math.random(-8, 8) / 10
+        )
+        part.Parent = workspace
+
+        local theta = math.rad(math.random(0, 360))
+        local phi = math.rad(math.random(0, 25))
+        local direction = Vector3.new(
+            math.sin(phi) * math.cos(theta),
+            math.cos(phi),
+            math.sin(phi) * math.sin(theta)
+        )
+        local endPos = part.Position + direction * 5 * OPTIMIZER_PARTICLE_LIFETIME
+
+        local tween = TweenService:Create(part, TweenInfo.new(OPTIMIZER_PARTICLE_LIFETIME, Enum.EasingStyle.Linear), {
+            Position = endPos,
+            Transparency = 0.8,
+        })
+        tween:Play()
+        Debris:AddItem(part, OPTIMIZER_PARTICLE_LIFETIME)
+    end)
+end
+
+function onOptimizerCharacterAdded(character)
+    if not State.OptimizerEnabled then
+        return
+    end
+
+    startOptimizerCharacterParticles(character)
+    addOptimizerCharacterGlow(character)
+end
+
+function startOptimizerExtras()
+    if State.OptimizerCameraShakeConnection then
+        State.OptimizerCameraShakeConnection:Disconnect()
+    end
+
+    State.OptimizerCameraShakeConnection = RunService.RenderStepped:Connect(function()
+        if not State.OptimizerEnabled then
+            return
+        end
+
+        local camera = workspace.CurrentCamera
+        if camera then
+            camera.CFrame = camera.CFrame
+                * CFrame.new(0, 0, 0, 1, 0, 0, 0, OPTIMIZER_CAMERA_SHAKE, 0, 0, 0, 1)
+        end
+    end)
+
+    if State.OptimizerCharacterConnection then
+        State.OptimizerCharacterConnection:Disconnect()
+    end
+
+    State.OptimizerCharacterConnection = LocalPlayer.CharacterAdded:Connect(onOptimizerCharacterAdded)
+    if LocalPlayer.Character then
+        onOptimizerCharacterAdded(LocalPlayer.Character)
+    end
+end
+
+function stopOptimizerExtras()
+    if State.OptimizerCameraShakeConnection then
+        State.OptimizerCameraShakeConnection:Disconnect()
+        State.OptimizerCameraShakeConnection = nil
+    end
+
+    if State.OptimizerParticleConnection then
+        State.OptimizerParticleConnection:Disconnect()
+        State.OptimizerParticleConnection = nil
+    end
+
+    if State.OptimizerCharacterConnection then
+        State.OptimizerCharacterConnection:Disconnect()
+        State.OptimizerCharacterConnection = nil
+    end
+
+    local character = LocalPlayer.Character
+    if character then
+        local rootPart = character:FindFirstChild('HumanoidRootPart')
+        if rootPart then
+            local glow = rootPart:FindFirstChild('ZLocalGlow')
+            if glow then
+                glow:Destroy()
+            end
+        end
+    end
+
+    local playerGui = LocalPlayer:FindFirstChild('PlayerGui')
+    if playerGui then
+        local hud = playerGui:FindFirstChild('ZombieHUD')
+        if hud then
+            hud:Destroy()
+        end
+    end
+end
+
+function applyWorldOptimizer())
     local terrain = workspace:FindFirstChildOfClass('Terrain') or workspace.Terrain
 
     local terrainDecoration
@@ -1826,32 +2006,7 @@ function applyWorldOptimizer()
         end
     end)
 
-    if State.OptimizerVelocityConnection then
-        State.OptimizerVelocityConnection:Disconnect()
-        State.OptimizerVelocityConnection = nil
-    end
-
-    State.OptimizerVelocityConnection = RunService.Heartbeat:Connect(function()
-        if not State.OptimizerEnabled then
-            return
-        end
-
-        local character = LocalPlayer.Character
-        if not character then
-            return
-        end
-
-        local rootPart = character:FindFirstChild('HumanoidRootPart')
-        local humanoid = character:FindFirstChildOfClass('Humanoid')
-        if not rootPart or not humanoid or humanoid.Health <= 0 then
-            return
-        end
-
-        if rootPart.AssemblyLinearVelocity.Magnitude >= OPTIMIZER_SPEED_LIMIT then
-            rootPart.AssemblyLinearVelocity = Vector3.zero
-            rootPart.AssemblyAngularVelocity = Vector3.zero
-        end
-    end)
+    startOptimizerExtras()
 end
 
 function startWorldOptimizerMaintenance(applyToken)
@@ -1934,10 +2089,7 @@ function startWorldOptimizerMaintenance(applyToken)
 end
 
 function restoreWorldOptimizer()
-    if State.OptimizerVelocityConnection then
-        State.OptimizerVelocityConnection:Disconnect()
-        State.OptimizerVelocityConnection = nil
-    end
+    stopOptimizerExtras()
 
     if State.OptimizerMaintainThread then
         pcall(task.cancel, State.OptimizerMaintainThread)
@@ -2166,9 +2318,9 @@ end
 
 function abbreviate(n)
     if NumberUtils and NumberUtils.Abbreviate then
-        return NumberUtils.Abbreviate(n) .. '¢'
+        return NumberUtils.Abbreviate(n) .. '?'
     end
-    return tostring(math.floor(n)) .. '¢'
+    return tostring(math.floor(n)) .. '?'
 end
 
 function resolveRecipientId(input)
@@ -4676,7 +4828,7 @@ function refreshFruitsList()
 
         if FruitsStatusLabel then
             FruitsStatusLabel:SetText(string.format(
-                '%d fruits at or above %.0fkg — select from dropdown',
+                '%d fruits at or above %.0fkg ? select from dropdown',
                 fruitCount,
                 maxKg
             ))
@@ -6199,7 +6351,7 @@ AuctionBox:AddToggle('AutoBuyAuction', {
     end,
 })
 
-local EarningsLabel = StatsBox:AddLabel('Earnings/min: 0Â¢', true)
+local EarningsLabel = StatsBox:AddLabel('Earnings/min: 0?', true)
 local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 
 OptimizerBox:AddToggle('Optimizer', {
