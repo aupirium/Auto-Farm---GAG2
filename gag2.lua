@@ -774,6 +774,7 @@ local State = {
     WeatherMonitorStop = false,
     WeatherMonitorThread = nil,
     WeatherErrorReconnectConnection = nil,
+    WeatherLeavePending = false,
     WeatherReconnectPending = false,
     WeatherKickPending = false,
     WeatherReconnectAttempts = 0,
@@ -4405,6 +4406,26 @@ function isWeatherHideTimerElapsed()
     return getWeatherClock() >= (State.HideUntil or 0)
 end
 
+function canRejoinHomeAfterWeather()
+    if not State.WeatherHiding then
+        return true
+    end
+
+    return isWeatherHideTimerElapsed()
+end
+
+function ensureWeatherHideUntilValid()
+    if not State.WeatherHiding then
+        return
+    end
+
+    local hideUntil = tonumber(State.HideUntil) or 0
+    if hideUntil <= getWeatherClock() + 5 then
+        State.HideUntil = getWeatherClock() + 120
+        saveWeatherState()
+    end
+end
+
 function saveWeatherState()
     local data = {
         Hiding = State.WeatherHiding,
@@ -4441,6 +4462,7 @@ function loadWeatherState()
     State.ReturnPosZ = tonumber(saved.ReturnPosZ)
 
     GENV.GG2_WeatherState = saved
+    ensureWeatherHideUntilValid()
 end
 
 function clearRejoinTarget()
@@ -4565,7 +4587,9 @@ function doStartupWalk()
             State.ReturnPosY = nil
             State.ReturnPosZ = nil
             GENV.GG2_FromAutoExec = nil
-            clearWeatherState()
+            if not State.WeatherHiding then
+                clearWeatherState()
+            end
         end
     end)
 end
@@ -4825,13 +4849,18 @@ function handleWeatherKickReconnect(errorMessage)
 
     State.LastKickReconnectAttempt = os.clock()
     State.WeatherKickPending = false
+    State.WeatherLeavePending = false
+    State.WeatherReconnectPending = false
 
     queueTeleportScript()
 
-    task.wait(0.25)
-    pcall(function()
-        TeleportService:Teleport(game.PlaceId, LocalPlayer)
-    end)
+    if State.WeatherHiding and not isWeatherHideTimerElapsed() then
+        return true
+    end
+
+    if canRejoinHomeAfterWeather() then
+        task.defer(tryRejoinHome)
+    end
 
     return true
 end
@@ -4854,7 +4883,14 @@ function handleWeatherReconnectError(errorMessage)
         return
     end
 
-    if not shouldHandleWeatherReconnectError() and not State.WeatherReconnectPending then
+    if State.WeatherHiding and not isWeatherHideTimerElapsed() then
+        if isStillOnWeatherHomeServer() then
+            retryLeaveIfStillHome()
+        end
+        return
+    end
+
+    if not State.WeatherHiding and not State.WeatherReconnectPending then
         return
     end
 
@@ -4902,7 +4938,9 @@ function setupWeatherErrorReconnect()
                 return
             end
 
-            if State.WeatherReconnectPending or shouldHandleWeatherReconnectError() then
+            if State.WeatherHiding and isWeatherHideTimerElapsed() then
+                handleWeatherReconnectError(errorMessage)
+            elseif State.WeatherReconnectPending and not State.WeatherHiding then
                 handleWeatherReconnectError(errorMessage)
             end
         end)
@@ -4914,7 +4952,9 @@ function setupWeatherErrorReconnect()
             if handleWeatherKickReconnect(currentError) then
                 return
             end
-            handleWeatherReconnectError(currentError)
+            if State.WeatherHiding and isWeatherHideTimerElapsed() then
+                handleWeatherReconnectError(currentError)
+            end
         end
     end)
 end
@@ -4992,8 +5032,7 @@ end
 function getActiveNightMoon()
     local activeWeather = workspace:GetAttribute('ActiveWeather')
     if activeWeather and NIGHT_MOON_GAME_NAMES[activeWeather] then
-        local phaseEnd = workspace:GetAttribute('PhaseDuration')
-        return activeWeather, normalizeWeatherHideUntil(phaseEnd)
+        return activeWeather, workspace:GetAttribute('PhaseDuration')
     end
 
     return nil
@@ -5017,9 +5056,7 @@ function getActiveEventWeathers()
 
     for _, weatherName in EVENT_WEATHERS do
         if WeatherValues:GetAttribute(weatherName .. '_Playing') == true then
-            active[weatherName] = normalizeWeatherHideUntil(
-                WeatherValues:GetAttribute(weatherName .. '_EndTime')
-            )
+            active[weatherName] = WeatherValues:GetAttribute(weatherName .. '_EndTime')
         end
     end
 
@@ -5084,6 +5121,10 @@ function updateWeatherLabels()
 end
 
 function tryRejoinHome()
+    if State.WeatherHiding and not isWeatherHideTimerElapsed() then
+        return
+    end
+
     if not State.ReturnPlaceId then
         clearWeatherState()
         return
@@ -5128,8 +5169,8 @@ end
 function forceLeaveServer(kickMessage)
     ensureCommitFile()
     queueTeleportScript()
+    State.WeatherLeavePending = true
     State.WeatherKickPending = true
-    State.WeatherReconnectPending = true
 
     task.wait(0.35)
 
@@ -5165,10 +5206,12 @@ function forceLeaveServer(kickMessage)
 
     if not isStillOnWeatherHomeServer() then
         State.WeatherReconnectPending = false
+        State.WeatherLeavePending = false
         return true
     end
 
     State.WeatherReconnectPending = false
+    State.WeatherLeavePending = false
     State.WeatherKickPending = false
     if Library and Library.Notify then
         Library:Notify('Weather dodge failed - could not leave server')
@@ -5889,7 +5932,7 @@ task.defer(function()
     elseif State.WeatherHiding and not isWeatherHideTimerElapsed() then
         setWeatherDodge(true)
     elseif State.WeatherHiding and isWeatherHideTimerElapsed() and not isStillOnWeatherHomeServer() then
-        tryRejoinHome()
+        startWeatherRejoinWorker()
     elseif State.WeatherHiding and isWeatherHideTimerElapsed() and isStillOnWeatherHomeServer() then
         setWeatherDodge(true)
     end
