@@ -1811,19 +1811,19 @@ function cancelOptimizerPendingApply()
     end
 end
 
-function scheduleOptimizerApply(fast)
+function scheduleOptimizerApply()
     cancelOptimizerPendingApply()
 
     State.OptimizerPendingApply = task.spawn(function()
-        if not fast then
-            if LocalPlayer:GetAttribute('LoadingScreenDone') ~= true then
-                waitForLoadingScreenDismiss(120)
-            end
-            waitForGardenReady(30)
-            task.wait(1)
-        else
-            task.wait(0.5)
+        waitForLoadingScreenDismiss(180)
+
+        if Library.Unloaded or not Toggles.Optimizer or not Toggles.Optimizer.Value then
+            State.OptimizerPendingApply = nil
+            return
         end
+
+        waitForGardenReady(90)
+        task.wait(5)
 
         if Library.Unloaded or not Toggles.Optimizer or not Toggles.Optimizer.Value then
             State.OptimizerPendingApply = nil
@@ -6314,7 +6314,7 @@ task.defer(function()
     queueTeleportScript()
 
     if Toggles.Optimizer and Toggles.Optimizer.Value then
-        scheduleOptimizerApply(true)
+        scheduleOptimizerApply()
     end
 end)
 
