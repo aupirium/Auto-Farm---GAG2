@@ -973,45 +973,8 @@ function startLoadingScreenAutoDismiss()
 end
 
 local OPTIMIZER_FRAME_BUDGET = 0.012
-local OPTIMIZER_WORLD_QUEUE_FLUSH = 48
 local OPTIMIZER_SKY_ASSET = 'rbxassetid://136622198885324'
 local OPTIMIZER_SKY_NAME = 'GG2OptimizerSky'
-
-function optimizerHideFast(inst)
-    if not inst or not inst.Parent then
-        return
-    end
-
-    if State.OptimizerPlantRecordCache[inst] then
-        if inst:IsA('BasePart') then
-            inst.LocalTransparencyModifier = 1
-            inst.CastShadow = false
-            inst.CanCollide = false
-        elseif inst:IsA('ParticleEmitter') then
-            inst.Enabled = false
-            inst.Rate = 0
-        end
-        return
-    end
-
-    if inst:IsA('BasePart') then
-        State.OptimizerPlantRecordCache[inst] = {
-            LocalTransparencyModifier = inst.LocalTransparencyModifier,
-            CastShadow = inst.CastShadow,
-            CanCollide = inst.CanCollide,
-        }
-        inst.LocalTransparencyModifier = 1
-        inst.CastShadow = false
-        inst.CanCollide = false
-    elseif inst:IsA('ParticleEmitter') then
-        State.OptimizerPlantRecordCache[inst] = {
-            Enabled = inst.Enabled,
-            Rate = inst.Rate,
-        }
-        inst.Enabled = false
-        inst.Rate = 0
-    end
-end
 
 function isGardenDescendant(inst)
     return inst == Gardens or inst:IsDescendantOf(Gardens)
@@ -1083,14 +1046,7 @@ end
 function getWatchedPlantsFolders()
     local folders = {}
 
-    if State.OptimizerEnabled then
-        for _, plot in Gardens:GetChildren() do
-            local plants = plot:FindFirstChild('Plants')
-            if plants then
-                table.insert(folders, plants)
-            end
-        end
-    elseif Toggles.Noclip and Toggles.Noclip.Value then
+    if Toggles.Noclip and Toggles.Noclip.Value then
         local plotId = LocalPlayer:GetAttribute('PlotId')
         if plotId then
             local plot = Gardens:FindFirstChild('Plot' .. plotId)
@@ -1255,10 +1211,6 @@ function shouldMaintainPlantEffects()
         return false
     end
 
-    if State.OptimizerEnabled then
-        return true
-    end
-
     return Toggles.Noclip and Toggles.Noclip.Value == true
 end
 
@@ -1296,11 +1248,6 @@ function stopPlantWatchers()
 end
 
 function hideWatchedPlantInstance(desc)
-    if State.OptimizerEnabled and isPlantInstance(desc) then
-        optimizerHideFast(desc)
-        return
-    end
-
     if Toggles.Noclip and Toggles.Noclip.Value then
         local plotId = LocalPlayer:GetAttribute('PlotId')
         local plot = plotId and Gardens:FindFirstChild('Plot' .. plotId)
@@ -1387,15 +1334,7 @@ function ensurePlantWatchers()
     end
 
     for _, plants in getWatchedPlantsFolders() do
-        if State.OptimizerEnabled then
-            if not State.PlantChildConnections[plants] then
-                State.PlantChildConnections[plants] = plants.ChildAdded:Connect(function(plantModel)
-                    task.defer(function()
-                        hideWatchedPlantTree(plantModel)
-                    end)
-                end)
-            end
-        elseif not State.PlantWatchConnections[plants] then
+        if not State.PlantWatchConnections[plants] then
             State.PlantWatchConnections[plants] = plants.DescendantAdded:Connect(onPlantDescendantAdded)
         end
     end
@@ -1443,45 +1382,12 @@ function updatePlantEffectMaintain()
                 return
             end
 
-            if not State.OptimizerEnabled then
-                flushOptimizerPlantIncomingQueue(64)
-            end
+            flushOptimizerPlantIncomingQueue(64)
         end)
     end
 
     ensurePlantWatchers()
     ensureFruitsFolderWatchers()
-end
-
-function scanOptimizerPlants(applyToken)
-    local stack = {}
-
-    for _, plot in Gardens:GetChildren() do
-        local plants = plot:FindFirstChild('Plants')
-        if plants then
-            for _, plantModel in plants:GetChildren() do
-                table.insert(stack, plantModel)
-            end
-        end
-    end
-
-    while #stack > 0 do
-        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-            return
-        end
-
-        local frameStart = os.clock()
-        while #stack > 0 and os.clock() - frameStart < OPTIMIZER_FRAME_BUDGET do
-            local inst = table.remove(stack)
-            hideWatchedPlantInstance(inst)
-            local children = inst:GetChildren()
-            for i = #children, 1, -1 do
-                table.insert(stack, children[i])
-            end
-        end
-
-        RunService.Heartbeat:Wait()
-    end
 end
 
 function isCharacterPart(part)
@@ -1495,104 +1401,14 @@ function isCharacterPart(part)
     return false
 end
 
-function optimizerKillHeavyVisual(inst)
-    if not State.OptimizerEnabled or isGardenDescendant(inst) or isLocalPlayerDescendant(inst) or isCharacterPart(inst) then
+function optimizerCleanPart(part)
+    if not State.OptimizerEnabled or isLocalPlayerDescendant(part) or isCharacterPart(part) then
         return
     end
 
-    local killClasses = {
-        ParticleEmitter = true,
-        Beam = true,
-        Trail = true,
-        Explosion = true,
-        Fire = true,
-        Smoke = true,
-        Sparkles = true,
-        PointLight = true,
-        SpotLight = true,
-        SurfaceLight = true,
-        SelectionBox = true,
-        SelectionSphere = true,
-    }
-
-    if not killClasses[inst.ClassName] then
-        return
-    end
-
-    if not State.OptimizerVisualCache[inst] then
-        local props = { Enabled = inst.Enabled }
-        if inst:IsA('ParticleEmitter') then
-            props.Rate = inst.Rate
-        end
-        if inst:IsA('GuiObject') then
-            props.Visible = inst.Visible
-        end
-        State.OptimizerVisualCache[inst] = props
-    end
-
-    optimizerSafeSet(inst, 'Enabled', false)
-    if inst:IsA('GuiObject') then
-        optimizerSafeSet(inst, 'Visible', false)
-    end
-    if inst:IsA('ParticleEmitter') then
-        optimizerSafeSet(inst, 'Rate', 0)
-    end
-end
-
-function optimizerMuteSound(inst)
-    if not State.OptimizerEnabled or not inst:IsA('Sound') then
-        return
-    end
-
-    if isLocalPlayerDescendant(inst) then
-        return
-    end
-
-    if not State.OptimizerSoundCache[inst] then
-        State.OptimizerSoundCache[inst] = {
-            Volume = inst.Volume,
-            PlaybackSpeed = inst.PlaybackSpeed,
-        }
-    end
-
-    pcall(function()
-        inst:Stop()
-    end)
-    optimizerSafeSet(inst, 'Volume', 0)
-    optimizerSafeSet(inst, 'PlaybackSpeed', 0)
-end
-
-function optimizerProcessInstance(inst)
-    if not State.OptimizerEnabled or isGardenDescendant(inst) or isLocalPlayerDescendant(inst) or isCharacterPart(inst) then
-        return
-    end
-
-    if inst:IsA('Decal') or inst:IsA('Texture') then
-        if not State.OptimizerPartCache[inst] then
-            State.OptimizerPartCache[inst] = {
-                Transparency = inst.Transparency,
-                Texture = inst.Texture,
-            }
-        end
-        inst.Transparency = 1
-        optimizerSafeSet(inst, 'Texture', '')
-    elseif inst:IsA('SpecialMesh') then
-        if not State.OptimizerPartCache[inst] then
-            State.OptimizerPartCache[inst] = {
-                TextureId = inst.TextureId,
-            }
-        end
-        inst.TextureId = ''
-    elseif inst:IsA('BasePart') then
-        if not State.OptimizerPartCache[inst] then
-            State.OptimizerPartCache[inst] = {
-                Material = inst.Material,
-                CastShadow = inst.CastShadow,
-            }
-        end
-        inst.Material = Enum.Material.SmoothPlastic
-        inst.CastShadow = false
-        for _, child in inst:GetChildren() do
+    if part:IsA('BasePart') then
+        part.Material = Enum.Material.SmoothPlastic
+        for _, child in part:GetChildren() do
             if child:IsA('Texture') or child:IsA('Decal') then
                 pcall(function()
                     child:Destroy()
@@ -1600,85 +1416,25 @@ function optimizerProcessInstance(inst)
             end
         end
     end
-
-    optimizerKillHeavyVisual(inst)
-    optimizerMuteSound(inst)
 end
 
-function queueOptimizerCleanPart(inst)
-    if not inst or not State.OptimizerEnabled or isGardenDescendant(inst) then
-        return
-    end
+function scanOptimizerWorldClean(applyToken)
+    local descendants = workspace:GetDescendants()
+    local index = 1
+    local total = #descendants
 
-    if not State.OptimizerWorldQueue then
-        State.OptimizerWorldQueue = {}
-    end
-
-    table.insert(State.OptimizerWorldQueue, inst)
-end
-
-function scanOptimizerWorld(applyToken)
-    local stack = {}
-    for _, child in workspace:GetChildren() do
-        if child ~= Gardens then
-            table.insert(stack, child)
-        end
-    end
-
-    while #stack > 0 do
+    while index <= total do
         if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
             return
         end
 
         local frameStart = os.clock()
-        while #stack > 0 and os.clock() - frameStart < OPTIMIZER_FRAME_BUDGET do
-            local inst = table.remove(stack)
-            optimizerProcessInstance(inst)
-            local children = inst:GetChildren()
-            for i = #children, 1, -1 do
-                table.insert(stack, children[i])
-            end
+        while index <= total and os.clock() - frameStart < OPTIMIZER_FRAME_BUDGET do
+            optimizerCleanPart(descendants[index])
+            index += 1
         end
 
         RunService.Heartbeat:Wait()
-    end
-end
-
-function flushOptimizerWorldQueue()
-    if not State.OptimizerEnabled or not State.OptimizerWorldQueue then
-        return
-    end
-
-    local queue = State.OptimizerWorldQueue
-    local flushCount = math.min(#queue, OPTIMIZER_WORLD_QUEUE_FLUSH)
-    for _ = 1, flushCount do
-        local inst = table.remove(queue, 1)
-        if inst and inst.Parent then
-            optimizerProcessInstance(inst)
-        end
-    end
-end
-
-function applyOptimizerPostEffects()
-    for _, child in Lighting:GetChildren() do
-        if child:IsA('PostEffect') or child:IsA('BloomEffect') or child:IsA('BlurEffect')
-            or child:IsA('DepthOfFieldEffect') or child:IsA('SunRaysEffect') then
-            if State.OptimizerPartCache[child] == nil then
-                State.OptimizerPartCache[child] = { Enabled = child.Enabled }
-            end
-            child.Enabled = false
-        elseif child:IsA('Atmosphere') then
-            if State.OptimizerPartCache[child] == nil then
-                State.OptimizerPartCache[child] = {
-                    Density = child.Density,
-                    Haze = child.Haze,
-                    Glare = child.Glare,
-                }
-            end
-            optimizerSafeSet(child, 'Density', 0)
-            optimizerSafeSet(child, 'Haze', 0)
-            optimizerSafeSet(child, 'Glare', 0)
-        end
     end
 end
 
@@ -1720,13 +1476,6 @@ function applyOptimizerLighting()
     Lighting.Ambient = Color3.fromRGB(80, 80, 95)
     Lighting.OutdoorAmbient = Color3.fromRGB(60, 60, 70)
     Lighting.ShadowColor = Color3.fromRGB(30, 30, 40)
-    Lighting.GlobalShadows = false
-
-    applyOptimizerPostEffects()
-
-    pcall(function()
-        Lighting.Technology = Enum.Technology.Compatibility
-    end)
 end
 
 local OPTIMIZER_GLOW_COLOR = Color3.fromRGB(110, 135, 170)
@@ -1914,42 +1663,6 @@ function applyWorldOptimizer()
         terrainDecoration = terrain and terrain.Decoration
     end)
 
-    local renderQuality
-    local physicsThrottle
-    local fpsCap
-    local savedQualityLevel
-    local meshPartDetailLevel
-    local lightingTechnology
-    local ambientReverb
-    local terrainCastShadow
-
-    pcall(function()
-        renderQuality = settings().Rendering.QualityLevel
-    end)
-    pcall(function()
-        physicsThrottle = settings().Physics.PhysicsEnvironmentalThrottle
-    end)
-    pcall(function()
-        fpsCap = getfpscap and getfpscap() or 60
-    end)
-    pcall(function()
-        savedQualityLevel = UserSettings():GetService('UserGameSettings').SavedQualityLevel
-    end)
-    pcall(function()
-        meshPartDetailLevel = settings().Rendering.MeshPartDetailLevel
-    end)
-    pcall(function()
-        lightingTechnology = Lighting.Technology
-    end)
-    pcall(function()
-        ambientReverb = SoundService.AmbientReverb
-    end)
-    pcall(function()
-        if terrain then
-            terrainCastShadow = terrain.CastShadow
-        end
-    end)
-
     State.OptimizerOriginal = {
         Brightness = Lighting.Brightness,
         GeographicLatitude = Lighting.GeographicLatitude,
@@ -1957,34 +1670,12 @@ function applyWorldOptimizer()
         Ambient = Lighting.Ambient,
         OutdoorAmbient = Lighting.OutdoorAmbient,
         ShadowColor = Lighting.ShadowColor,
-        GlobalShadows = Lighting.GlobalShadows,
         TerrainDecoration = terrainDecoration,
         WaterWaveSize = terrain and terrain.WaterWaveSize,
         WaterWaveSpeed = terrain and terrain.WaterWaveSpeed,
         WaterReflectance = terrain and terrain.WaterReflectance,
-        TerrainCastShadow = terrainCastShadow,
-        RenderQuality = renderQuality,
-        PhysicsThrottle = physicsThrottle,
-        FpsCap = fpsCap,
-        SavedQualityLevel = savedQualityLevel,
-        MeshPartDetailLevel = meshPartDetailLevel,
-        LightingTechnology = lightingTechnology,
-        AmbientReverb = ambientReverb,
         SkyClones = {},
     }
-
-    pcall(function()
-        settings().Physics.PhysicsEnvironmentalThrottle = Enum.EnviromentalPhysicsThrottle.Always
-    end)
-    pcall(function()
-        settings().Rendering.QualityLevel = Enum.QualityLevel.Level01
-    end)
-    pcall(function()
-        UserSettings():GetService('UserGameSettings').SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
-    end)
-    pcall(function()
-        settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level04
-    end)
 
     applyOptimizerLighting()
 
@@ -1993,18 +1684,7 @@ function applyWorldOptimizer()
         optimizerSafeSet(terrain, 'WaterWaveSize', 0)
         optimizerSafeSet(terrain, 'WaterWaveSpeed', 0)
         optimizerSafeSet(terrain, 'WaterReflectance', 0)
-        optimizerSafeSet(terrain, 'CastShadow', false)
     end
-
-    pcall(function()
-        SoundService.AmbientReverb = Enum.ReverbType.NoReverb
-    end)
-
-    pcall(function()
-        if setfpscap then
-            setfpscap(9999)
-        end
-    end)
 
     startOptimizerExtras()
 end
@@ -2014,13 +1694,6 @@ function startWorldOptimizerMaintenance(applyToken)
         pcall(task.cancel, State.OptimizerWorldScanThread)
         State.OptimizerWorldScanThread = nil
     end
-
-    if State.OptimizerMaintainThread then
-        pcall(task.cancel, State.OptimizerMaintainThread)
-        State.OptimizerMaintainThread = nil
-    end
-
-    State.OptimizerWorldQueue = {}
 
     if State.OptimizerWorldDescendantConnection then
         State.OptimizerWorldDescendantConnection:Disconnect()
@@ -2032,58 +1705,14 @@ function startWorldOptimizerMaintenance(applyToken)
             return
         end
 
-        queueOptimizerCleanPart(desc)
-    end)
-
-    if State.OptimizerSoundDescendantConnection then
-        State.OptimizerSoundDescendantConnection:Disconnect()
-        State.OptimizerSoundDescendantConnection = nil
-    end
-
-    State.OptimizerSoundDescendantConnection = SoundService.DescendantAdded:Connect(function(desc)
-        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-            return
-        end
-
-        optimizerMuteSound(desc)
-    end)
-
-    if State.OptimizerWorldFlushConnection then
-        State.OptimizerWorldFlushConnection:Disconnect()
-        State.OptimizerWorldFlushConnection = nil
-    end
-
-    State.OptimizerWorldFlushConnection = RunService.Heartbeat:Connect(function()
-        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-            return
-        end
-
-        flushOptimizerWorldQueue()
+        optimizerCleanPart(desc)
     end)
 
     State.OptimizerWorldScanThread = task.spawn(function()
-        scanOptimizerWorld(applyToken)
-
-        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-            return
-        end
-
-        for _, child in SoundService:GetDescendants() do
-            optimizerMuteSound(child)
-        end
+        scanOptimizerWorldClean(applyToken)
 
         if applyToken == State.OptimizerApplyToken and State.OptimizerEnabled then
             State.OptimizerWorldScanThread = nil
-        end
-    end)
-
-    State.OptimizerMaintainThread = task.spawn(function()
-        while applyToken == State.OptimizerApplyToken and State.OptimizerEnabled do
-            task.wait(5)
-            applyOptimizerPostEffects()
-            pcall(function()
-                SoundService.AmbientReverb = Enum.ReverbType.NoReverb
-            end)
         end
     end)
 end
@@ -2091,32 +1720,15 @@ end
 function restoreWorldOptimizer()
     stopOptimizerExtras()
 
-    if State.OptimizerMaintainThread then
-        pcall(task.cancel, State.OptimizerMaintainThread)
-        State.OptimizerMaintainThread = nil
-    end
-
     if State.OptimizerWorldDescendantConnection then
         State.OptimizerWorldDescendantConnection:Disconnect()
         State.OptimizerWorldDescendantConnection = nil
-    end
-
-    if State.OptimizerSoundDescendantConnection then
-        State.OptimizerSoundDescendantConnection:Disconnect()
-        State.OptimizerSoundDescendantConnection = nil
-    end
-
-    if State.OptimizerWorldFlushConnection then
-        State.OptimizerWorldFlushConnection:Disconnect()
-        State.OptimizerWorldFlushConnection = nil
     end
 
     if State.OptimizerWorldScanThread then
         pcall(task.cancel, State.OptimizerWorldScanThread)
         State.OptimizerWorldScanThread = nil
     end
-
-    State.OptimizerWorldQueue = nil
 
     if State.OptimizerOriginal then
         local o = State.OptimizerOriginal
@@ -2128,51 +1740,6 @@ function restoreWorldOptimizer()
             Lighting.Ambient = o.Ambient
             Lighting.OutdoorAmbient = o.OutdoorAmbient
             Lighting.ShadowColor = o.ShadowColor
-            if o.GlobalShadows ~= nil then
-                Lighting.GlobalShadows = o.GlobalShadows
-            end
-        end)
-
-        pcall(function()
-            if o.LightingTechnology then
-                Lighting.Technology = o.LightingTechnology
-            end
-        end)
-
-        pcall(function()
-            if o.PhysicsThrottle then
-                settings().Physics.PhysicsEnvironmentalThrottle = o.PhysicsThrottle
-            end
-        end)
-
-        pcall(function()
-            if o.RenderQuality then
-                settings().Rendering.QualityLevel = o.RenderQuality
-            end
-        end)
-
-        pcall(function()
-            if o.SavedQualityLevel then
-                UserSettings():GetService('UserGameSettings').SavedQualityLevel = o.SavedQualityLevel
-            end
-        end)
-
-        pcall(function()
-            if o.MeshPartDetailLevel then
-                settings().Rendering.MeshPartDetailLevel = o.MeshPartDetailLevel
-            end
-        end)
-
-        pcall(function()
-            if o.AmbientReverb then
-                SoundService.AmbientReverb = o.AmbientReverb
-            end
-        end)
-
-        pcall(function()
-            if setfpscap then
-                setfpscap(o.FpsCap or 60)
-            end
         end)
 
         local customSky = Lighting:FindFirstChild(OPTIMIZER_SKY_NAME)
@@ -2205,47 +1772,11 @@ function restoreWorldOptimizer()
                 if o.WaterReflectance ~= nil then
                     terrain.WaterReflectance = o.WaterReflectance
                 end
-                if o.TerrainCastShadow ~= nil then
-                    terrain.CastShadow = o.TerrainCastShadow
-                end
             end
         end)
     end
-
-    for inst, props in State.OptimizerPartCache do
-        if inst and inst.Parent then
-            for prop, val in props do
-                pcall(function()
-                    inst[prop] = val
-                end)
-            end
-        end
-    end
-
-    for inst, props in State.OptimizerVisualCache do
-        if inst and inst.Parent then
-            for prop, val in props do
-                pcall(function()
-                    inst[prop] = val
-                end)
-            end
-        end
-    end
-
-    for inst, props in State.OptimizerSoundCache do
-        if inst and inst.Parent then
-            for prop, val in props do
-                pcall(function()
-                    inst[prop] = val
-                end)
-            end
-        end
-    end
-
-    State.OptimizerPartCache = {}
-    State.OptimizerVisualCache = {}
-    State.OptimizerSoundCache = {}
 end
+
 function restoreOptimizer()
     if State.OptimizerScanThread then
         pcall(task.cancel, State.OptimizerScanThread)
@@ -2286,34 +1817,11 @@ function setOptimizer(enabled)
     State.OptimizerEnabled = true
 
     if startingFresh then
-        State.OptimizerPlantRecordCache = {}
-        State.OptimizerPlantIncomingQueue = {}
-        State.PlantEmitterSet = {}
-        State.PlantEmitterCache = {}
-        State.OptimizerPartCache = {}
-        State.OptimizerVisualCache = {}
-        State.OptimizerSoundCache = {}
         applyWorldOptimizer()
         startWorldOptimizerMaintenance(applyToken)
     end
 
     updatePlantEffectMaintain()
-
-    if State.OptimizerScanThread then
-        pcall(task.cancel, State.OptimizerScanThread)
-        State.OptimizerScanThread = nil
-    end
-
-    State.OptimizerScanThread = task.spawn(function()
-        scanOptimizerPlants(applyToken)
-        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-            return
-        end
-
-        ensurePlantWatchers()
-        ensureFruitsFolderWatchers()
-        State.OptimizerScanThread = nil
-    end)
 end
 
 function abbreviate(n)
