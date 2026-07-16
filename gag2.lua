@@ -3077,19 +3077,22 @@ function ensureAtGearTarget(standoff)
         return false
     end
 
-    standoff = tonumber(standoff) or 8
-    local walkTarget = getOutsideWalkTarget(targetPos, standoff) or targetPos
-    local flatDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(walkTarget.X, 0, walkTarget.Z)).Magnitude
-    if flatDist <= math.max(6, standoff) then
+    -- Stand ON the place point. The old "outside standoff" put you several
+    -- studs away, then PlaceSprinkler fired at the bed center → "way too far".
+    local placePos = getPlacementPosition(targetPos) or targetPos
+    local flatDist = (Vector3.new(root.Position.X, 0, root.Position.Z)
+        - Vector3.new(placePos.X, 0, placePos.Z)).Magnitude
+    if flatDist <= 6 then
         return true
     end
 
-    -- Snap instantly. Old path used MoveTo for up to 60s before teleporting,
-    -- which made sprinkler/watering feel extremely slow.
     State.LastGearWalkAttempt = os.clock()
     local ok = pcall(function()
-        root.CFrame = CFrame.new(walkTarget + Vector3.new(0, 3, 0))
+        root.CFrame = CFrame.new(placePos + Vector3.new(0, 3, 0))
     end)
+    if ok then
+        task.wait(0.05)
+    end
     return ok
 end
 
@@ -3110,7 +3113,6 @@ function getPlacementPosition(savedPos)
         if CollectionService:HasTag(result.Instance, 'PlantArea') then
             return result.Position
         end
-        -- Optimizer can strip tags/parts; any hit on our plot is fine.
         if plot and result.Instance:IsDescendantOf(plot) then
             return result.Position
         end
@@ -3126,6 +3128,32 @@ function getPlacementPosition(savedPos)
     end
 
     return Vector3.new(savedPos.X, savedPos.Y, savedPos.Z)
+end
+
+function snapToPlacementPosition(position)
+    if not position then
+        return false
+    end
+
+    local char = getCharacter()
+    local root = char and char:FindFirstChild('HumanoidRootPart')
+    if not root then
+        return false
+    end
+
+    local flatDist = (Vector3.new(root.Position.X, 0, root.Position.Z)
+        - Vector3.new(position.X, 0, position.Z)).Magnitude
+    if flatDist <= 5 then
+        return true
+    end
+
+    local ok = pcall(function()
+        root.CFrame = CFrame.new(position + Vector3.new(0, 3, 0))
+    end)
+    if ok then
+        task.wait(0.05)
+    end
+    return ok
 end
 
 function getActiveSuperSprinkler()
@@ -3164,9 +3192,13 @@ function placeSuperSprinkler()
         return false
     end
 
-    if not ensureAtGearTarget(8) then
+    local position = getPlacementPosition(targetPos)
+    if not position then
         return false
     end
+
+    -- Always stand on the exact place point before firing (even if Go To Target is off).
+    snapToPlacementPosition(position)
 
     local tool = findTool('Sprinkler', SUPER_SPRINKLER)
     if not tool then
@@ -3187,7 +3219,9 @@ function placeSuperSprinkler()
         return false
     end
 
-    local position = getPlacementPosition(targetPos)
+    -- Re-snap after equip in case character moved / tool animation shifted you.
+    snapToPlacementPosition(position)
+
     Networking.Place.PlaceSprinkler:Fire(position, SUPER_SPRINKLER, tool, plotId)
     State.LastSprinklerPlace = os.clock()
     State.SprinklerPlacePending = true
@@ -3215,8 +3249,12 @@ function useSuperWateringCan()
     State.WateringBusy = true
 
     local ok, used = pcall(function()
-        -- Snap near the bed; server often rejects far UseWateringCan.
-        ensureAtGearTarget(4)
+        local position = getPlacementPosition(targetPos)
+        if not position then
+            return false
+        end
+
+        snapToPlacementPosition(position)
 
         local tool = findSuperWateringCanTool()
         if not tool then
@@ -3233,16 +3271,12 @@ function useSuperWateringCan()
             end
         end
 
-        -- Re-resolve after equip (some games clone/move the tool).
         tool = findSuperWateringCanTool() or tool
         if not tool or not tool.Parent then
             return false
         end
 
-        local position = getPlacementPosition(targetPos)
-        if not position then
-            return false
-        end
+        snapToPlacementPosition(position)
 
         local firePos = position - Vector3.new(0, 0.3, 0)
         local fired = pcall(function()
