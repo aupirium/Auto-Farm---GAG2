@@ -5489,7 +5489,7 @@ function setAutoHarvestLoop(enabled)
                 pcall(harvestFruits, maxKg)
             end
 
-            task.wait(0.05)
+            task.wait(0)
         end
         State.HarvestThread = nil
     end)
