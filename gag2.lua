@@ -868,6 +868,8 @@ local State = {
     OptimizerWorldDescendantConnection = nil,
     OptimizerGardenChildConnection = nil,
     OptimizerPlotIdConnection = nil,
+    OptimizerLightingOriginal = nil,
+    OptimizerFpsUnlocked = false,
     OptimizerPendingApply = nil,
     OptimizerPartCache = {},
     OptimizerEnforceConnections = {},
@@ -996,14 +998,10 @@ function isCharacterPart(part)
 end
 
 --[[
-    These are all purely cosmetic - nothing in harvestFruits/isFruitRipe/
-    getFruitWeightKg ever reads them (harvesting fires a remote by
-    plantId/fruitId attribute, it never touches the visual effect children),
-    so it's safe to fully :Destroy() them instead of just disabling them.
-    This matters specifically for ParticleEmitter: it has an Emit(count)
-    method that fires a burst of particles regardless of Enabled, so a
-    ripening fruit calling that could still tank FPS even while "hidden" -
-    an instance that's actually gone can't be told to Emit() anything.
+    Matched to the high-FPS reference clip (~160-195 FPS): empty dirt beds,
+    night sky, other gardens gone, FPS unlocked past 60. Harvest still works
+    because collectFruit fires remotes from GardenSync plantId/fruitId - it
+    never needs the 3D plant models to exist locally.
 ]]
 local OPTIMIZER_DESTROY_CLASSES = {
     ParticleEmitter = true,
@@ -1020,13 +1018,22 @@ local OPTIMIZER_DESTROY_CLASSES = {
     Texture = true,
 }
 
---[[
-    Ripe/harvestable fruit (and other state changes) can flip Enabled back to
-    true on an instance we already hid - that's the "particles come back and
-    tank FPS when a new fruit grows" bug. A one-shot DescendantAdded hook can
-    never catch that because the instance already existed. Instead, watch the
-    property directly and immediately stomp it back down whenever it drifts.
-]]
+local OPTIMIZER_SKY_ASSET = 'rbxassetid://136622198885324'
+local OPTIMIZER_SKY_NAME = 'GG2OptimizerNightSky'
+
+-- Workspace folders that are pure visual clutter (safe to wipe client-side).
+local OPTIMIZER_WORLD_DELETE_NAMES = {
+    NPCS = true,
+    NPCs = true,
+    Npcs = true,
+    Effects = true,
+    FX = true,
+    VFX = true,
+    Debris = true,
+    Pets = true,
+    Animals = true,
+}
+
 function watchOptimizerEnforcement(inst, prop, offValue, extra)
     local ok, signal = pcall(function()
         return inst:GetPropertyChangedSignal(prop)
@@ -1052,13 +1059,114 @@ function watchOptimizerEnforcement(inst, prop, offValue, extra)
     State.OptimizerEnforceConnections[#State.OptimizerEnforceConnections + 1] = connection
 end
 
---[[
-    Client-only wipe of every Gardens plot that isn't yours. This is the big
-    FPS win from the high-FPS optimizers: other players' plants/pets/effects
-    never get rendered at all. Destroy is local - the server still has them,
-    farming still works, and turning the optimizer off cannot restore them
-    until you rejoin.
-]]
+function unlockOptimizerFps()
+    -- Reference clip hits ~195 FPS - Roblox stays capped at 60 without this.
+    pcall(function()
+        if setfpscap then
+            setfpscap(10000)
+        end
+    end)
+    pcall(function()
+        if syn and syn.set_fps_cap then
+            syn.set_fps_cap(10000)
+        end
+    end)
+    pcall(function()
+        if set_fps_cap then
+            set_fps_cap(10000)
+        end
+    end)
+    pcall(function()
+        if setfflag then
+            setfflag('DFIntTaskSchedulerTargetFps', '10000')
+        end
+    end)
+    State.OptimizerFpsUnlocked = true
+end
+
+function applyOptimizerLighting()
+    if not State.OptimizerLightingOriginal then
+        State.OptimizerLightingOriginal = {
+            Brightness = Lighting.Brightness,
+            Ambient = Lighting.Ambient,
+            OutdoorAmbient = Lighting.OutdoorAmbient,
+            ExposureCompensation = Lighting.ExposureCompensation,
+            FogEnd = Lighting.FogEnd,
+            FogStart = Lighting.FogStart,
+            GlobalShadows = Lighting.GlobalShadows,
+            ClockTime = Lighting.ClockTime,
+            GeographicLatitude = Lighting.GeographicLatitude,
+        }
+    end
+
+    for _, child in Lighting:GetChildren() do
+        if child:IsA('Sky') or child:IsA('BloomEffect') or child:IsA('BlurEffect')
+            or child:IsA('ColorCorrectionEffect') or child:IsA('SunRaysEffect')
+            or child:IsA('DepthOfFieldEffect') or child:IsA('Atmosphere') then
+            pcall(function()
+                child:Destroy()
+            end)
+        end
+    end
+
+    local sky = Instance.new('Sky')
+    sky.Name = OPTIMIZER_SKY_NAME
+    sky.SkyboxBk = OPTIMIZER_SKY_ASSET
+    sky.SkyboxDn = OPTIMIZER_SKY_ASSET
+    sky.SkyboxFt = OPTIMIZER_SKY_ASSET
+    sky.SkyboxLf = OPTIMIZER_SKY_ASSET
+    sky.SkyboxRt = OPTIMIZER_SKY_ASSET
+    sky.SkyboxUp = OPTIMIZER_SKY_ASSET
+    sky.SunAngularSize = 0
+    sky.MoonAngularSize = 0
+    sky.Parent = Lighting
+
+    Lighting.Brightness = 0
+    Lighting.ExposureCompensation = -0.5
+    Lighting.Ambient = Color3.fromRGB(80, 80, 95)
+    Lighting.OutdoorAmbient = Color3.fromRGB(60, 60, 70)
+    Lighting.FogEnd = 1e6
+    Lighting.GlobalShadows = false
+    Lighting.ClockTime = 0
+    Lighting.GeographicLatitude = 41.75
+
+    pcall(function()
+        local renderSettings = settings():GetService('Rendering')
+        if renderSettings then
+            renderSettings.QualityLevel = Enum.QualityLevel.Level01
+            if renderSettings.MeshPartDetailLevel ~= nil then
+                renderSettings.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01
+            end
+        end
+    end)
+
+    pcall(function()
+        local ugs = UserSettings():GetService('UserGameSettings')
+        if ugs then
+            ugs.SavedQualityLevel = Enum.SavedQualitySetting.QualityLevel1
+        end
+    end)
+end
+
+function restoreOptimizerLighting()
+    local sky = Lighting:FindFirstChild(OPTIMIZER_SKY_NAME)
+    if sky then
+        pcall(function()
+            sky:Destroy()
+        end)
+    end
+
+    local o = State.OptimizerLightingOriginal
+    if o then
+        for prop, val in o do
+            pcall(function()
+                Lighting[prop] = val
+            end)
+        end
+    end
+    State.OptimizerLightingOriginal = nil
+end
+
 function deleteOtherPlayersGardens()
     local ownPlot = getPlot()
     if not ownPlot then
@@ -1074,6 +1182,47 @@ function deleteOtherPlayersGardens()
     end
 
     return true
+end
+
+--[[
+    Reference clip shows completely empty dirt beds - not transparent plants.
+    Destroy every child under your Plants folder. New growth is destroyed the
+    instant it streams in. Auto-harvest keeps working via GardenSync remotes.
+]]
+function clearOwnPlantModels()
+    local ownPlot = getPlot()
+    local plantsFolder = ownPlot and ownPlot:FindFirstChild('Plants')
+    if not plantsFolder then
+        return
+    end
+
+    for _, child in plantsFolder:GetChildren() do
+        pcall(function()
+            child:Destroy()
+        end)
+    end
+end
+
+function deleteWorldClutter()
+    for _, child in workspace:GetChildren() do
+        if OPTIMIZER_WORLD_DELETE_NAMES[child.Name] then
+            pcall(function()
+                child:Destroy()
+            end)
+        end
+    end
+
+    -- Other players' characters still render otherwise.
+    for _, player in Players:GetPlayers() do
+        if player ~= LocalPlayer then
+            local char = player.Character
+            if char then
+                pcall(function()
+                    char:Destroy()
+                end)
+            end
+        end
+    end
 end
 
 function isUnderOtherPlayersGarden(inst)
@@ -1093,22 +1242,20 @@ function isUnderOtherPlayersGarden(inst)
     return false
 end
 
---[[
-    Unified, single-pass optimizer hider.
-    Every instance is touched at most once (guarded by OptimizerPartCache), so
-    re-scans and the live DescendantAdded watcher stay effectively free.
-    Your plant/fruit geometry gets fully hidden; other players' entire plots
-    are deleted separately. The rest of the world just gets simplified.
-]]
 function optimizerHideInstance(inst)
+    if not inst or not inst.Parent then
+        return
+    end
+
     if State.OptimizerPartCache[inst] then
         return
     end
 
-    if isLocalPlayerDescendant(inst) or isCharacterPart(inst) then
+    if isLocalPlayerDescendant(inst) then
         return
     end
 
+    -- Other plots: wipe the whole plot, don't touch child-by-child.
     if isUnderOtherPlayersGarden(inst) then
         local plot = inst
         while plot and plot.Parent ~= Gardens do
@@ -1122,60 +1269,62 @@ function optimizerHideInstance(inst)
         return
     end
 
+    -- Own plants/fruits: delete the model tree (empty dirt beds like the clip).
+    if isPlantInstance(inst) then
+        local model = inst
+        while model and model.Parent and model.Parent.Name ~= 'Plants' do
+            model = model.Parent
+        end
+        if model and model.Parent and model.Parent.Name == 'Plants' then
+            pcall(function()
+                model:Destroy()
+            end)
+        else
+            pcall(function()
+                inst:Destroy()
+            end)
+        end
+        return
+    end
+
     local className = inst.ClassName
 
+    if OPTIMIZER_DESTROY_CLASSES[className] then
+        pcall(function()
+            inst:Destroy()
+        end)
+        return
+    end
+
     if inst:IsA('BasePart') then
-        local isPlant = isPlantInstance(inst)
+        if isCharacterPart(inst) and not isLocalPlayerDescendant(inst) then
+            local model = inst
+            while model and not (model:IsA('Model') and model:FindFirstChildOfClass('Humanoid')) do
+                model = model.Parent
+            end
+            if model and model ~= LocalPlayer.Character then
+                pcall(function()
+                    model:Destroy()
+                end)
+            end
+            return
+        end
+
         local cache = {
             Material = inst.Material,
             CastShadow = inst.CastShadow,
         }
-
         inst.Material = Enum.Material.SmoothPlastic
         inst.CastShadow = false
 
-        if isPlant then
-            cache.Transparency = inst.Transparency
-            cache.CanCollide = inst.CanCollide
-            cache.LocalTransparencyModifier = inst.LocalTransparencyModifier
-            inst.Transparency = 1
-            inst.LocalTransparencyModifier = 1
-            inst.CanCollide = false
-
-            if inst:IsA('MeshPart') then
-                local meshOk, meshId = pcall(function()
-                    return inst.MeshId
-                end)
-                if meshOk then
-                    cache.MeshId = meshId
-                    pcall(function()
-                        inst.MeshId = ''
-                    end)
-                end
-            end
-
-            watchOptimizerEnforcement(inst, 'Transparency', 1)
-            watchOptimizerEnforcement(inst, 'CanCollide', false)
-        end
-
         State.OptimizerPartCache[inst] = cache
-    elseif className == 'SpecialMesh' and isPlantInstance(inst) then
-        pcall(function()
-            inst:Destroy()
-        end)
-    elseif OPTIMIZER_DESTROY_CLASSES[className] then
-        pcall(function()
-            inst:Destroy()
-        end)
-    elseif className == 'ProximityPrompt' and isPlantInstance(inst) then
-        State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
-        inst.Enabled = false
-        watchOptimizerEnforcement(inst, 'Enabled', false)
     end
 end
 
 function scanOptimizerWorld(applyToken)
     deleteOtherPlayersGardens()
+    clearOwnPlantModels()
+    deleteWorldClutter()
 
     local descendants = workspace:GetDescendants()
     for i = 1, #descendants do
@@ -1185,7 +1334,7 @@ function scanOptimizerWorld(applyToken)
 
         optimizerHideInstance(descendants[i])
 
-        if i % 1000 == 0 then
+        if i % 1500 == 0 then
             RunService.Heartbeat:Wait()
         end
     end
@@ -1193,8 +1342,6 @@ function scanOptimizerWorld(applyToken)
     return true
 end
 
--- One-time safety net in case an old build of this script left cosmetic
--- leftovers (glow light / HUD) behind; the optimizer no longer creates these.
 function cleanupOptimizerLegacyCosmetics()
     local character = LocalPlayer.Character
     if character then
@@ -1217,6 +1364,9 @@ function cleanupOptimizerLegacyCosmetics()
 end
 
 function applyWorldOptimizer()
+    unlockOptimizerFps()
+    applyOptimizerLighting()
+
     local terrain = workspace:FindFirstChildOfClass('Terrain') or workspace.Terrain
 
     local terrainDecoration
@@ -1265,7 +1415,6 @@ function startWorldOptimizerMaintenance(applyToken)
     stopOptimizerGardenWatchers()
     cleanupOptimizerLegacyCosmetics()
 
-    -- Wipe other plots the instant they stream in (player joins / plot loads).
     State.OptimizerGardenChildConnection = Gardens.ChildAdded:Connect(function(plot)
         if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
             return
@@ -1279,16 +1428,46 @@ function startWorldOptimizerMaintenance(applyToken)
         end
     end)
 
-    -- PlotId can arrive after the first pass; re-wipe as soon as we know ours.
     State.OptimizerPlotIdConnection = LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
         if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
             return
         end
         deleteOtherPlayersGardens()
+        clearOwnPlantModels()
     end)
 
-    -- Hook new instances (plant growth, new fruit) first so nothing added
-    -- mid-scan is missed, then wipe other gardens + run the world sweep.
+    -- Other players respawning / streaming back in.
+    local playerConn = Players.PlayerAdded:Connect(function(player)
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+        player.CharacterAdded:Connect(function(char)
+            if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+                return
+            end
+            if player ~= LocalPlayer then
+                pcall(function()
+                    char:Destroy()
+                end)
+            end
+        end)
+    end)
+    State.OptimizerEnforceConnections[#State.OptimizerEnforceConnections + 1] = playerConn
+
+    for _, player in Players:GetPlayers() do
+        if player ~= LocalPlayer then
+            local conn = player.CharacterAdded:Connect(function(char)
+                if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+                    return
+                end
+                pcall(function()
+                    char:Destroy()
+                end)
+            end)
+            State.OptimizerEnforceConnections[#State.OptimizerEnforceConnections + 1] = conn
+        end
+    end
+
     State.OptimizerWorldDescendantConnection = workspace.DescendantAdded:Connect(function(desc)
         if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
             return
@@ -1298,7 +1477,6 @@ function startWorldOptimizerMaintenance(applyToken)
     end)
 
     State.OptimizerWorldScanThread = task.spawn(function()
-        -- Wait briefly for PlotId if needed so we never delete our own plot.
         local deadline = os.clock() + 30
         while not getPlot() and os.clock() < deadline do
             if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
@@ -1331,6 +1509,7 @@ function restoreWorldOptimizer()
     end
 
     stopOptimizerGardenWatchers()
+    restoreOptimizerLighting()
 
     if State.OptimizerOriginal then
         local o = State.OptimizerOriginal
@@ -1378,6 +1557,7 @@ function restoreOptimizer()
     State.OptimizerEnabled = false
     State.OptimizerOriginal = nil
     State.OptimizerPartCache = {}
+    State.OptimizerFpsUnlocked = false
 end
 
 function cancelOptimizerPendingApply()
@@ -1391,9 +1571,6 @@ function scheduleOptimizerApply()
     cancelOptimizerPendingApply()
 
     State.OptimizerPendingApply = task.spawn(function()
-        -- Only real requirement: workspace needs to exist, which it does the
-        -- instant the loading screen is gone. No garden/extra waits needed -
-        -- the live DescendantAdded hook catches anything not loaded in yet.
         waitForLoadingScreenDismiss(180)
 
         if Library.Unloaded or not Toggles.Optimizer or not Toggles.Optimizer.Value then
@@ -5727,7 +5904,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Client FPS boost: deletes every other player\'s garden plot (client-side only - yours stays), hides your plants/fruits, and deletes particles/meshes/glow so ripening can\'t flash them back on. Simplifies world materials/water. No sky changes. Farming still works. Other gardens only come back after a rejoin.',
+    Tooltip = 'Matches the high-FPS optimizers (~160+): unlocks FPS past 60, night sky, lowest graphics, deletes other players\' gardens + characters/NPCs, and deletes YOUR plant models too (empty dirt beds - harvest still works via remotes). New growth is deleted instantly. Other gardens only come back after rejoin.',
     Callback = function(value)
         if State.ConfigLoading then
             return
