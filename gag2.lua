@@ -875,6 +875,7 @@ local State = {
     OptimizerEnforceConnections = {},
     OptimizerMeshCache = {},
     HarvestWeightCache = setmetatable({}, { __mode = 'k' }),
+    HarvestAttemptAt = {},
     CameraBlackoutEnabled = false,
     CameraBlackoutOriginalType = nil,
     CameraBlackoutCharacterConnection = nil,
@@ -998,10 +999,10 @@ function isCharacterPart(part)
 end
 
 --[[
-    Matched to the high-FPS reference clip (~160-195 FPS): empty dirt beds,
-    night sky, other gardens gone, FPS unlocked past 60. Plant models are
-    kept (stripped visually) so auto-harvest can still read ripe/weight
-    attributes and fire CollectFruit remotes.
+    Matched to the high-FPS reference clip: empty dirt beds, night sky, other
+    gardens gone, FPS unlocked. Plant MODELS are deleted for FPS; auto-harvest
+    reads GardenSync (plantId/fruitId/ripe/weight) and fires CollectFruit -
+    it does not need the 3D models to exist locally.
 ]]
 local OPTIMIZER_DESTROY_CLASSES = {
     ParticleEmitter = true,
@@ -1185,81 +1186,9 @@ function deleteOtherPlayersGardens()
 end
 
 --[[
-    Reference clip shows empty dirt beds. We used to :Destroy() plant models,
-    but that kills auto-harvest: ripe/weight live on model attributes, and
-    shouldHarvestFruit rejects nil weight. Instead keep the Model shells
-    (attributes + hierarchy) and strip every visual descendant so nothing
-    renders - harvest remotes still see PlantId/FruitId/IsRipe/Weight.
+    Empty dirt beds = destroy plant models (this is what hit ~400 FPS).
+    Auto-harvest uses GardenSync + CollectFruit remotes, not these models.
 ]]
-function stripPlantVisualInstance(inst)
-    if not inst or not inst.Parent then
-        return
-    end
-
-    if State.OptimizerPartCache[inst] then
-        return
-    end
-
-    local className = inst.ClassName
-    if OPTIMIZER_DESTROY_CLASSES[className] or className == 'SpecialMesh' then
-        State.OptimizerPartCache[inst] = true
-        pcall(function()
-            inst:Destroy()
-        end)
-        return
-    end
-
-    if inst:IsA('BasePart') then
-        local cache = {
-            Transparency = inst.Transparency,
-            LocalTransparencyModifier = inst.LocalTransparencyModifier,
-            CanCollide = inst.CanCollide,
-            CastShadow = inst.CastShadow,
-            Material = inst.Material,
-        }
-
-        inst.Transparency = 1
-        inst.LocalTransparencyModifier = 1
-        inst.CanCollide = false
-        inst.CastShadow = false
-        inst.Material = Enum.Material.SmoothPlastic
-
-        if inst:IsA('MeshPart') then
-            local meshOk, meshId = pcall(function()
-                return inst.MeshId
-            end)
-            if meshOk then
-                cache.MeshId = meshId
-                pcall(function()
-                    inst.MeshId = ''
-                end)
-            end
-        end
-
-        State.OptimizerPartCache[inst] = cache
-        watchOptimizerEnforcement(inst, 'Transparency', 1)
-        watchOptimizerEnforcement(inst, 'CanCollide', false)
-        return
-    end
-
-    if className == 'ProximityPrompt' then
-        State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
-        inst.Enabled = false
-        watchOptimizerEnforcement(inst, 'Enabled', false)
-    end
-end
-
-function stripPlantVisuals(root)
-    if not root or not root.Parent then
-        return
-    end
-
-    stripPlantVisualInstance(root)
-    for _, desc in root:GetDescendants() do
-        stripPlantVisualInstance(desc)
-    end
-end
-
 function clearOwnPlantModels()
     local ownPlot = getPlot()
     local plantsFolder = ownPlot and ownPlot:FindFirstChild('Plants')
@@ -1268,7 +1197,9 @@ function clearOwnPlantModels()
     end
 
     for _, child in plantsFolder:GetChildren() do
-        stripPlantVisuals(child)
+        pcall(function()
+            child:Destroy()
+        end)
     end
 end
 
@@ -1338,10 +1269,21 @@ function optimizerHideInstance(inst)
         return
     end
 
-    -- Own plants/fruits: strip this instance only (DescendantAdded already
-    -- fires per child). Keep Model shells for harvest attributes.
+    -- Own plants/fruits: delete model tree for empty dirt beds / max FPS.
     if isPlantInstance(inst) then
-        stripPlantVisualInstance(inst)
+        local model = inst
+        while model and model.Parent and model.Parent.Name ~= 'Plants' do
+            model = model.Parent
+        end
+        if model and model.Parent and model.Parent.Name == 'Plants' then
+            pcall(function()
+                model:Destroy()
+            end)
+        else
+            pcall(function()
+                inst:Destroy()
+            end)
+        end
         return
     end
 
@@ -3987,10 +3929,26 @@ function isFruitRipe(fruitData, fruitModel)
     end
 
     if fruitData then
-        return (fruitData.Age or 0) >= (fruitData.MaxAge or 1)
+        if fruitData.IsRipe == true or fruitData.Ripe == true then
+            return true
+        end
+
+        local age = fruitData.Age
+        local maxAge = fruitData.MaxAge
+        if typeof(age) == 'number' and typeof(maxAge) == 'number' then
+            return age >= maxAge
+        end
+
+        -- Some sync entries only expose progress 0-1 / Grown flags.
+        if fruitData.Grown == true or fruitData.Ready == true then
+            return true
+        end
+        if typeof(fruitData.Progress) == 'number' and fruitData.Progress >= 1 then
+            return true
+        end
     end
 
-    return fruitModel ~= nil
+    return false
 end
 
 --[[
@@ -4150,8 +4108,10 @@ function shouldHarvestFruit(weightKg, maxKg)
         return false
     end
 
+    -- No weight available (optimizer deleted plant models) - still harvest
+    -- ripe fruits; Max KG only filters when we actually know the weight.
     if not weightKg then
-        return false
+        return true
     end
 
     return weightKg <= maxKg
@@ -4425,69 +4385,72 @@ function isPlantTypeHarvestAllowed(allowedSet, garden, plantId)
 end
 
 --[[
-    Runs every frame (Auto Harvest is intentionally task.wait(0)), so this
-    must do exactly ONE pass over the Plants folder. The old version called
-    findFruitModel - itself a full linear rescan of every plant/fruit - up to
-    twice per fruit in the synced garden table, on top of its own folder
-    walk. For a garden with dozens of plants that's tens of thousands of
-    redundant GetChildren/GetAttribute calls every single frame, which is
-    what was actually tanking FPS (not the visual optimizer). Building a
-    plantId_fruitId -> model index in one pass and reusing it everywhere
-    turns that O(plants x fruits) rescan into O(plants + fruits).
+    GardenSync-first harvest. When the optimizer deletes plant models, ripe
+    state comes from sync data. If sync has no Age/IsRipe fields, we still
+    attempt CollectFruit (server rejects unripe) with a per-fruit throttle
+    so we don't spam remotes every frame.
 ]]
 function harvestFruits(maxKg)
-    local plot = getPlot()
-    local plantsFolder = plot and plot:FindFirstChild('Plants')
-    if not plantsFolder then
+    maxKg = tonumber(maxKg) or 999
+    local garden = GardenSync:GetGarden(LocalPlayer.UserId)
+    if typeof(garden) ~= 'table' then
         return
     end
 
-    maxKg = tonumber(maxKg) or 999
-    local garden = GardenSync:GetGarden(LocalPlayer.UserId)
     local allowedSet = getSelectedHarvestPlantsSet()
     local seen = {}
+    local now = os.clock()
+    local optimizerOn = State.OptimizerEnabled == true
+    local plot = getPlot()
+    local plantsFolder = plot and plot:FindFirstChild('Plants')
     local modelIndex = {}
 
-    for _, plantModel in plantsFolder:GetChildren() do
-        local fruitsFolder = plantModel:FindFirstChild('Fruits')
-        if fruitsFolder then
-            for _, fruitModel in fruitsFolder:GetChildren() do
-                local plantId = fruitModel:GetAttribute('PlantId')
-                local fruitId = fruitModel:GetAttribute('FruitId')
-
-                if plantId and fruitId then
-                    modelIndex[plantId .. '_' .. fruitId] = fruitModel
-
-                    if isFruitRipe(nil, fruitModel) and isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
-                        local key = plantId .. '_' .. fruitId
-                        if not seen[key] then
-                            seen[key] = true
-                            local fruitData = getGardenFruitData(garden, plantId, fruitId)
-                            local weight = getFruitWeightKg(fruitModel, fruitData)
-                            if shouldHarvestFruit(weight, maxKg) then
-                                collectFruit(plantId, fruitId)
-                            end
-                        end
+    if plantsFolder then
+        for _, plantModel in plantsFolder:GetChildren() do
+            local fruitsFolder = plantModel:FindFirstChild('Fruits')
+            if fruitsFolder then
+                for _, fruitModel in fruitsFolder:GetChildren() do
+                    local plantId = fruitModel:GetAttribute('PlantId')
+                    local fruitId = fruitModel:GetAttribute('FruitId')
+                    if plantId and fruitId then
+                        modelIndex[plantId .. '_' .. fruitId] = fruitModel
                     end
                 end
-            end
-        else
-            local plantId = plantModel:GetAttribute('PlantId')
-            if plantId then
-                modelIndex[plantId .. '_'] = plantModel
-
-                if isFruitRipe(nil, plantModel) and isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
-                    local key = plantId .. '_'
-                    if not seen[key] then
-                        seen[key] = true
-                        local fruitData = getGardenFruitData(garden, plantId, '')
-                        local weight = getFruitWeightKg(plantModel, fruitData)
-                        if shouldHarvestFruit(weight, maxKg) then
-                            collectFruit(plantId, '')
-                        end
-                    end
+            else
+                local plantId = plantModel:GetAttribute('PlantId')
+                if plantId then
+                    modelIndex[plantId .. '_'] = plantModel
                 end
             end
+        end
+    end
+
+    local function tryCollect(plantId, fruitId, fruitData, fruitModel)
+        local key = plantId .. '_' .. (fruitId or '')
+        if seen[key] then
+            return
+        end
+        seen[key] = true
+
+        local ripe = isFruitRipe(fruitData, fruitModel)
+        if not ripe and optimizerOn and fruitData then
+            -- No usable ripe fields in sync while models are deleted: try
+            -- anyway and let the server decide. Throttle to avoid remote spam.
+            local last = State.HarvestAttemptAt[key] or 0
+            if now - last < 0.75 then
+                return
+            end
+            State.HarvestAttemptAt[key] = now
+            ripe = true
+        end
+
+        if not ripe then
+            return
+        end
+
+        local weight = getFruitWeightKg(fruitModel, fruitData)
+        if shouldHarvestFruit(weight, maxKg) then
+            collectFruit(plantId, fruitId or '')
         end
     end
 
@@ -4498,30 +4461,10 @@ function harvestFruits(maxKg)
 
         if plant.Fruits then
             for fruitId, fruit in plant.Fruits do
-                local key = plantId .. '_' .. fruitId
-                if not seen[key] then
-                    local fruitModel = modelIndex[key]
-                    if isFruitRipe(fruit, fruitModel) then
-                        seen[key] = true
-                        local weight = getFruitWeightKg(fruitModel, fruit)
-                        if shouldHarvestFruit(weight, maxKg) then
-                            collectFruit(plantId, fruitId)
-                        end
-                    end
-                end
+                tryCollect(plantId, fruitId, fruit, modelIndex[plantId .. '_' .. fruitId])
             end
         else
-            local key = plantId .. '_'
-            if not seen[key] then
-                local plantModel = modelIndex[key]
-                if isFruitRipe(plant, plantModel) then
-                    seen[key] = true
-                    local weight = getFruitWeightKg(plantModel, plant)
-                    if shouldHarvestFruit(weight, maxKg) then
-                        collectFruit(plantId, '')
-                    end
-                end
-            end
+            tryCollect(plantId, '', plant, modelIndex[plantId .. '_'])
         end
     end
 end
@@ -4639,7 +4582,13 @@ function setAutoHarvestLoop(enabled)
                 harvestFruits(maxKg)
             end
 
-            task.wait(0)
+            -- When optimizer deleted plant models, there's nothing heavy to
+            -- scan every frame - a short wait still feels instant and saves FPS.
+            if State.OptimizerEnabled then
+                task.wait(0.15)
+            else
+                task.wait(0)
+            end
         end
         State.HarvestThread = nil
     end)
@@ -5962,7 +5911,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Matches the high-FPS optimizers (~160+): unlocks FPS past 60, night sky, lowest graphics, deletes other players\' gardens + characters/NPCs, and strips YOUR plant visuals (empty dirt beds) while keeping plant models so auto-harvest still works. Other gardens only come back after rejoin.',
+    Tooltip = 'High FPS mode: unlocks FPS, night sky, lowest graphics, deletes other gardens/NPCs/characters, and deletes YOUR plant models (empty dirt beds). Auto-harvest uses GardenSync remotes so it still works without models. Other gardens only come back after rejoin.',
     Callback = function(value)
         if State.ConfigLoading then
             return
