@@ -868,6 +868,11 @@ local State = {
     OptimizerWorldDescendantConnection = nil,
     OptimizerPendingApply = nil,
     OptimizerPartCache = {},
+    OptimizerEnforceConnections = {},
+    OptimizerMeshCache = {},
+    CameraBlackoutEnabled = false,
+    CameraBlackoutOriginalType = nil,
+    CameraBlackoutCharacterConnection = nil,
     ConfigLoading = false,
     AntiAfkConnection = nil,
     AutoSellThread = nil,
@@ -999,7 +1004,40 @@ local OPTIMIZER_LIGHT_CLASSES = {
     PointLight = true,
     SpotLight = true,
     SurfaceLight = true,
+    Highlight = true,
 }
+
+--[[
+    Ripe/harvestable fruit (and other state changes) can flip Enabled back to
+    true on an instance we already hid - that's the "particles come back and
+    tank FPS when a new fruit grows" bug. A one-shot DescendantAdded hook can
+    never catch that because the instance already existed. Instead, watch the
+    property directly and immediately stomp it back down whenever it drifts.
+]]
+function watchOptimizerEnforcement(inst, prop, offValue, extra)
+    local ok, signal = pcall(function()
+        return inst:GetPropertyChangedSignal(prop)
+    end)
+    if not ok or not signal then
+        return
+    end
+
+    local connection = signal:Connect(function()
+        if not State.OptimizerEnabled then
+            return
+        end
+        pcall(function()
+            if inst[prop] ~= offValue then
+                inst[prop] = offValue
+            end
+        end)
+        if extra then
+            pcall(extra)
+        end
+    end)
+
+    State.OptimizerEnforceConnections[#State.OptimizerEnforceConnections + 1] = connection
+end
 
 --[[
     Unified, single-pass optimizer hider.
@@ -1039,31 +1077,68 @@ function optimizerHideInstance(inst)
             inst.Transparency = 1
             inst.LocalTransparencyModifier = 1
             inst.CanCollide = false
+
+            if inst:IsA('MeshPart') then
+                local meshOk, meshId = pcall(function()
+                    return inst.MeshId
+                end)
+                if meshOk then
+                    cache.MeshId = meshId
+                    pcall(function()
+                        inst.MeshId = ''
+                    end)
+                end
+            end
+
+            watchOptimizerEnforcement(inst, 'Transparency', 1)
+            watchOptimizerEnforcement(inst, 'CanCollide', false)
         end
 
         State.OptimizerPartCache[inst] = cache
+    elseif className == 'SpecialMesh' and isPlantInstance(inst) then
+        local meshOk, meshId = pcall(function()
+            return inst.MeshId
+        end)
+        if meshOk then
+            State.OptimizerPartCache[inst] = { MeshId = meshId }
+            pcall(function()
+                inst.MeshId = ''
+            end)
+        end
     elseif className == 'Decal' or className == 'Texture' then
         State.OptimizerPartCache[inst] = { Transparency = inst.Transparency }
         inst.Transparency = 1
+        watchOptimizerEnforcement(inst, 'Transparency', 1)
     elseif className == 'ParticleEmitter' then
         -- Already-emitted particles keep animating even after Enabled=false,
         -- which is what causes stray puffs (e.g. Dragon's Breath smoke) to
         -- flash briefly when a new one grows. Clear() removes them instantly.
+        -- Ripening/growth also flips Enabled back to true on this SAME
+        -- instance later on (not a new one), so a one-shot hide isn't enough
+        -- - the enforcement watcher below re-stomps it the instant that
+        -- happens, which is what was causing the FPS-to-3 particle spam.
         State.OptimizerPartCache[inst] = { Enabled = inst.Enabled, Rate = inst.Rate }
         inst.Enabled = false
         inst.Rate = 0
         pcall(function()
             inst:Clear()
         end)
+        watchOptimizerEnforcement(inst, 'Enabled', false, function()
+            inst.Rate = 0
+            inst:Clear()
+        end)
     elseif OPTIMIZER_HIDE_CLASSES[className] then
         State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
         inst.Enabled = false
+        watchOptimizerEnforcement(inst, 'Enabled', false)
     elseif OPTIMIZER_LIGHT_CLASSES[className] then
         State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
         inst.Enabled = false
+        watchOptimizerEnforcement(inst, 'Enabled', false)
     elseif className == 'ProximityPrompt' and isPlantInstance(inst) then
         State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
         inst.Enabled = false
+        watchOptimizerEnforcement(inst, 'Enabled', false)
     end
 end
 
@@ -1199,6 +1274,13 @@ end
 function restoreOptimizer()
     restoreWorldOptimizer()
 
+    for _, connection in State.OptimizerEnforceConnections do
+        pcall(function()
+            connection:Disconnect()
+        end)
+    end
+    State.OptimizerEnforceConnections = {}
+
     for inst, props in State.OptimizerPartCache do
         if inst and inst.Parent then
             for prop, val in props do
@@ -1263,6 +1345,118 @@ function setOptimizer(enabled)
     State.OptimizerEnabled = true
     applyWorldOptimizer()
     startWorldOptimizerMaintenance(applyToken)
+end
+
+local CAMERA_BLACKOUT_OFFSET = 1000000000000
+
+--[[
+    Max-FPS "blackout" mode: yanks the camera far below the map (Scriptable,
+    so nothing keeps snapping it back to the character every frame) and
+    blanks every MeshId in the workspace so the client doesn't even have
+    geometry to load/render. Nothing is visible on screen while this is on -
+    it's meant for pure AFK farming, not for watching the game.
+]]
+function applyCameraBlackoutMeshes()
+    local descendants = workspace:GetDescendants()
+    for i = 1, #descendants do
+        local inst = descendants[i]
+        if inst:IsA('MeshPart') or inst:IsA('SpecialMesh') then
+            local ok, meshId = pcall(function()
+                return inst.MeshId
+            end)
+            if ok and meshId ~= '' and State.OptimizerMeshCache[inst] == nil then
+                State.OptimizerMeshCache[inst] = meshId
+                pcall(function()
+                    inst.MeshId = ''
+                end)
+            end
+        end
+
+        if i % 1000 == 0 then
+            RunService.Heartbeat:Wait()
+        end
+    end
+end
+
+function applyCameraBlackoutView()
+    local camera = workspace.CurrentCamera
+    if not camera then
+        return
+    end
+
+    if not State.CameraBlackoutOriginalType then
+        State.CameraBlackoutOriginalType = camera.CameraType
+    end
+
+    camera.CameraType = Enum.CameraType.Scriptable
+    camera.CFrame = camera.CFrame + Vector3.new(0, -CAMERA_BLACKOUT_OFFSET, 0)
+end
+
+function restoreCameraBlackoutView()
+    local camera = workspace.CurrentCamera
+    if not camera then
+        return
+    end
+
+    camera.CameraType = State.CameraBlackoutOriginalType or Enum.CameraType.Custom
+    State.CameraBlackoutOriginalType = nil
+
+    local character = LocalPlayer.Character
+    local root = character and character:FindFirstChild('HumanoidRootPart')
+    if root then
+        pcall(function()
+            camera.CFrame = CFrame.new(root.Position + Vector3.new(0, 8, 12), root.Position)
+        end)
+    end
+end
+
+function restoreCameraBlackoutMeshes()
+    for inst, meshId in State.OptimizerMeshCache do
+        if inst and inst.Parent then
+            pcall(function()
+                inst.MeshId = meshId
+            end)
+        end
+    end
+    State.OptimizerMeshCache = {}
+end
+
+function setCameraBlackout(enabled)
+    enabled = enabled == true
+
+    if enabled and State.CameraBlackoutEnabled then
+        return
+    end
+    if not enabled and not State.CameraBlackoutEnabled then
+        return
+    end
+
+    if not enabled then
+        State.CameraBlackoutEnabled = false
+
+        if State.CameraBlackoutCharacterConnection then
+            State.CameraBlackoutCharacterConnection:Disconnect()
+            State.CameraBlackoutCharacterConnection = nil
+        end
+
+        restoreCameraBlackoutView()
+        restoreCameraBlackoutMeshes()
+        return
+    end
+
+    State.CameraBlackoutEnabled = true
+    applyCameraBlackoutMeshes()
+    applyCameraBlackoutView()
+
+    if State.CameraBlackoutCharacterConnection then
+        State.CameraBlackoutCharacterConnection:Disconnect()
+    end
+    State.CameraBlackoutCharacterConnection = LocalPlayer.CharacterAdded:Connect(function()
+        if not State.CameraBlackoutEnabled then
+            return
+        end
+        task.defer(applyCameraBlackoutView)
+    end)
 end
 
 function abbreviate(n)
@@ -5404,7 +5598,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Client FPS boost: hides every plant/fruit (yours and everyone else\'s) while keeping plots/land visible. Simplifies world materials/water. No sky or lighting changes. Farming/harvest still works normally.',
+    Tooltip = 'Client FPS boost: hides every plant/fruit (yours and everyone else\'s), including their meshes and particles, while keeping plots/land visible. Re-hides effects the game turns back on (e.g. a fruit ripening) so nothing flashes back. Simplifies world materials/water. No sky or lighting changes. Farming/harvest still works normally.',
     Callback = function(value)
         if State.ConfigLoading then
             return
@@ -5415,6 +5609,19 @@ OptimizerBox:AddToggle('Optimizer', {
         else
             setOptimizer(false)
         end
+    end,
+})
+
+OptimizerBox:AddToggle('CameraBlackout', {
+    Text = 'Camera Blackout (Max FPS)',
+    Default = false,
+    Tooltip = 'Extreme mode: yanks the camera 1,000,000,000,000 studs below the map and blanks every mesh ID so nothing renders at all. Screen goes blank - farming/UI still work, but you won\'t see the game. Turn off to restore your view.',
+    Callback = function(value)
+        if State.ConfigLoading then
+            return
+        end
+
+        setCameraBlackout(value)
     end,
 })
 
@@ -5430,6 +5637,7 @@ function shutdownScript()
 
     cancelOptimizerPendingApply()
     pcall(setOptimizer, false)
+    pcall(setCameraBlackout, false)
     pcall(setAutoHarvestLoop, false)
     pcall(setAutoWateringLoop, false)
     pcall(setAutoBuyLoop, false)
@@ -5769,6 +5977,10 @@ task.defer(function()
 
     if Toggles.Optimizer and Toggles.Optimizer.Value then
         scheduleOptimizerApply()
+    end
+
+    if Toggles.CameraBlackout and Toggles.CameraBlackout.Value then
+        setCameraBlackout(true)
     end
 
     waitForGardenReady(45)
