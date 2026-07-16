@@ -7499,7 +7499,7 @@ end
 function clearFruitValueOverlays()
     for slot, label in pairs(State.FruitValueOverlayLabels or {}) do
         pcall(function()
-            if label and label.Parent then
+            if label and label.Name == 'GG2_FruitValue' and label.Parent then
                 label:Destroy()
             end
         end)
@@ -7508,19 +7508,99 @@ function clearFruitValueOverlays()
     State.FruitValueOverlayLabels = {}
 end
 
-function findSlotLinkedFruit(slot)
+function getSlotDisplayName(slot)
     if not slot then
+        return ''
+    end
+
+    local toolName = slot:FindFirstChild('ToolName', true)
+    if toolName and (toolName:IsA('TextLabel') or toolName:IsA('TextButton')) then
+        return tostring(toolName.Text or '')
+    end
+
+    return ''
+end
+
+function getSlotWeightKg(slot)
+    if not slot then
+        return nil
+    end
+
+    for _, desc in slot:GetDescendants() do
+        if desc:IsA('TextLabel') or desc:IsA('TextButton') then
+            local text = tostring(desc.Text or '')
+            local kg = text:match('([%d%.]+)kg')
+            if kg then
+                return tonumber(kg)
+            end
+        end
+    end
+
+    return nil
+end
+
+function isInventorySeedSlot(slot)
+    local name = getSlotDisplayName(slot):lower()
+    if name:find('seed', 1, true) then
+        return true
+    end
+
+    -- Harvested fruits always show a kg weight; seeds/tools usually don't.
+    if not getSlotWeightKg(slot) then
+        return true
+    end
+
+    return false
+end
+
+function slotNameMatchesFruit(slotName, fruitName)
+    if typeof(slotName) ~= 'string' or typeof(fruitName) ~= 'string' then
+        return false
+    end
+
+    local slotLower = slotName:lower():gsub('%s+', ' ')
+    local fruitLower = fruitName:lower():gsub('%s+$', '')
+
+    if slotLower:find('seed', 1, true) then
+        return false
+    end
+
+    -- Exact / prefix match only — avoid "Dragon's Breath Seed" → fruit.
+    if slotLower == fruitLower then
+        return true
+    end
+    if slotLower:sub(1, #fruitLower) == fruitLower then
+        local nextChar = slotLower:sub(#fruitLower + 1, #fruitLower + 1)
+        return nextChar == '' or nextChar == ' ' or nextChar == '['
+    end
+
+    -- Truncated UI names like "Dragon's"
+    if #slotLower >= 4 and fruitLower:sub(1, #slotLower) == slotLower then
+        return true
+    end
+
+    return false
+end
+
+function findSlotLinkedFruit(slot, usedFruits)
+    if not slot or isInventorySeedSlot(slot) then
         return nil
     end
 
     for _, name in { 'Tool', 'Item', 'Fruit', 'Object', 'Ref' } do
         local ref = slot:FindFirstChild(name)
         if ref then
-            if ref:IsA('ObjectValue') and ref.Value and isFruitTool(ref.Value) then
-                return ref.Value
+            local candidate = nil
+            if ref:IsA('ObjectValue') and ref.Value then
+                candidate = ref.Value
+            elseif isFruitTool(ref) then
+                candidate = ref
             end
-            if isFruitTool(ref) then
-                return ref
+            if candidate and isFruitTool(candidate) and not (usedFruits and usedFruits[candidate]) then
+                local candName = candidate:GetAttribute('FruitName') or candidate:GetAttribute('Fruit') or ''
+                if typeof(candName) == 'string' and not tostring(candName):lower():find('seed', 1, true) then
+                    return candidate
+                end
             end
         end
     end
@@ -7528,6 +7608,9 @@ function findSlotLinkedFruit(slot)
     local toolAttr = slot:GetAttribute('Tool') or slot:GetAttribute('Item') or slot:GetAttribute('FruitId')
     if typeof(toolAttr) == 'string' and toolAttr ~= '' then
         for _, fruit in getHarvestedFruitTools() do
+            if usedFruits and usedFruits[fruit] then
+                continue
+            end
             local id = getFruitToolId(fruit)
             if id == toolAttr or fruit.Name == toolAttr then
                 return fruit
@@ -7535,54 +7618,53 @@ function findSlotLinkedFruit(slot)
         end
     end
 
-    local toolNameLabel = slot:FindFirstChild('ToolName', true)
-    local weightHint = nil
-    if toolNameLabel and toolNameLabel:IsA('TextLabel') then
-        local text = tostring(toolNameLabel.Text or '')
-        -- Weight label is often a sibling; also parse from full tool names.
-        weightHint = text:match('([%d%.]+)kg')
-    end
-
-    local weightLabel = slot:FindFirstChild('ToolWeight', true)
-        or slot:FindFirstChild('Weight', true)
-        or slot:FindFirstChild('BottomText', true)
-    if weightLabel and weightLabel:IsA('TextLabel') then
-        weightHint = tostring(weightLabel.Text or ''):match('([%d%.]+)kg') or weightHint
-    end
-
-    -- Match backpack fruits by visible name + weight when the slot has no direct ref.
-    local nameText = toolNameLabel and tostring(toolNameLabel.Text or '') or ''
-    if nameText == '' then
+    local weightHint = getSlotWeightKg(slot)
+    if not weightHint then
         return nil
     end
 
-    local best, bestScore = nil, -1
+    local nameText = getSlotDisplayName(slot)
+    if nameText == '' or nameText:lower():find('seed', 1, true) then
+        return nil
+    end
+
+    -- Match by name + weight so each slot gets its own fruit (not one shared price).
+    local best, bestDiff = nil, math.huge
     for _, fruit in getHarvestedFruitTools() do
+        if usedFruits and usedFruits[fruit] then
+            continue
+        end
+
         local fruitName = fruit:GetAttribute('FruitName') or fruit:GetAttribute('Fruit') or ''
-        if typeof(fruitName) ~= 'string' then
+        if typeof(fruitName) ~= 'string' or fruitName == '' then
             fruitName = tostring(fruit.Name):match('^([^%[]+)') or fruit.Name
         end
         fruitName = tostring(fruitName):gsub('%s+$', '')
+        if tostring(fruitName):lower():find('seed', 1, true) then
+            continue
+        end
 
-        local score = 0
-        if nameText:find(fruitName, 1, true) or fruit.Name:find(nameText, 1, true) then
-            score = score + 2
+        if not slotNameMatchesFruit(nameText, fruitName) then
+            continue
         end
-        if weightHint then
-            local fw = getToolWeightKg(fruit)
-            if fw and math.abs(fw - (tonumber(weightHint) or -1)) < 0.05 then
-                score = score + 5
-            end
+
+        local fw = getToolWeightKg(fruit)
+        if not fw then
+            continue
         end
-        if score > bestScore then
-            bestScore = score
+
+        local diff = math.abs(fw - weightHint)
+        if diff < bestDiff then
+            bestDiff = diff
             best = fruit
         end
     end
 
-    if bestScore >= 2 then
+    -- Require a tight weight match so we never reuse one fruit for every slot.
+    if best and bestDiff <= 0.08 then
         return best
     end
+
     return nil
 end
 
@@ -7593,49 +7675,37 @@ function ensureFruitValueLabel(slot)
 
     local existing = slot:FindFirstChild('GG2_FruitValue')
     if existing and existing:IsA('TextLabel') then
+        -- Keep label top-right over the favorite star.
+        existing.AnchorPoint = Vector2.new(1, 0)
+        existing.Position = UDim2.new(1, -2, 0, 1)
+        existing.Size = UDim2.fromOffset(56, 14)
+        existing.TextXAlignment = Enum.TextXAlignment.Right
+        existing.TextYAlignment = Enum.TextYAlignment.Top
         State.FruitValueOverlayLabels[slot] = existing
         return existing
     end
 
-    -- Prefer updating the game's own top value label when present.
-    for _, name in { 'Value', 'FruitValue', 'Price', 'ToolValue', 'SellValue', 'TopText', 'Worth' } do
-        local label = slot:FindFirstChild(name, true)
-        if label and label:IsA('TextLabel') then
-            State.FruitValueOverlayLabels[slot] = label
-            return label
-        end
-    end
-
-    -- Reuse an existing top-left $ label from the game UI when we can find one.
-    for _, desc in slot:GetDescendants() do
-        if desc:IsA('TextLabel') then
-            local text = tostring(desc.Text or '')
-            if text:find('%$') and desc.AbsolutePosition.Y <= slot.AbsolutePosition.Y + 22 then
-                State.FruitValueOverlayLabels[slot] = desc
-                return desc
-            end
-        end
-    end
-
+    -- Only create our own label — never hijack the game's value text.
     local label = Instance.new('TextLabel')
     label.Name = 'GG2_FruitValue'
     label.BackgroundTransparency = 1
-    label.Size = UDim2.new(1, -6, 0, 16)
-    label.Position = UDim2.new(0, 3, 0, 1)
-    label.ZIndex = (slot.ZIndex or 1) + 5
+    label.AnchorPoint = Vector2.new(1, 0)
+    label.Position = UDim2.new(1, -2, 0, 1)
+    label.Size = UDim2.fromOffset(56, 14)
+    label.ZIndex = (slot.ZIndex or 1) + 8
     label.Font = Enum.Font.GothamBold
-    label.TextSize = 14
+    label.TextSize = 11
     label.TextColor3 = Color3.fromRGB(0, 255, 0)
-    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextXAlignment = Enum.TextXAlignment.Right
     label.TextYAlignment = Enum.TextYAlignment.Top
-    label.TextStrokeTransparency = 0
+    label.TextStrokeTransparency = 0.2
     label.TextStrokeColor3 = Color3.new(0, 0, 0)
     label.Text = ''
     label.Visible = false
     label.Parent = slot
 
     local stroke = Instance.new('UIStroke')
-    stroke.Thickness = 2
+    stroke.Thickness = 1.4
     stroke.Color = Color3.new(0, 0, 0)
     stroke.Parent = label
 
@@ -7671,7 +7741,6 @@ function collectInventorySlotFrames()
         gather(backpack:FindFirstChild('HotBar'))
     end
 
-    -- Fallback: any UIGridFrame under BackpackGui that looks like item slots.
     if #slots == 0 then
         gather(backpackGui)
     end
@@ -7685,27 +7754,61 @@ function updateFruitValueOverlays()
     end
 
     local seen = {}
+    local usedFruits = {}
+
     for _, slot in collectInventorySlotFrames() do
         seen[slot] = true
-        local fruit = findSlotLinkedFruit(slot)
+
+        if isInventorySeedSlot(slot) then
+            local junk = slot:FindFirstChild('GG2_FruitValue')
+            if junk then
+                pcall(function()
+                    junk:Destroy()
+                end)
+            end
+            State.FruitValueOverlayLabels[slot] = nil
+            continue
+        end
+
+        local fruit = findSlotLinkedFruit(slot, usedFruits)
         local label = ensureFruitValueLabel(slot)
-        if not label then
+        if not label or label.Name ~= 'GG2_FruitValue' then
             continue
         end
 
         if fruit then
+            usedFruits[fruit] = true
             local value = getToolFruitValue(fruit)
             if value > 0 then
                 label.Text = formatInvCurrency(value)
                 label.TextColor3 = Color3.fromRGB(0, 255, 0)
                 label.Visible = true
+
+                -- Hide the game's top-left $ so only the star-side value shows.
+                for _, desc in slot:GetDescendants() do
+                    if desc:IsA('TextLabel') and desc ~= label then
+                        local text = tostring(desc.Text or '')
+                        if text:find('%$') and desc.Name ~= 'GG2_FruitValue' then
+                            if desc:GetAttribute('GG2_WasVisible') == nil then
+                                desc:SetAttribute('GG2_WasVisible', desc.Visible)
+                            end
+                            desc.Visible = false
+                        end
+                    end
+                end
             else
                 label.Text = ''
-                label.Visible = label.Name ~= 'GG2_FruitValue'
+                label.Visible = false
             end
-        elseif label.Name == 'GG2_FruitValue' then
+        else
             label.Text = ''
             label.Visible = false
+            for _, desc in slot:GetDescendants() do
+                if desc:IsA('TextLabel') and desc:GetAttribute('GG2_WasVisible') ~= nil then
+                    desc.Visible = desc:GetAttribute('GG2_WasVisible') == true
+                    desc:SetAttribute('GG2_WasVisible', nil)
+                end
+            end
         end
     end
 
