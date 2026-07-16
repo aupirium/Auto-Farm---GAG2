@@ -4500,28 +4500,75 @@ function getFruitBaseWeightGrams(corePartName)
         return nil
     end
 
-    if not FruitGrowDataByCore then
+    if not FruitGrowDataByCore or next(FruitGrowDataByCore) == nil then
         FruitGrowDataByCore = {}
+
+        local function indexEntry(key, entry)
+            if typeof(entry) ~= 'table' then
+                return
+            end
+
+            local name = (type(key) == 'string' and key)
+                or entry.Name
+                or entry.FruitName
+                or entry.CorePartName
+                or entry.PlantName
+            local base = (entry.GrowData and entry.GrowData.BaseWeight)
+                or entry.BaseWeight
+                or entry.Weight
+            if type(name) == 'string' and name ~= '' and tonumber(base) then
+                FruitGrowDataByCore[name] = tonumber(base)
+            end
+        end
+
         pcall(function()
             local fruitsModule = require(ReplicatedStorage.PlantGenerationModules.Fruits)
-            for name, entry in fruitsModule do
-                if typeof(entry) == 'table' then
-                    local base = entry.GrowData and entry.GrowData.BaseWeight
-                    if base then
-                        FruitGrowDataByCore[name] = base
+            if typeof(fruitsModule) == 'table' then
+                for key, entry in fruitsModule do
+                    indexEntry(key, entry)
+                end
+                if typeof(fruitsModule.Data) == 'table' then
+                    for key, entry in fruitsModule.Data do
+                        indexEntry(key, entry)
                     end
+                end
+            end
+        end)
+
+        pcall(function()
+            local plantsModule = require(ReplicatedStorage.PlantGenerationModules.Plants)
+            if typeof(plantsModule) == 'table' then
+                for key, entry in plantsModule do
+                    indexEntry(key, entry)
                 end
             end
         end)
     end
 
-    return FruitGrowDataByCore[corePartName]
+    local direct = FruitGrowDataByCore[corePartName]
+    if direct then
+        return direct
+    end
+
+    -- Loose match (seed name vs display name).
+    local lower = string.lower(corePartName)
+    for name, base in FruitGrowDataByCore do
+        if string.lower(name) == lower then
+            return base
+        end
+    end
+
+    return nil
 end
 
 function estimateFruitWeightKg(corePartName, sizeMulti)
-    local base = getFruitBaseWeightGrams(corePartName)
     sizeMulti = tonumber(sizeMulti)
-    if not base or not sizeMulti then
+    if not sizeMulti then
+        return nil
+    end
+
+    local base = getFruitBaseWeightGrams(corePartName)
+    if not base then
         return nil
     end
 
@@ -4742,13 +4789,14 @@ function shouldHarvestFruit(weightKg, maxKg)
         return false
     end
 
-    -- Unknown weight: do NOT harvest. Harvesting blindly would pick up
-    -- fruits above Max Harvest KG (the ones you're trying to keep).
-    if not weightKg then
-        return false
+    -- Known weight: respect Max Harvest KG (keep heavier fruits).
+    if weightKg then
+        return weightKg <= maxKg
     end
 
-    return weightKg <= maxKg
+    -- Unknown weight (no model / no SizeMulti yet): still harvest so the
+    -- farm doesn't stall. Snapshot/estimate usually fills this in.
+    return true
 end
 
 function abbreviateNumber(n)
@@ -5145,6 +5193,12 @@ function harvestFruits(maxKg)
                     if ripe then
                         local fruitModel = plantsFolder and findFruitModel(plantsFolder, plantId, fruitId) or nil
                         local weight = getFruitWeightKg(fruitModel, fruit, plantId, fruitId)
+                        if not weight then
+                            weight = estimateFruitWeightKg(
+                                plant.PlantName or plant.SeedName,
+                                fruit.SizeMultiplier or fruit.SizeMulti
+                            )
+                        end
                         if shouldHarvestFruit(weight, maxKg) then
                             collectFruit(plantId, fruitId)
                         end
@@ -5159,6 +5213,12 @@ function harvestFruits(maxKg)
                 if ripe then
                     local plantModel = plantsFolder and findFruitModel(plantsFolder, plantId, '') or nil
                     local weight = getFruitWeightKg(plantModel, plant, plantId, '')
+                    if not weight then
+                        weight = estimateFruitWeightKg(
+                            plant.PlantName or plant.SeedName,
+                            plant.SizeMultiplier or plant.SizeMulti
+                        )
+                    end
                     if shouldHarvestFruit(weight, maxKg) then
                         collectFruit(plantId, '')
                     end
