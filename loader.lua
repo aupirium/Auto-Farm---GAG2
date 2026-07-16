@@ -10,11 +10,6 @@ if identifyexecutor then
     end
 end
 
--- Same JobId = already running on this server. Don't tear down + reload.
-if GENV.GG2_AutoFarmRunning and GENV.GG2_AutoFarmJobId == game.JobId then
-    return
-end
-
 if GENV.GG2_AutoFarmShutdown then
     pcall(GENV.GG2_AutoFarmShutdown)
     task.wait(0.05)
@@ -23,10 +18,9 @@ end
 if not queuedAutoExec then
     GENV.GG2_SkipRemoteUpdate = nil
     GENV.GG2_FromAutoExec = nil
+else
+    GENV.GG2_AutoFarmRunning = nil
 end
-
-GENV.GG2_AutoFarmRunning = nil
-GENV.GG2_AutoFarmJobId = nil
 
 local REPO = 'aupirium/Auto-Farm---GAG2'
 local SCRIPT_FILE = 'gag2.lua'
