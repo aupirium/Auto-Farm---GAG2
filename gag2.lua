@@ -7027,20 +7027,26 @@ function pickEventWeather(phase, rng)
             and not weatherData.AdminOnly
             and isMoonNaturallySpawnable(weatherName)
         then
+            -- Match game weight; treat missing Chance as 0 (same as nil math in
+            -- some builds) but fall back to equal weights if nothing is weighted.
             totalChance = totalChance + (tonumber(weatherData.Chance) or 0)
         end
     end
 
     if totalChance <= 0 then
+        local equal = {}
         for weatherName, weatherData in phase.Weathers do
             if typeof(weatherData) == 'table'
                 and not weatherData.AdminOnly
                 and isMoonNaturallySpawnable(weatherName)
             then
-                return weatherName
+                table.insert(equal, weatherName)
             end
         end
-        return nil
+        if #equal == 0 then
+            return nil
+        end
+        return equal[math.clamp(math.floor(rng:NextNumber() * #equal) + 1, 1, #equal)]
     end
 
     local roll = rng:NextNumber() * totalChance
@@ -7109,14 +7115,12 @@ end
 
 function predictMoonCountdowns()
     local results = {}
+    local moonKeys = {}
     for _, moon in ipairs(EVENT_PREDICTOR_MOONS) do
-        results[moon.key] = nil
+        moonKeys[moon.key] = true
     end
 
     local activeWeather = workspace:GetAttribute('ActiveWeather')
-    if typeof(activeWeather) == 'string' and results[activeWeather] == nil then
-        -- keep nil map for tracked moons only
-    end
     for _, moon in ipairs(EVENT_PREDICTOR_MOONS) do
         if activeWeather == moon.key then
             results[moon.key] = 0
@@ -7139,8 +7143,10 @@ function predictMoonCountdowns()
         end
     end
 
+    -- Must only count the 4 tracked moons. Counting Day/Sunset/normal Moon
+    -- as "found" stopped the scan early and left Blood/Rainbow/Mega as "...".
     local safety = 0
-    while found < needed and safety < 800 do
+    while found < needed and safety < 5000 do
         safety = safety + 1
         if phaseIndex > #state.phases then
             phaseIndex = 1
@@ -7149,7 +7155,7 @@ function predictMoonCountdowns()
 
         local phase = state.phases[phaseIndex]
         local weather = getWeatherForEventPhase(cycleIndex, phaseIndex, phase)
-        if weather and results[weather] == nil then
+        if weather and moonKeys[weather] and results[weather] == nil then
             results[weather] = timeUntil
             found = found + 1
         end
