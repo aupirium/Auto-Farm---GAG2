@@ -999,9 +999,9 @@ end
 
 --[[
     Matched to the high-FPS reference clip (~160-195 FPS): empty dirt beds,
-    night sky, other gardens gone, FPS unlocked past 60. Harvest still works
-    because collectFruit fires remotes from GardenSync plantId/fruitId - it
-    never needs the 3D plant models to exist locally.
+    night sky, other gardens gone, FPS unlocked past 60. Plant models are
+    kept (stripped visually) so auto-harvest can still read ripe/weight
+    attributes and fire CollectFruit remotes.
 ]]
 local OPTIMIZER_DESTROY_CLASSES = {
     ParticleEmitter = true,
@@ -1185,10 +1185,81 @@ function deleteOtherPlayersGardens()
 end
 
 --[[
-    Reference clip shows completely empty dirt beds - not transparent plants.
-    Destroy every child under your Plants folder. New growth is destroyed the
-    instant it streams in. Auto-harvest keeps working via GardenSync remotes.
+    Reference clip shows empty dirt beds. We used to :Destroy() plant models,
+    but that kills auto-harvest: ripe/weight live on model attributes, and
+    shouldHarvestFruit rejects nil weight. Instead keep the Model shells
+    (attributes + hierarchy) and strip every visual descendant so nothing
+    renders - harvest remotes still see PlantId/FruitId/IsRipe/Weight.
 ]]
+function stripPlantVisualInstance(inst)
+    if not inst or not inst.Parent then
+        return
+    end
+
+    if State.OptimizerPartCache[inst] then
+        return
+    end
+
+    local className = inst.ClassName
+    if OPTIMIZER_DESTROY_CLASSES[className] or className == 'SpecialMesh' then
+        State.OptimizerPartCache[inst] = true
+        pcall(function()
+            inst:Destroy()
+        end)
+        return
+    end
+
+    if inst:IsA('BasePart') then
+        local cache = {
+            Transparency = inst.Transparency,
+            LocalTransparencyModifier = inst.LocalTransparencyModifier,
+            CanCollide = inst.CanCollide,
+            CastShadow = inst.CastShadow,
+            Material = inst.Material,
+        }
+
+        inst.Transparency = 1
+        inst.LocalTransparencyModifier = 1
+        inst.CanCollide = false
+        inst.CastShadow = false
+        inst.Material = Enum.Material.SmoothPlastic
+
+        if inst:IsA('MeshPart') then
+            local meshOk, meshId = pcall(function()
+                return inst.MeshId
+            end)
+            if meshOk then
+                cache.MeshId = meshId
+                pcall(function()
+                    inst.MeshId = ''
+                end)
+            end
+        end
+
+        State.OptimizerPartCache[inst] = cache
+        watchOptimizerEnforcement(inst, 'Transparency', 1)
+        watchOptimizerEnforcement(inst, 'CanCollide', false)
+        return
+    end
+
+    if className == 'ProximityPrompt' then
+        State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
+        inst.Enabled = false
+        watchOptimizerEnforcement(inst, 'Enabled', false)
+    end
+end
+
+function stripPlantVisuals(root)
+    if not root or not root.Parent then
+        return
+    end
+
+    stripPlantVisualInstance(root)
+    for _, desc in root:GetDescendants() do
+        stripPlantVisualInstance(desc)
+    end
+end
+
 function clearOwnPlantModels()
     local ownPlot = getPlot()
     local plantsFolder = ownPlot and ownPlot:FindFirstChild('Plants')
@@ -1197,9 +1268,7 @@ function clearOwnPlantModels()
     end
 
     for _, child in plantsFolder:GetChildren() do
-        pcall(function()
-            child:Destroy()
-        end)
+        stripPlantVisuals(child)
     end
 end
 
@@ -1269,21 +1338,10 @@ function optimizerHideInstance(inst)
         return
     end
 
-    -- Own plants/fruits: delete the model tree (empty dirt beds like the clip).
+    -- Own plants/fruits: strip this instance only (DescendantAdded already
+    -- fires per child). Keep Model shells for harvest attributes.
     if isPlantInstance(inst) then
-        local model = inst
-        while model and model.Parent and model.Parent.Name ~= 'Plants' do
-            model = model.Parent
-        end
-        if model and model.Parent and model.Parent.Name == 'Plants' then
-            pcall(function()
-                model:Destroy()
-            end)
-        else
-            pcall(function()
-                inst:Destroy()
-            end)
-        end
+        stripPlantVisualInstance(inst)
         return
     end
 
@@ -1545,7 +1603,7 @@ function restoreOptimizer()
     State.OptimizerEnforceConnections = {}
 
     for inst, props in State.OptimizerPartCache do
-        if inst and inst.Parent then
+        if inst and inst.Parent and typeof(props) == 'table' then
             for prop, val in props do
                 pcall(function()
                     inst[prop] = val
@@ -5904,7 +5962,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Matches the high-FPS optimizers (~160+): unlocks FPS past 60, night sky, lowest graphics, deletes other players\' gardens + characters/NPCs, and deletes YOUR plant models too (empty dirt beds - harvest still works via remotes). New growth is deleted instantly. Other gardens only come back after rejoin.',
+    Tooltip = 'Matches the high-FPS optimizers (~160+): unlocks FPS past 60, night sky, lowest graphics, deletes other players\' gardens + characters/NPCs, and strips YOUR plant visuals (empty dirt beds) while keeping plant models so auto-harvest still works. Other gardens only come back after rejoin.',
     Callback = function(value)
         if State.ConfigLoading then
             return
