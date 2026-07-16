@@ -863,7 +863,6 @@ local State = {
     MailAutoClaimStop = false,
     MailAutoClaimThread = nil,
     MailTotals = { Claimed = 0, Failed = 0 },
-    LastHarvestMemorySync = 0,
     OptimizerEnabled = false,
     OptimizerOriginal = nil,
     OptimizerApplyToken = 0,
@@ -1428,7 +1427,6 @@ function hideFruitModel(fruitModel)
         return
     end
 
-    -- Never Destroy fruit meshes - the game respawns them and tanks FPS.
     local function scrub(desc)
         if not desc or not desc.Parent then
             return
@@ -1438,25 +1436,40 @@ function hideFruitModel(fruitModel)
             return
         end
 
-        if desc:IsA('ParticleEmitter') or desc:IsA('Beam') or desc:IsA('Trail')
-            or desc:IsA('Fire') or desc:IsA('Smoke') or desc:IsA('Sparkles') then
+        if OPTIMIZER_DESTROY_CLASSES[desc.ClassName] then
             pcall(function()
-                desc.Enabled = false
+                desc:Destroy()
             end)
             return
         end
 
-        if desc:IsA('PointLight') or desc:IsA('SpotLight') or desc:IsA('SurfaceLight') then
+        if desc:IsA('BillboardGui') then
+            local keepGui = desc.Name == 'HarvestPromptLabel'
+                or desc:FindFirstChildWhichIsA('ProximityPrompt', true) ~= nil
+            if not keepGui then
+                pcall(function()
+                    desc:Destroy()
+                end)
+            end
+            return
+        end
+
+        -- Drop heavy fruit meshes; keep Base/HarvestPart as invisible anchors.
+        if desc.Parent == fruitModel
+            and (desc:IsA('MeshPart') or desc:IsA('Model') or desc:IsA('Folder'))
+            and desc.Name ~= 'Base'
+            and desc.Name ~= 'HarvestPart'
+            and desc.Name ~= 'Anthers' then
+            -- Anthers are many parts - delete for FPS.
             pcall(function()
-                desc.Enabled = false
+                desc:Destroy()
             end)
             return
         end
 
-        if desc:IsA('BillboardGui') and desc.Name ~= 'HarvestPromptLabel'
-            and not desc:FindFirstChildWhichIsA('ProximityPrompt', true) then
+        if desc.Name == 'Anthers' then
             pcall(function()
-                desc.Enabled = false
+                desc:Destroy()
             end)
             return
         end
@@ -1466,10 +1479,19 @@ function hideFruitModel(fruitModel)
         end
     end
 
-    if State.OptimizerPartCache[fruitModel] ~= 'fruitHidden' then
-        State.OptimizerPartCache[fruitModel] = 'fruitHidden'
+    if State.OptimizerPartCache[fruitModel] == 'fruitHidden' then
+        for _, desc in fruitModel:GetDescendants() do
+            scrub(desc)
+        end
+        return
     end
 
+    State.OptimizerPartCache[fruitModel] = 'fruitHidden'
+
+    -- Direct children first so mesh folders get removed quickly.
+    for _, child in fruitModel:GetChildren() do
+        scrub(child)
+    end
     for _, desc in fruitModel:GetDescendants() do
         scrub(desc)
     end
@@ -1486,50 +1508,20 @@ function stripOwnPlantVisuals(model)
 
     pcall(snapshotPlantModel, model)
 
-    -- Hide only. Destroying plant meshes makes PlantVisualizer rebuild them
-    -- every frame (DescendantAdded loop) and drops FPS to single digits.
-    for _, desc in model:GetDescendants() do
-        if desc:IsA('ProximityPrompt') then
-            continue
-        end
-
-        local underFruits = false
-        local walk = desc
-        while walk and walk ~= model do
-            if walk.Name == 'Fruits' then
-                underFruits = true
-                break
+    for _, child in model:GetChildren() do
+        if child.Name == 'Fruits' then
+            for _, fruit in child:GetChildren() do
+                hideFruitModel(fruit)
             end
-            walk = walk.Parent
-        end
-
-        if underFruits then
-            continue
-        end
-
-        if desc:IsA('ParticleEmitter') or desc:IsA('Beam') or desc:IsA('Trail')
-            or desc:IsA('Fire') or desc:IsA('Smoke') or desc:IsA('Sparkles')
-            or desc:IsA('PointLight') or desc:IsA('SpotLight') or desc:IsA('SurfaceLight') then
+        elseif child.Name == 'Base' and child:IsA('BasePart') then
+            -- Keep one invisible anchor so plant position still exists.
+            hideOptimizerPart(child)
+            State.OptimizerPartCache[child] = 'plantBase'
+        else
+            -- Heavy plant meshes / debug / spawn markers.
             pcall(function()
-                desc.Enabled = false
+                child:Destroy()
             end)
-        elseif desc:IsA('BillboardGui') or desc:IsA('SurfaceGui') then
-            pcall(function()
-                desc.Enabled = false
-            end)
-        elseif desc:IsA('Decal') or desc:IsA('Texture') then
-            pcall(function()
-                desc.Transparency = 1
-            end)
-        elseif desc:IsA('BasePart') then
-            hideOptimizerPart(desc)
-        end
-    end
-
-    local fruitsFolder = model:FindFirstChild('Fruits')
-    if fruitsFolder then
-        for _, fruit in fruitsFolder:GetChildren() do
-            hideFruitModel(fruit)
         end
     end
 
@@ -1542,35 +1534,17 @@ function optimizerStripOwnPlant(model)
     end
 
     if State.OptimizerPartCache[model] == 'plantStripped' then
-        -- Cheap pass: only hide newly streamed visuals / fruits.
+        -- Plant already stripped; only clean new visual junk / new fruits.
         for _, child in model:GetChildren() do
             if child.Name == 'Fruits' then
                 for _, fruit in child:GetChildren() do
                     hideFruitModel(fruit)
                 end
-            elseif child:IsA('BasePart') then
+            elseif child.Name == 'Base' and child:IsA('BasePart') then
                 hideOptimizerPart(child)
-            elseif child:IsA('Model') or child:IsA('Folder') or child:IsA('MeshPart') then
-                for _, desc in child:GetDescendants() do
-                    if desc:IsA('BasePart') then
-                        hideOptimizerPart(desc)
-                    elseif desc:IsA('ParticleEmitter') or desc:IsA('Beam') or desc:IsA('Trail')
-                        or desc:IsA('PointLight') or desc:IsA('SpotLight') or desc:IsA('SurfaceLight') then
-                        pcall(function()
-                            desc.Enabled = false
-                        end)
-                    elseif desc:IsA('BillboardGui') or desc:IsA('SurfaceGui') then
-                        pcall(function()
-                            desc.Enabled = false
-                        end)
-                    end
-                end
-                if child:IsA('BasePart') then
-                    hideOptimizerPart(child)
-                end
-            elseif child:IsA('BillboardGui') then
+            elseif not OPTIMIZER_PLANT_KEEP_NAMES[child.Name] then
                 pcall(function()
-                    child.Enabled = false
+                    child:Destroy()
                 end)
             end
         end
@@ -1813,19 +1787,22 @@ function optimizerHideInstance(inst)
         return
     end
 
-    -- Own plants: hide meshes/fruits. Never Destroy (causes visualizer respawn loop).
+    -- Own plants: strip meshes, keep fruits invisible.
     if isPlantInstance(inst) then
         local underFruits, plantModel, fruitsFolder = isUnderOwnFruitsFolder(inst)
         if underFruits and fruitsFolder then
-            if inst:IsA('BasePart') then
-                hideOptimizerPart(inst)
-            elseif inst:IsA('ParticleEmitter') or inst:IsA('Beam') or inst:IsA('Trail')
-                or inst:IsA('PointLight') or inst:IsA('SpotLight') or inst:IsA('SurfaceLight') then
+            local fruit = inst
+            while fruit and fruit.Parent and fruit.Parent ~= fruitsFolder do
+                fruit = fruit.Parent
+            end
+            if fruit and fruit.Parent == fruitsFolder then
+                hideFruitModel(fruit)
+            elseif OPTIMIZER_DESTROY_CLASSES[inst.ClassName] then
                 pcall(function()
-                    inst.Enabled = false
+                    inst:Destroy()
                 end)
-            elseif inst:IsA('Model') and inst.Parent == fruitsFolder then
-                hideFruitModel(inst)
+            elseif inst:IsA('BasePart') then
+                hideOptimizerPart(inst)
             end
             return
         end
@@ -1835,20 +1812,14 @@ function optimizerHideInstance(inst)
             model = model.Parent
         end
         if model and model.Parent and model.Parent.Name == 'Plants' then
-            if State.OptimizerPartCache[model] == 'plantStripped' then
-                -- Cheap path for streamed-in parts after first strip.
-                if inst:IsA('BasePart') then
-                    hideOptimizerPart(inst)
-                elseif inst:IsA('ParticleEmitter') or inst:IsA('Beam') or inst:IsA('Trail')
-                    or inst:IsA('PointLight') or inst:IsA('SpotLight') or inst:IsA('SurfaceLight') then
-                    pcall(function()
-                        inst.Enabled = false
-                    end)
-                elseif inst:IsA('BillboardGui') or inst:IsA('SurfaceGui') then
-                    pcall(function()
-                        inst.Enabled = false
-                    end)
-                end
+            -- New visual junk re-added under an already-stripped plant.
+            if State.OptimizerPartCache[model] == 'plantStripped'
+                and inst ~= model
+                and inst.Parent == model
+                and not OPTIMIZER_PLANT_KEEP_NAMES[inst.Name] then
+                pcall(function()
+                    inst:Destroy()
+                end)
                 return
             end
             optimizerStripOwnPlant(model)
@@ -5301,32 +5272,6 @@ end
       Networking.Garden.CollectFruit:Fire(plantId, fruitId)
     Same call site as HarvestPromptController / FruitMagnetController.
 ]]
-function buildFruitModelIndex(plantsFolder)
-    local index = {}
-    if not plantsFolder then
-        return index
-    end
-
-    for _, plantModel in plantsFolder:GetChildren() do
-        local plantId = plantModel:GetAttribute('PlantId')
-        if not plantId then
-            continue
-        end
-
-        local fruitsFolder = plantModel:FindFirstChild('Fruits')
-        if fruitsFolder then
-            for _, fruitModel in fruitsFolder:GetChildren() do
-                local fruitId = fruitModel:GetAttribute('FruitId') or fruitModel.Name
-                index[tostring(plantId) .. '\0' .. tostring(fruitId)] = fruitModel
-            end
-        else
-            index[tostring(plantId) .. '\0'] = plantModel
-        end
-    end
-
-    return index
-end
-
 function harvestFruits(maxKg)
     local ok, err = pcall(function()
         maxKg = tonumber(maxKg) or 999
@@ -5335,16 +5280,11 @@ function harvestFruits(maxKg)
             return
         end
 
-        -- Sync memory occasionally, not every harvest tick.
-        if os.clock() - (State.LastHarvestMemorySync or 0) > 2 then
-            State.LastHarvestMemorySync = os.clock()
-            pcall(syncPlantMemoryFromGarden)
-        end
+        pcall(syncPlantMemoryFromGarden)
 
         local allowedSet = getSelectedHarvestPlantsSet()
         local optimizerOn = State.OptimizerEnabled == true
         local plantsFolder = getPlotPlantsFolder()
-        local fruitIndex = buildFruitModelIndex(plantsFolder)
 
         for plantId, plant in garden do
             if typeof(plant) ~= 'table' then
@@ -5369,7 +5309,7 @@ function harvestFruits(maxKg)
                     end
 
                     if ripe then
-                        local fruitModel = fruitIndex[tostring(plantId) .. '\0' .. tostring(fruitId)]
+                        local fruitModel = plantsFolder and findFruitModel(plantsFolder, plantId, fruitId) or nil
                         local weight = getFruitWeightKg(fruitModel, fruit, plantId, fruitId)
                         if shouldHarvestFruit(weight, maxKg) then
                             collectFruit(plantId, fruitId)
@@ -5383,7 +5323,7 @@ function harvestFruits(maxKg)
                 end
 
                 if ripe then
-                    local plantModel = fruitIndex[tostring(plantId) .. '\0']
+                    local plantModel = plantsFolder and findFruitModel(plantsFolder, plantId, '') or nil
                     local weight = getFruitWeightKg(plantModel, plant, plantId, '')
                     if shouldHarvestFruit(weight, maxKg) then
                         collectFruit(plantId, '')
@@ -5512,8 +5452,7 @@ function setAutoHarvestLoop(enabled)
                 pcall(harvestFruits, maxKg)
             end
 
-            -- task.wait(0) with full garden scans was nuking FPS (~3).
-            task.wait(0.15)
+            task.wait(0)
         end
         State.HarvestThread = nil
     end)
