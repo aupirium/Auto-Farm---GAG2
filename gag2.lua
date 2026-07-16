@@ -1190,9 +1190,41 @@ end
 --[[
     Snapshot plant/fruit data BEFORE the optimizer deletes models.
     Auto gear, fruits tab, and harvest need plantId/fruitId/position/weight
-    after the 3D models are gone - GardenSync has ids/age, but not world
-    positions or calculated weights, so we remember those here.
+    after the 3D models are gone.
 ]]
+function resolveGardenPlant(garden, plantId)
+    if typeof(garden) ~= 'table' or plantId == nil then
+        return nil
+    end
+
+    local plant = garden[plantId]
+    if plant then
+        return plant
+    end
+
+    local asString = tostring(plantId)
+    plant = garden[asString]
+    if plant then
+        return plant
+    end
+
+    local asNumber = tonumber(plantId)
+    if asNumber ~= nil then
+        plant = garden[asNumber]
+        if plant then
+            return plant
+        end
+    end
+
+    for id, entry in garden do
+        if tostring(id) == asString then
+            return entry
+        end
+    end
+
+    return nil
+end
+
 function getModelWorldPosition(model)
     if not model then
         return nil
@@ -1226,8 +1258,11 @@ function rememberFruitEntry(plantId, fruitId, fruitModel, plantData, fruitData)
         }
         State.PlantMemory[plantId] = plantMem
     end
+    if typeof(plantMem.fruits) ~= 'table' then
+        plantMem.fruits = {}
+    end
 
-    if plantData then
+    if typeof(plantData) == 'table' then
         plantMem.plantName = plantData.PlantName or plantMem.plantName
         plantMem.seedName = plantData.SeedName or plantMem.seedName
         plantMem.mutation = plantData.Mutation or plantData.Variant or plantMem.mutation
@@ -1236,7 +1271,7 @@ function rememberFruitEntry(plantId, fruitId, fruitModel, plantData, fruitData)
     local pos = getModelWorldPosition(fruitModel)
     local weight = nil
     if fruitModel then
-        weight = getFruitWeightKg(fruitModel, fruitData or plantData)
+        weight = getFruitWeightKg(fruitModel, fruitData or plantData, plantId, fruitId)
         if fruitModel:GetAttribute('PlantId') then
             plantMem.plantId = tostring(fruitModel:GetAttribute('PlantId'))
         end
@@ -1250,16 +1285,16 @@ function rememberFruitEntry(plantId, fruitId, fruitModel, plantData, fruitData)
             position = pos or prev.position,
             weight = weight or prev.weight,
             mutation = (fruitModel and fruitModel:GetAttribute('Mutation'))
-                or (fruitData and fruitData.Mutation)
+                or (typeof(fruitData) == 'table' and fruitData.Mutation)
                 or prev.mutation,
             sizeMulti = (fruitModel and fruitModel:GetAttribute('SizeMulti'))
-                or (fruitData and fruitData.SizeMultiplier)
+                or (typeof(fruitData) == 'table' and fruitData.SizeMultiplier)
                 or prev.sizeMulti,
             age = (fruitModel and fruitModel:GetAttribute('Age'))
-                or (fruitData and fruitData.Age)
+                or (typeof(fruitData) == 'table' and fruitData.Age)
                 or prev.age,
             maxAge = (fruitModel and fruitModel:GetAttribute('MaxAge'))
-                or (fruitData and fruitData.MaxAge)
+                or (typeof(fruitData) == 'table' and fruitData.MaxAge)
                 or prev.maxAge,
             corePartName = (fruitModel and fruitModel:GetAttribute('CorePartName')) or prev.corePartName,
         }
@@ -1267,10 +1302,10 @@ function rememberFruitEntry(plantId, fruitId, fruitModel, plantData, fruitData)
         plantMem.position = pos or plantMem.position
         plantMem.weight = weight or plantMem.weight
         plantMem.age = (fruitModel and fruitModel:GetAttribute('Age'))
-            or (plantData and plantData.Age)
+            or (typeof(plantData) == 'table' and plantData.Age)
             or plantMem.age
         plantMem.maxAge = (fruitModel and fruitModel:GetAttribute('MaxAge'))
-            or (plantData and plantData.MaxAge)
+            or (typeof(plantData) == 'table' and plantData.MaxAge)
             or plantMem.maxAge
         if fruitModel then
             plantMem.mutation = fruitModel:GetAttribute('Mutation') or plantMem.mutation
@@ -1279,28 +1314,31 @@ function rememberFruitEntry(plantId, fruitId, fruitModel, plantData, fruitData)
         end
     end
 
-    if pos and not plantMem.position then
-        plantMem.position = pos
+    if pos then
+        plantMem.position = plantMem.position or pos
     end
 end
 
 function snapshotPlantModel(plantModel)
     if not plantModel or not plantModel.Parent then
-        return
+        return false
     end
 
     local garden = GardenSync:GetGarden(LocalPlayer.UserId) or {}
     local plantId = plantModel:GetAttribute('PlantId')
     if not plantId then
-        return
+        return false
     end
 
     plantId = tostring(plantId)
-    local plantData = garden[plantId]
+    local plantData = resolveGardenPlant(garden, plantId)
     local plantMem = State.PlantMemory[plantId] or {
         plantId = plantId,
         fruits = {},
     }
+    if typeof(plantMem.fruits) ~= 'table' then
+        plantMem.fruits = {}
+    end
 
     plantMem.plantName = (plantData and plantData.PlantName)
         or plantModel:GetAttribute('SeedName')
@@ -1322,15 +1360,81 @@ function snapshotPlantModel(plantModel)
     if fruitsFolder then
         for _, fruitModel in fruitsFolder:GetChildren() do
             local fruitId = fruitModel:GetAttribute('FruitId') or fruitModel.Name
-            local fruitData = plantData and plantData.Fruits and plantData.Fruits[fruitId]
+            local fruitData = plantData and plantData.Fruits and (
+                plantData.Fruits[fruitId] or plantData.Fruits[tostring(fruitId)]
+            )
             rememberFruitEntry(plantId, fruitId, fruitModel, plantData, fruitData)
         end
     else
         rememberFruitEntry(plantId, '', plantModel, plantData, plantData)
-        plantMem.weight = getFruitWeightKg(plantModel, plantData) or plantMem.weight
+        plantMem.weight = getFruitWeightKg(plantModel, plantData, plantId, '') or plantMem.weight
     end
 
     State.PlantMemory[plantId] = plantMem
+    return true
+end
+
+--[[
+    Don't wipe a plant until PlantId exists and we've snapshotted it.
+    Early DescendantAdded events used to destroy models before PlantId
+    replicated, which emptied PlantMemory and broke gear/fruits/harvest.
+]]
+function optimizerDestroyOwnPlant(model)
+    if not model or not model.Parent or model.Parent.Name ~= 'Plants' then
+        return
+    end
+
+    if State.OptimizerPartCache[model] then
+        return
+    end
+
+    local function finish()
+        if not model or not model.Parent or not State.OptimizerEnabled then
+            return
+        end
+        if State.OptimizerPartCache[model] then
+            return
+        end
+
+        State.OptimizerPartCache[model] = true
+        pcall(snapshotPlantModel, model)
+        pcall(function()
+            model:Destroy()
+        end)
+    end
+
+    if model:GetAttribute('PlantId') then
+        finish()
+        return
+    end
+
+    if model:GetAttribute('GG2WaitingPlantId') then
+        return
+    end
+
+    pcall(function()
+        model:SetAttribute('GG2WaitingPlantId', true)
+    end)
+
+    local conn
+    conn = model:GetAttributeChangedSignal('PlantId'):Connect(function()
+        if model:GetAttribute('PlantId') then
+            if conn then
+                conn:Disconnect()
+            end
+            finish()
+        end
+    end)
+    State.OptimizerEnforceConnections[#State.OptimizerEnforceConnections + 1] = conn
+
+    task.delay(3, function()
+        if conn then
+            pcall(function()
+                conn:Disconnect()
+            end)
+        end
+        finish()
+    end)
 end
 
 function snapshotOwnPlants()
@@ -1341,8 +1445,9 @@ function snapshotOwnPlants()
 
     local count = 0
     for _, child in plantsFolder:GetChildren() do
-        snapshotPlantModel(child)
-        count += 1
+        if snapshotPlantModel(child) then
+            count += 1
+        end
     end
     return count
 end
@@ -1404,16 +1509,19 @@ function getCachedPositionsForPlantType(plantName)
         return positions
     end
 
-    syncPlantMemoryFromGarden()
+    pcall(syncPlantMemoryFromGarden)
 
     for _, mem in State.PlantMemory do
-        if mem.plantName == plantName or mem.seedName == plantName or mem.corePartName == plantName then
+        if typeof(mem) == 'table'
+            and (mem.plantName == plantName or mem.seedName == plantName or mem.corePartName == plantName) then
             if mem.position then
                 table.insert(positions, mem.position)
             end
-            for _, fruit in mem.fruits or {} do
-                if fruit.position then
-                    table.insert(positions, fruit.position)
+            if typeof(mem.fruits) == 'table' then
+                for _, fruit in mem.fruits do
+                    if typeof(fruit) == 'table' and fruit.position then
+                        table.insert(positions, fruit.position)
+                    end
                 end
             end
         end
@@ -1450,9 +1558,7 @@ function clearOwnPlantModels()
     end
 
     for _, child in plantsFolder:GetChildren() do
-        pcall(function()
-            child:Destroy()
-        end)
+        optimizerDestroyOwnPlant(child)
     end
 end
 
@@ -1522,24 +1628,14 @@ function optimizerHideInstance(inst)
         return
     end
 
-    -- Own plants/fruits: remember then delete for empty dirt beds / max FPS.
+    -- Own plants/fruits: wait for PlantId, snapshot, then delete.
     if isPlantInstance(inst) then
         local model = inst
         while model and model.Parent and model.Parent.Name ~= 'Plants' do
             model = model.Parent
         end
         if model and model.Parent and model.Parent.Name == 'Plants' then
-            if not State.OptimizerPartCache[model] then
-                State.OptimizerPartCache[model] = true
-                snapshotPlantModel(model)
-                pcall(function()
-                    model:Destroy()
-                end)
-            end
-        else
-            pcall(function()
-                inst:Destroy()
-            end)
+            optimizerDestroyOwnPlant(model)
         end
         return
     end
@@ -2447,22 +2543,31 @@ end
 
 function getGearTargetPosition()
     local plantName = getSelectedTargetPlant()
-    if not plantName then
-        return nil
-    end
 
     -- Prefer live models when they still exist (optimizer off).
     local positions = {}
-    for _, model in getPlantModelsByType(plantName) do
-        local pos = getModelWorldPosition(model)
-        if pos then
-            table.insert(positions, pos)
+    if plantName then
+        for _, model in getPlantModelsByType(plantName) do
+            local pos = getModelWorldPosition(model)
+            if pos then
+                table.insert(positions, pos)
+            end
+        end
+
+        -- After optimizer wipe, use remembered positions for that plant type.
+        if #positions == 0 then
+            positions = getCachedPositionsForPlantType(plantName)
         end
     end
 
-    -- After optimizer wipe, use remembered positions.
+    -- Any snapshotted plant positions (name mismatch / no target selected).
     if #positions == 0 then
-        positions = getCachedPositionsForPlantType(plantName)
+        pcall(syncPlantMemoryFromGarden)
+        for _, mem in State.PlantMemory do
+            if typeof(mem) == 'table' and mem.position then
+                table.insert(positions, mem.position)
+            end
+        end
     end
 
     local center = getClusterCenter(positions)
@@ -2473,7 +2578,12 @@ function getGearTargetPosition()
     -- Last resort: plot center so watering/sprinkler still has somewhere to go.
     local plot = getPlot()
     if plot then
-        return plot:GetPivot().Position
+        local ok, pivot = pcall(function()
+            return plot:GetPivot().Position
+        end)
+        if ok and pivot then
+            return pivot
+        end
     end
 
     return nil
@@ -2762,7 +2872,7 @@ function isPlantTypeHarvestAllowed(allowedSet, garden, plantId)
         return false
     end
 
-    local plant = garden and (garden[plantId] or garden[tostring(plantId)])
+    local plant = resolveGardenPlant(garden, plantId)
     if typeof(plant) ~= 'table' then
         local mem = State.PlantMemory[tostring(plantId or '')]
         if mem then
@@ -2770,6 +2880,9 @@ function isPlantTypeHarvestAllowed(allowedSet, garden, plantId)
                 return true
             end
             if mem.seedName and allowedSet[mem.seedName] then
+                return true
+            end
+            if mem.corePartName and allowedSet[mem.corePartName] then
                 return true
             end
         end
@@ -2784,6 +2897,20 @@ function isPlantTypeHarvestAllowed(allowedSet, garden, plantId)
     if type(seedName) == 'string' and allowedSet[seedName] == true then
         return true
     end
+
+    local mem = State.PlantMemory[tostring(plantId or '')]
+    if mem then
+        if mem.plantName and allowedSet[mem.plantName] then
+            return true
+        end
+        if mem.seedName and allowedSet[mem.seedName] then
+            return true
+        end
+        if mem.corePartName and allowedSet[mem.corePartName] then
+            return true
+        end
+    end
+
     return false
 end
 
@@ -4400,13 +4527,17 @@ function waitAndFavoriteNewFruit(beforeIds)
 end
 
 function getGardenFruitData(garden, plantId, fruitId)
-    local plant = garden[plantId]
+    local plant = resolveGardenPlant(garden, plantId)
     if not plant then
         return nil
     end
 
     if fruitId and fruitId ~= '' then
-        return plant.Fruits and plant.Fruits[fruitId]
+        local fruits = plant.Fruits
+        if typeof(fruits) ~= 'table' then
+            return nil
+        end
+        return fruits[fruitId] or fruits[tostring(fruitId)]
     end
 
     return plant
@@ -4531,7 +4662,7 @@ function scanGardenFruits()
     local plantsFolder = getPlotPlantsFolder()
     local maxKg = getMaxHarvestKg()
 
-    syncPlantMemoryFromGarden()
+    pcall(syncPlantMemoryFromGarden)
 
     local function addFruit(plantId, fruitId, fruitModel, plantData)
         if not plantId then
@@ -4543,9 +4674,14 @@ function scanGardenFruits()
             return
         end
 
+        plantData = plantData or resolveGardenPlant(garden, plantId)
         local fruitData = fruitId and fruitId ~= '' and getGardenFruitData(garden, plantId, fruitId) or plantData
+        local plantMem = State.PlantMemory[tostring(plantId)]
         local mem = getCachedFruitMemory(plantId, fruitId)
-        local ripe = isFruitRipe(fruitData, fruitModel) or isSyncFruitRipe(fruitData) or isSyncFruitRipe(mem)
+        local ripe = isFruitRipe(fruitData, fruitModel)
+            or isSyncFruitRipe(fruitData)
+            or isSyncFruitRipe(mem)
+            or isSyncFruitRipe(plantMem)
         if not ripe then
             return
         end
@@ -4553,29 +4689,36 @@ function scanGardenFruits()
         seen[key] = true
         local plantName = (fruitModel and fruitModel:GetAttribute('CorePartName'))
             or (mem and mem.corePartName)
+            or (plantMem and (plantMem.corePartName or plantMem.plantName or plantMem.seedName))
             or (plantData and plantData.PlantName)
-            or (State.PlantMemory[tostring(plantId)] and State.PlantMemory[tostring(plantId)].plantName)
             or 'Plant'
         local mutation = getFruitMutation(fruitModel, fruitData, plantData)
         if (not mutation or mutation == 'None') and mem and mem.mutation then
             mutation = mem.mutation
         end
-
-        local weightKg = getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
-        if weightKg and weightKg < maxKg then
-            return
+        if (not mutation or mutation == 'None') and plantMem and plantMem.mutation then
+            mutation = plantMem.mutation
         end
 
-        -- Fruits tab keeps heavy fruits (>= maxKg). If weight unknown after
-        -- optimizer wipe, still list ripe entries using remembered weight only.
-        if not weightKg then
+        local weightKg = getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
+        if not weightKg and mem and mem.weight then
+            weightKg = mem.weight
+        end
+        if not weightKg and plantMem and plantMem.weight and (not fruitId or fruitId == '') then
+            weightKg = plantMem.weight
+        end
+
+        -- Fruits tab keeps heavy fruits (>= maxKg). Skip unknown-weight
+        -- entries so we don't list everything when memory is empty.
+        if not weightKg or weightKg < maxKg then
             return
         end
 
         local value = getFruitSellValue(fruitModel, fruitData, plantData)
-        if (not value or value == 0) and mem then
-            local core = mem.corePartName or plantName
-            local sizeMulti = mem.sizeMulti or 1
+        if (not value or value == 0) and (mem or plantMem) then
+            local src = mem or plantMem
+            local core = src.corePartName or plantName
+            local sizeMulti = src.sizeMulti or 1
             local base = SellValueData[core] or 100
             local mult = mutation ~= 'None' and MutationData.ReturnPriceMultiplier(mutation) or 1
             value = math.floor(base * (sizeMulti ^ 3) * mult)
@@ -4600,13 +4743,13 @@ function scanGardenFruits()
                     local plantId = fruitModel:GetAttribute('PlantId') or plantModel:GetAttribute('PlantId')
                     local fruitId = fruitModel:GetAttribute('FruitId') or fruitModel.Name
                     if plantId then
-                        addFruit(plantId, fruitId, fruitModel, garden[plantId])
+                        addFruit(plantId, fruitId, fruitModel, resolveGardenPlant(garden, plantId))
                     end
                 end
             else
                 local plantId = plantModel:GetAttribute('PlantId')
                 if plantId then
-                    addFruit(plantId, '', plantModel, garden[plantId])
+                    addFruit(plantId, '', plantModel, resolveGardenPlant(garden, plantId))
                 end
             end
         end
@@ -4614,8 +4757,12 @@ function scanGardenFruits()
 
     -- GardenSync + PlantMemory path (works after optimizer deletes models).
     for plantId, plantData in garden do
-        if plantData.Fruits then
-            for fruitId, fruitData in plantData.Fruits do
+        if typeof(plantData) ~= 'table' then
+            continue
+        end
+
+        if typeof(plantData.Fruits) == 'table' and next(plantData.Fruits) ~= nil then
+            for fruitId, _ in plantData.Fruits do
                 local key = tostring(plantId) .. '_' .. tostring(fruitId)
                 if not seen[key] then
                     local fruitModel = plantsFolder and findFruitModel(plantsFolder, plantId, fruitId) or nil
@@ -4627,6 +4774,27 @@ function scanGardenFruits()
             if not seen[key] then
                 local plantModel = plantsFolder and findFruitModel(plantsFolder, plantId, '') or nil
                 addFruit(plantId, '', plantModel, plantData)
+            end
+        end
+    end
+
+    -- Pure memory fallback if GardenSync is empty/stale but we snapshotted.
+    for plantId, plantMem in State.PlantMemory do
+        if typeof(plantMem) ~= 'table' then
+            continue
+        end
+
+        if typeof(plantMem.fruits) == 'table' and next(plantMem.fruits) ~= nil then
+            for fruitId, _ in plantMem.fruits do
+                local key = tostring(plantId) .. '_' .. tostring(fruitId)
+                if not seen[key] then
+                    addFruit(plantId, fruitId, nil, resolveGardenPlant(garden, plantId))
+                end
+            end
+        else
+            local key = tostring(plantId) .. '_'
+            if not seen[key] then
+                addFruit(plantId, '', nil, resolveGardenPlant(garden, plantId))
             end
         end
     end
@@ -4711,7 +4879,7 @@ function claimSelectedGardenFruits()
             local fruit = State.FruitLabelMap[label]
             if fruit then
                 local beforeIds = getFruitToolIdSet()
-                Networking.Garden.CollectFruit:Fire(fruit.plantId, fruit.fruitId or '')
+                Networking.Garden.CollectFruit:Fire(tostring(fruit.plantId), tostring(fruit.fruitId or ''))
                 waitAndFavoriteNewFruit(beforeIds)
                 claimed += 1
                 task.wait(0.1)
