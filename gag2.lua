@@ -837,6 +837,8 @@ local State = {
     WeatherReconnectPending = false,
     WeatherKickPending = false,
     WeatherReconnectAttempts = 0,
+    WeatherRejoinStarted = false,
+    WeatherWaitWorkerRunning = false,
     LastWeatherReconnectAttempt = 0,
     LastKickReconnectAttempt = 0,
     LastWeatherLeaveAttempt = 0,
@@ -5367,6 +5369,12 @@ function clearWeatherState(options)
 
     State.WeatherHiding = false
     State.HidingFromWeather = nil
+    State.WeatherRejoinStarted = false
+    State.WeatherWaitWorkerRunning = false
+    State.WeatherKickPending = false
+    State.WeatherLeavePending = false
+    State.WeatherReconnectPending = false
+    State.WeatherReconnectAttempts = 0
 
     if not options.keepWalkBack then
         State.ReturnJobId = nil
@@ -5635,6 +5643,8 @@ function stopAutoExecute()
 end
 
 function teleportToHomeServer(placeId, jobId)
+    placeId = tonumber(placeId)
+    jobId = jobId and tostring(jobId) or nil
     if not placeId then
         return false
     end
@@ -5647,50 +5657,39 @@ function teleportToHomeServer(placeId, jobId)
         return teleportToAnyGameServer(placeId)
     end
 
-    for attempt = 1, 25 do
-        State.WeatherReconnectPending = true
-        queueTeleportScript()
+    -- One home teleport + one any-server fallback. No 25x spam.
+    State.WeatherReconnectPending = true
+    queueTeleportScript()
+    task.wait(0.5)
 
-        if attempt == 1 then
-            task.wait(3)
+    local failed = false
+    local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
+        if player == LocalPlayer then
+            failed = true
         end
+    end)
 
-        local failed = false
-        local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
-            if player == LocalPlayer then
-                failed = true
-            end
+    pcall(function()
+        TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
+    end)
+
+    for _ = 1, 20 do
+        if failed then
+            break
+        end
+        task.wait(0.5)
+    end
+    failConn:Disconnect()
+
+    if not failed then
+        task.delay(15, function()
+            State.WeatherReconnectPending = false
         end)
-
-        pcall(function()
-            if attempt <= 2 then
-                TeleportService:TeleportToPlaceInstance(placeId, jobId, LocalPlayer)
-            else
-                TeleportService:Teleport(placeId, LocalPlayer)
-            end
-        end)
-
-        for _ = 1, 16 do
-            if failed then
-                break
-            end
-            task.wait(0.5)
-        end
-
-        failConn:Disconnect()
-
-        if not failed then
-            task.delay(10, function()
-                State.WeatherReconnectPending = false
-            end)
-            return true
-        end
-
-        task.wait(math.min(3 + attempt * 0.75, 15))
+        return true
     end
 
     State.WeatherReconnectPending = false
-    return false
+    return teleportToAnyGameServer(placeId)
 end
 
 function teleportToAnyGameServer(placeId)
@@ -5698,7 +5697,7 @@ function teleportToAnyGameServer(placeId)
 
     State.WeatherReconnectPending = true
     queueTeleportScript()
-    task.wait(2)
+    task.wait(0.5)
 
     local failed = false
     local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
@@ -5711,7 +5710,7 @@ function teleportToAnyGameServer(placeId)
         TeleportService:Teleport(placeId, LocalPlayer)
     end)
 
-    for _ = 1, 16 do
+    for _ = 1, 20 do
         if failed then
             break
         end
@@ -5721,7 +5720,7 @@ function teleportToAnyGameServer(placeId)
     failConn:Disconnect()
 
     if not failed then
-        task.delay(10, function()
+        task.delay(15, function()
             State.WeatherReconnectPending = false
         end)
         return true
@@ -5736,12 +5735,34 @@ function isWeatherKickError(errorMessage)
         return false
     end
 
-    if string.find(errorMessage, '[AutoRejoin]', 1, true) then
-        return true
-    end
+    return string.find(errorMessage, '[AutoRejoin]', 1, true) ~= nil
+end
 
-    local saved = GENV.GG2_WeatherState or readWeatherStateFile()
-    return saved and saved.Hiding == true
+--[[
+    After kick: stay out until HideUntil, then rejoin home ONCE.
+    Never teleport while the weather timer is still running.
+]]
+function waitThenRejoinHome()
+    if State.WeatherWaitWorkerRunning then
+        return
+    end
+    State.WeatherWaitWorkerRunning = true
+
+    task.spawn(function()
+        while State.WeatherHiding and not isWeatherHideTimerElapsed() do
+            updateWeatherLabels()
+            task.wait(1)
+        end
+
+        State.WeatherWaitWorkerRunning = false
+
+        if not State.ReturnPlaceId then
+            clearWeatherState()
+            return
+        end
+
+        tryRejoinHome()
+    end)
 end
 
 function handleWeatherKickReconnect(errorMessage)
@@ -5749,18 +5770,16 @@ function handleWeatherKickReconnect(errorMessage)
         return false
     end
 
-    if os.clock() - (State.LastKickReconnectAttempt or 0) < 2 then
-        return false
+    if os.clock() - (State.LastKickReconnectAttempt or 0) < 1 then
+        return true
     end
-
     State.LastKickReconnectAttempt = os.clock()
     State.WeatherKickPending = false
     State.WeatherLeavePending = false
-    State.WeatherReconnectPending = false
 
-    queueTeleportScript()
-
+    -- Still waiting for weather: do NOT rejoin yet.
     if State.WeatherHiding and not isWeatherHideTimerElapsed() then
+        waitThenRejoinHome()
         return true
     end
 
@@ -5790,9 +5809,11 @@ function handleWeatherReconnectError(errorMessage)
     end
 
     if State.WeatherHiding and not isWeatherHideTimerElapsed() then
-        if isStillOnWeatherHomeServer() then
-            retryLeaveIfStillHome()
-        end
+        waitThenRejoinHome()
+        return
+    end
+
+    if State.WeatherRejoinStarted then
         return
     end
 
@@ -5800,11 +5821,16 @@ function handleWeatherReconnectError(errorMessage)
         return
     end
 
+    if os.clock() - (State.LastWeatherReconnectAttempt or 0) < 5 then
+        return
+    end
+    State.LastWeatherReconnectAttempt = os.clock()
+
     State.WeatherReconnectAttempts = (State.WeatherReconnectAttempts or 0) + 1
-    if State.WeatherReconnectAttempts > 8 then
+    if State.WeatherReconnectAttempts > 2 then
         State.WeatherReconnectAttempts = 0
         if Library and Library.Notify then
-            Library:Notify('Teleport failed - joining any server')
+            Library:Notify('Home rejoin failed - joining any server')
         end
         local saved = GENV.GG2_WeatherState or readWeatherStateFile()
         local placeId = tonumber(saved and saved.ReturnPlaceId) or game.PlaceId
@@ -5813,24 +5839,11 @@ function handleWeatherReconnectError(errorMessage)
         return
     end
 
-    if os.clock() - (State.LastWeatherReconnectAttempt or 0) < 2 then
-        return
-    end
-    State.LastWeatherReconnectAttempt = os.clock()
-
     if Library and Library.Notify then
-        Library:Notify(string.format('Reconnect failed, retrying home (%d/8)...', State.WeatherReconnectAttempts))
+        Library:Notify(string.format('Reconnect failed, retrying (%d/2)...', State.WeatherReconnectAttempts))
     end
 
-    task.wait(2)
-
-    local saved = GENV.GG2_WeatherState or readWeatherStateFile()
-    if saved and saved.ReturnPlaceId and saved.ReturnJobId then
-        queueTeleportScript()
-        if teleportToHomeServer(saved.ReturnPlaceId, saved.ReturnJobId) then
-            return
-        end
-    end
+    task.defer(tryRejoinHome)
 end
 
 function setupWeatherErrorReconnect()
@@ -5873,34 +5886,7 @@ function stopWeatherErrorReconnect()
 end
 
 function startWeatherHideWait()
-    if not State.WeatherHiding or isWeatherHideTimerElapsed() then
-        return
-    end
-
-    task.spawn(function()
-        while State.WeatherHiding and not isWeatherHideTimerElapsed() do
-            task.wait(1)
-            updateWeatherLabels()
-        end
-
-        if not State.ReturnPlaceId then
-            return
-        end
-
-        if game.PlaceId == State.ReturnPlaceId and (not State.ReturnJobId or game.JobId == State.ReturnJobId) then
-            State.WeatherHiding = false
-            clearRejoinTarget()
-            saveAutoExecWalkState()
-            queueTeleportScript()
-            State.StartupWalkDone = false
-            doStartupWalk()
-            return
-        end
-
-        if State.WeatherHiding then
-            tryRejoinHome()
-        end
-    end)
+    waitThenRejoinHome()
 end
 
 function startWeatherRejoinWorker()
@@ -5908,27 +5894,12 @@ function startWeatherRejoinWorker()
         return
     end
 
-    if game.PlaceId == State.ReturnPlaceId and (not State.ReturnJobId or game.JobId == State.ReturnJobId) then
-        if isWeatherHideTimerElapsed() then
-            tryRejoinHome()
-        else
-            startWeatherHideWait()
-        end
+    if isWeatherHideTimerElapsed() then
+        tryRejoinHome()
         return
     end
 
-    task.spawn(function()
-        while State.WeatherHiding and not isWeatherHideTimerElapsed() do
-            task.wait(1)
-            updateWeatherLabels()
-        end
-
-        if not State.WeatherHiding or not State.ReturnPlaceId or not State.ReturnJobId then
-            return
-        end
-
-        tryRejoinHome()
-    end)
+    waitThenRejoinHome()
 end
 
 function getBlockedWeathers()
@@ -6031,6 +6002,10 @@ function tryRejoinHome()
         return
     end
 
+    if State.WeatherRejoinStarted then
+        return
+    end
+
     if not State.ReturnPlaceId then
         clearWeatherState()
         return
@@ -6038,6 +6013,7 @@ function tryRejoinHome()
 
     if game.PlaceId == State.ReturnPlaceId and (not State.ReturnJobId or game.JobId == State.ReturnJobId) then
         State.WeatherHiding = false
+        State.WeatherRejoinStarted = false
         clearRejoinTarget()
         saveAutoExecWalkState()
         queueTeleportScript()
@@ -6051,6 +6027,7 @@ function tryRejoinHome()
         return
     end
 
+    State.WeatherRejoinStarted = true
     Library:Notify('Weather ended - rejoining your server')
 
     local placeId = State.ReturnPlaceId
@@ -6072,70 +6049,57 @@ function isStillOnWeatherHomeServer()
         and game.JobId == State.ReturnJobId
 end
 
-function teleportAwayFromHomeServer(maxAttempts)
-    maxAttempts = maxAttempts or 10
-    local placeId = game.PlaceId
+--[[
+    Preferred leave: Kick once with [AutoRejoin], wait out the weather,
+    then rejoin home once. Teleport is only a fallback if Kick fails.
+]]
+function forceLeaveServer(kickMessage)
+    if State.WeatherHiding and not isStillOnWeatherHomeServer() then
+        return true
+    end
 
     ensureCommitFile()
     queueTeleportScript()
     State.WeatherLeavePending = true
+    State.WeatherKickPending = true
 
-    for attempt = 1, maxAttempts do
-        if not isStillOnWeatherHomeServer() then
-            State.WeatherLeavePending = false
-            return true
-        end
+    task.wait(0.35)
 
-        local failed = false
-        local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
-            if player == LocalPlayer then
-                failed = true
-            end
-        end)
+    local kickOk = pcall(function()
+        LocalPlayer:Kick(kickMessage or '[AutoRejoin] Leaving for weather dodge')
+    end)
 
-        pcall(function()
-            TeleportService:Teleport(placeId, LocalPlayer)
-        end)
-
-        for _ = 1, 20 do
-            if failed then
-                break
-            end
-            if not isStillOnWeatherHomeServer() then
-                break
-            end
-            task.wait(0.5)
-        end
-
-        failConn:Disconnect()
-
-        if not isStillOnWeatherHomeServer() then
-            State.WeatherLeavePending = false
-            return true
-        end
-
-        task.wait(math.min(attempt, 3))
+    if kickOk then
+        State.WeatherLeavePending = false
+        return true
     end
+
+    State.WeatherKickPending = false
+    local failed = false
+    local failConn = TeleportService.TeleportInitFailed:Connect(function(player)
+        if player == LocalPlayer then
+            failed = true
+        end
+    end)
+
+    pcall(function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end)
+
+    for _ = 1, 16 do
+        if failed or not isStillOnWeatherHomeServer() then
+            break
+        end
+        task.wait(0.5)
+    end
+    failConn:Disconnect()
 
     State.WeatherLeavePending = false
-    return not isStillOnWeatherHomeServer()
-end
-
-function forceLeaveServer()
-    if not isStillOnWeatherHomeServer() then
-        return true
-    end
-
-    local ok = teleportAwayFromHomeServer()
-    if ok then
-        return true
-    end
-
-    if Library and Library.Notify then
+    local left = not isStillOnWeatherHomeServer()
+    if not left and Library and Library.Notify then
         Library:Notify('Weather dodge failed - could not leave server')
     end
-
-    return false
+    return left
 end
 
 function retryLeaveIfStillHome()
@@ -6144,25 +6108,31 @@ function retryLeaveIfStillHome()
     end
 
     if isWeatherHideTimerElapsed() then
-        tryRejoinHome()
+        clearWeatherState({ keepWalkBack = true })
         return
     end
 
-    if os.clock() - (State.LastWeatherLeaveAttempt or 0) < 8 then
+    if os.clock() - (State.LastWeatherLeaveAttempt or 0) < 15 then
         return
     end
     State.LastWeatherLeaveAttempt = os.clock()
 
     local remaining = math.max(0, State.HideUntil - getWeatherClock())
+    local kickMessage = string.format(
+        '[AutoRejoin] %s detected - kicked. Auto-return in %ds.',
+        State.HidingFromWeather or 'Weather',
+        math.max(remaining, 30)
+    )
+
     if Library and Library.Notify then
         Library:Notify(string.format(
-            'Leaving for %s - auto rejoin in %ds',
+            'Kicking for %s - auto rejoin in %ds',
             State.HidingFromWeather or 'Weather',
             math.max(remaining, 30)
         ))
     end
 
-    forceLeaveServer()
+    forceLeaveServer(kickMessage)
 end
 
 function leaveForWeather(weatherGameName, endTime)
@@ -6172,6 +6142,9 @@ function leaveForWeather(weatherGameName, endTime)
     end
 
     State.WeatherHiding = true
+    State.WeatherRejoinStarted = false
+    State.WeatherWaitWorkerRunning = false
+    State.WeatherReconnectAttempts = 0
     State.HidingFromWeather = getWeatherDisplayName(weatherGameName)
     State.ReturnPlaceId = game.PlaceId
     State.ReturnJobId = game.JobId
@@ -6181,6 +6154,11 @@ function leaveForWeather(weatherGameName, endTime)
     saveWeatherState()
 
     local remaining = math.max(30, State.HideUntil - getWeatherClock())
+    local kickMessage = string.format(
+        '[AutoRejoin] %s detected - kicked. Auto-return in %ds.',
+        getWeatherDisplayName(weatherGameName),
+        remaining
+    )
 
     saveWeatherState()
 
@@ -6192,14 +6170,14 @@ function leaveForWeather(weatherGameName, endTime)
 
     if Library and Library.Notify then
         Library:Notify(string.format(
-            'Leaving for %s - auto rejoin in %ds',
+            'Kicking for %s - auto rejoin in %ds',
             getWeatherDisplayName(weatherGameName),
             remaining
         ))
     end
 
     State.LastWeatherLeaveAttempt = os.clock()
-    forceLeaveServer()
+    forceLeaveServer(kickMessage)
 end
 
 function setWeatherDodge(enabled)
@@ -6224,6 +6202,8 @@ function setWeatherDodge(enabled)
                     retryLeaveIfStillHome()
                 elseif isWeatherHideTimerElapsed() then
                     tryRejoinHome()
+                else
+                    waitThenRejoinHome()
                 end
             elseif Toggles.WeatherDodge and Toggles.WeatherDodge.Value then
                 local blocked = getBlockedWeathers()
@@ -6234,7 +6214,7 @@ function setWeatherDodge(enabled)
                 end
             end
 
-            task.wait(0.5)
+            task.wait(1)
         end
     end)
 end
@@ -6417,7 +6397,7 @@ FarmBox:AddToggle('AutoHatchEggs', {
 WeatherBox:AddToggle('WeatherDodge', {
     Text = 'Enable Weather Dodge',
     Default = false,
-    Tooltip = 'Teleports you out when a selected event starts, then auto-rejoins your server when it ends.',
+    Tooltip = 'Kicks you when a selected event starts, waits for it to end, then rejoins your server once.',
     Callback = function(value)
         setWeatherDodge(value)
     end,
@@ -6827,17 +6807,10 @@ setupAuctionNetworking()
 
 if State.WeatherHiding then
     if isWeatherHideTimerElapsed() then
-        if isStillOnWeatherHomeServer() then
-            task.defer(tryRejoinHome)
-        else
-            task.defer(tryRejoinHome)
-            startWeatherRejoinWorker()
-        end
+        task.defer(tryRejoinHome)
     else
         if isStillOnWeatherHomeServer() then
-            task.defer(function()
-                retryLeaveIfStillHome()
-            end)
+            task.defer(retryLeaveIfStillHome)
         end
         startWeatherHideWait()
     end
