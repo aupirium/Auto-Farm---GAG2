@@ -2477,7 +2477,7 @@ function equipTool(tool)
 
     if tool.Parent ~= getCharacter() then
         humanoid:EquipTool(tool)
-        task.wait(0.15)
+        task.wait(0.05)
     end
 
     return getCharacter() and getCharacter():FindFirstChild(tool.Name) ~= nil
@@ -3067,28 +3067,26 @@ function ensureAtGearTarget(standoff)
         return true
     end
 
-    if State.GearWalkBusy then
-        return false
-    end
-
     local char = getCharacter()
     local root = char and char:FindFirstChild('HumanoidRootPart')
     if not root then
         return false
     end
 
-    standoff = tonumber(standoff) or 12
+    standoff = tonumber(standoff) or 8
     local walkTarget = getOutsideWalkTarget(targetPos, standoff) or targetPos
     local flatDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(walkTarget.X, 0, walkTarget.Z)).Magnitude
     if flatDist <= math.max(6, standoff) then
         return true
     end
 
-    State.GearWalkBusy = true
+    -- Snap instantly. Old path used MoveTo for up to 60s before teleporting,
+    -- which made sprinkler/watering feel extremely slow.
     State.LastGearWalkAttempt = os.clock()
-    local ok = pcall(walkNearPosition, targetPos, standoff)
-    State.GearWalkBusy = false
-    return ok ~= false
+    local ok = pcall(function()
+        root.CFrame = CFrame.new(walkTarget + Vector3.new(0, 3, 0))
+    end)
+    return ok
 end
 
 function getPlacementPosition(savedPos)
@@ -3153,7 +3151,7 @@ function placeSuperSprinkler()
         return false
     end
 
-    if os.clock() - State.LastSprinklerPlace < 5 then
+    if os.clock() - State.LastSprinklerPlace < 1.25 then
         return false
     end
 
@@ -3162,7 +3160,7 @@ function placeSuperSprinkler()
         return false
     end
 
-    if not ensureAtGearTarget() then
+    if not ensureAtGearTarget(8) then
         return false
     end
 
@@ -3189,7 +3187,7 @@ function placeSuperSprinkler()
     Networking.Place.PlaceSprinkler:Fire(position, SUPER_SPRINKLER, tool, plotId)
     State.LastSprinklerPlace = os.clock()
     State.SprinklerPlacePending = true
-    task.delay(5, function()
+    task.delay(1.5, function()
         State.SprinklerPlacePending = false
     end)
     return true
@@ -3213,22 +3211,8 @@ function useSuperWateringCan()
     State.WateringBusy = true
 
     local ok, used = pcall(function()
-        -- Stand closer than sprinkler; server often rejects far UseWateringCan.
-        if not ensureAtGearTarget(4) then
-            -- Still try from here if walk is busy/blocked.
-            local char = getCharacter()
-            local root = char and char:FindFirstChild('HumanoidRootPart')
-            if root then
-                local flat = (Vector3.new(root.Position.X, 0, root.Position.Z)
-                    - Vector3.new(targetPos.X, 0, targetPos.Z)).Magnitude
-                if flat > 45 then
-                    pcall(function()
-                        root.CFrame = CFrame.new(targetPos + Vector3.new(0, 4, 0))
-                    end)
-                    task.wait(0.05)
-                end
-            end
-        end
+        -- Snap near the bed; server often rejects far UseWateringCan.
+        ensureAtGearTarget(4)
 
         local tool = findSuperWateringCanTool()
         if not tool then
@@ -3241,7 +3225,7 @@ function useSuperWateringCan()
                 pcall(function()
                     humanoid:EquipTool(tool)
                 end)
-                task.wait(0.1)
+                task.wait(0.05)
             end
         end
 
@@ -6339,9 +6323,9 @@ GearBox:AddButton({
 })
 
 GearBox:AddToggle('AutoWalkToPlant', {
-    Text = 'Walk To Target',
+    Text = 'Go To Target',
     Default = true,
-    Tooltip = 'Walks to the plant cluster before using sprinkler or watering can',
+    Tooltip = 'Instantly moves you to the plant cluster before using sprinkler or watering can',
 })
 
 GearBox:AddToggle('AutoSprinkler', {
@@ -6997,7 +6981,7 @@ task.spawn(function()
             SprinklerLabel:SetText('Sprinkler: None')
         end
 
-        task.wait(0.5)
+        task.wait(0.15)
     end
 end)
 
