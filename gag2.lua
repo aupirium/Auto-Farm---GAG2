@@ -870,6 +870,7 @@ local State = {
     OptimizerPartCache = {},
     OptimizerEnforceConnections = {},
     OptimizerMeshCache = {},
+    HarvestWeightCache = setmetatable({}, { __mode = 'k' }),
     CameraBlackoutEnabled = false,
     CameraBlackoutOriginalType = nil,
     CameraBlackoutCharacterConnection = nil,
@@ -3652,7 +3653,24 @@ function isFruitRipe(fruitData, fruitModel)
     return fruitModel ~= nil
 end
 
+--[[
+    A ripe fruit that fails the maxKg filter (e.g. you're only keeping big
+    ones) sits there getting re-checked every frame by the harvest loop -
+    without this cache that means calling into the game's own
+    FruitVisualizer:CalculateFruitWeight every single frame forever for
+    every filtered-out fruit. Age only changes when the server actually
+    updates the fruit, so it's a perfect cache-invalidation key.
+]]
 function getFruitWeightKg(fruitModel, fruitData)
+    local age
+    if fruitModel then
+        age = fruitModel:GetAttribute('Age')
+        local cached = State.HarvestWeightCache[fruitModel]
+        if cached and cached.Age == age then
+            return cached.Weight
+        end
+    end
+
     local weight
 
     if fruitModel then
@@ -3682,7 +3700,13 @@ function getFruitWeightKg(fruitModel, fruitData)
         weight = fruitData.Weight or fruitData.FruitWeight or fruitData.Kg or fruitData.WeightKg
     end
 
-    return normalizeWeightKg(weight)
+    local result = normalizeWeightKg(weight)
+
+    if fruitModel then
+        State.HarvestWeightCache[fruitModel] = { Age = age, Weight = result }
+    end
+
+    return result
 end
 
 function getFruitToolIdSet()
@@ -4060,6 +4084,17 @@ function isPlantTypeHarvestAllowed(allowedSet, garden, plantId)
     return type(plantName) == 'string' and allowedSet[plantName] == true
 end
 
+--[[
+    Runs every frame (Auto Harvest is intentionally task.wait(0)), so this
+    must do exactly ONE pass over the Plants folder. The old version called
+    findFruitModel - itself a full linear rescan of every plant/fruit - up to
+    twice per fruit in the synced garden table, on top of its own folder
+    walk. For a garden with dozens of plants that's tens of thousands of
+    redundant GetChildren/GetAttribute calls every single frame, which is
+    what was actually tanking FPS (not the visual optimizer). Building a
+    plantId_fruitId -> model index in one pass and reusing it everywhere
+    turns that O(plants x fruits) rescan into O(plants + fruits).
+]]
 function harvestFruits(maxKg)
     local plot = getPlot()
     local plantsFolder = plot and plot:FindFirstChild('Plants')
@@ -4067,20 +4102,23 @@ function harvestFruits(maxKg)
         return
     end
 
-    local maxKg = tonumber(maxKg) or 999
+    maxKg = tonumber(maxKg) or 999
     local garden = GardenSync:GetGarden(LocalPlayer.UserId)
     local allowedSet = getSelectedHarvestPlantsSet()
     local seen = {}
+    local modelIndex = {}
 
     for _, plantModel in plantsFolder:GetChildren() do
         local fruitsFolder = plantModel:FindFirstChild('Fruits')
         if fruitsFolder then
             for _, fruitModel in fruitsFolder:GetChildren() do
-                if isFruitRipe(nil, fruitModel) then
-                    local plantId = fruitModel:GetAttribute('PlantId')
-                    local fruitId = fruitModel:GetAttribute('FruitId')
+                local plantId = fruitModel:GetAttribute('PlantId')
+                local fruitId = fruitModel:GetAttribute('FruitId')
 
-                    if plantId and fruitId and isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
+                if plantId and fruitId then
+                    modelIndex[plantId .. '_' .. fruitId] = fruitModel
+
+                    if isFruitRipe(nil, fruitModel) and isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
                         local key = plantId .. '_' .. fruitId
                         if not seen[key] then
                             seen[key] = true
@@ -4095,14 +4133,18 @@ function harvestFruits(maxKg)
             end
         else
             local plantId = plantModel:GetAttribute('PlantId')
-            if plantId and isFruitRipe(nil, plantModel) and isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
-                local key = plantId .. '_'
-                if not seen[key] then
-                    seen[key] = true
-                    local fruitData = getGardenFruitData(garden, plantId, '')
-                    local weight = getFruitWeightKg(plantModel, fruitData)
-                    if shouldHarvestFruit(weight, maxKg) then
-                        collectFruit(plantId, '')
+            if plantId then
+                modelIndex[plantId .. '_'] = plantModel
+
+                if isFruitRipe(nil, plantModel) and isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
+                    local key = plantId .. '_'
+                    if not seen[key] then
+                        seen[key] = true
+                        local fruitData = getGardenFruitData(garden, plantId, '')
+                        local weight = getFruitWeightKg(plantModel, fruitData)
+                        if shouldHarvestFruit(weight, maxKg) then
+                            collectFruit(plantId, '')
+                        end
                     end
                 end
             end
@@ -4117,23 +4159,27 @@ function harvestFruits(maxKg)
         if plant.Fruits then
             for fruitId, fruit in plant.Fruits do
                 local key = plantId .. '_' .. fruitId
-                if not seen[key] and isFruitRipe(fruit, findFruitModel(plantsFolder, plantId, fruitId)) then
-                    seen[key] = true
-                    local fruitModel = findFruitModel(plantsFolder, plantId, fruitId)
-                    local weight = getFruitWeightKg(fruitModel, fruit)
-                    if shouldHarvestFruit(weight, maxKg) then
-                        collectFruit(plantId, fruitId)
+                if not seen[key] then
+                    local fruitModel = modelIndex[key]
+                    if isFruitRipe(fruit, fruitModel) then
+                        seen[key] = true
+                        local weight = getFruitWeightKg(fruitModel, fruit)
+                        if shouldHarvestFruit(weight, maxKg) then
+                            collectFruit(plantId, fruitId)
+                        end
                     end
                 end
             end
         else
             local key = plantId .. '_'
-            if not seen[key] and isFruitRipe(plant, findFruitModel(plantsFolder, plantId, '')) then
-                seen[key] = true
-                local plantModel = findFruitModel(plantsFolder, plantId, '')
-                local weight = getFruitWeightKg(plantModel, plant)
-                if shouldHarvestFruit(weight, maxKg) then
-                    collectFruit(plantId, '')
+            if not seen[key] then
+                local plantModel = modelIndex[key]
+                if isFruitRipe(plant, plantModel) then
+                    seen[key] = true
+                    local weight = getFruitWeightKg(plantModel, plant)
+                    if shouldHarvestFruit(weight, maxKg) then
+                        collectFruit(plantId, '')
+                    end
                 end
             end
         end
