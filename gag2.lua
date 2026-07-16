@@ -7668,6 +7668,103 @@ function findSlotLinkedFruit(slot, usedFruits)
     return nil
 end
 
+function findSlotFavoriteStar(slot)
+    if not slot then
+        return nil
+    end
+
+    for _, name in { 'Favorite', 'Favourite', 'Star', 'FavoriteIcon', 'FavouriteIcon', 'Fav' } do
+        local star = slot:FindFirstChild(name, true)
+        if star and (star:IsA('GuiObject')) then
+            return star
+        end
+    end
+
+    -- Fallback: top-right image (the orange star).
+    for _, desc in slot:GetDescendants() do
+        if (desc:IsA('ImageLabel') or desc:IsA('ImageButton')) and desc.Visible then
+            local ok = pcall(function()
+                local relX = desc.AbsolutePosition.X - slot.AbsolutePosition.X
+                local relY = desc.AbsolutePosition.Y - slot.AbsolutePosition.Y
+                local sizeX = slot.AbsoluteSize.X
+                local sizeY = slot.AbsoluteSize.Y
+                if sizeX > 0 and sizeY > 0 and relX >= sizeX * 0.45 and relY <= sizeY * 0.4 then
+                    return true
+                end
+                return false
+            end)
+            if ok then
+                local relX = desc.AbsolutePosition.X - slot.AbsolutePosition.X
+                local relY = desc.AbsolutePosition.Y - slot.AbsolutePosition.Y
+                local sizeX = slot.AbsoluteSize.X
+                local sizeY = slot.AbsoluteSize.Y
+                if sizeX > 0 and sizeY > 0 and relX >= sizeX * 0.45 and relY <= sizeY * 0.4 then
+                    return desc
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+function isMoneyText(text)
+    text = tostring(text or '')
+    if text == '' then
+        return false
+    end
+    if text:find('%$', 1, true) or text:find('¢', 1, true) or text:find('\194\162', 1, true) then
+        return true
+    end
+    -- Abbreviated values like 282.4M / 15.59K
+    return text:match('^[%d%,%.]+[KMBTQ]$') ~= nil
+        or text:match('^[%d%,%.]+[KMBTQ][a-zA-Z]?$') ~= nil
+end
+
+function hideSlotNativeMoneyLabels(slot, keepLabel)
+    for _, desc in slot:GetDescendants() do
+        if desc:IsA('TextLabel') and desc ~= keepLabel and desc.Name ~= 'GG2_FruitValue' then
+            if isMoneyText(desc.Text) then
+                if desc:GetAttribute('GG2_WasVisible') == nil then
+                    desc:SetAttribute('GG2_WasVisible', desc.Visible)
+                end
+                desc.Visible = false
+            end
+        end
+    end
+end
+
+function positionFruitValueOverStar(slot, label)
+    if not slot or not label then
+        return
+    end
+
+    local star = findSlotFavoriteStar(slot)
+    local starZ = star and star.ZIndex or (slot.ZIndex or 1)
+    label.ZIndex = math.max((slot.ZIndex or 1) + 25, starZ + 10)
+    label.TextXAlignment = Enum.TextXAlignment.Right
+    label.TextYAlignment = Enum.TextYAlignment.Bottom
+    label.TextSize = 11
+    label.Size = UDim2.fromOffset(62, 14)
+
+    -- Anchor the BOTTOM of the text to the top of the star area so the
+    -- value draws upward over the star (not downward under it).
+    label.AnchorPoint = Vector2.new(1, 1)
+
+    if star and star:IsA('GuiObject') then
+        local starTop = 0
+        pcall(function()
+            starTop = (star.AbsolutePosition.Y - slot.AbsolutePosition.Y) + 2
+        end)
+        if starTop < 4 then
+            starTop = 12
+        end
+        label.Position = UDim2.new(1, -1, 0, starTop)
+    else
+        label.Position = UDim2.new(1, -1, 0, 12)
+    end
+end
+
 function ensureFruitValueLabel(slot)
     if not slot or not slot:IsA('GuiObject') then
         return nil
@@ -7675,40 +7772,28 @@ function ensureFruitValueLabel(slot)
 
     local existing = slot:FindFirstChild('GG2_FruitValue')
     if existing and existing:IsA('TextLabel') then
-        -- Keep label top-right over the favorite star.
-        existing.AnchorPoint = Vector2.new(1, 0)
-        existing.Position = UDim2.new(1, -2, 0, 1)
-        existing.Size = UDim2.fromOffset(56, 14)
-        existing.TextXAlignment = Enum.TextXAlignment.Right
-        existing.TextYAlignment = Enum.TextYAlignment.Top
+        positionFruitValueOverStar(slot, existing)
         State.FruitValueOverlayLabels[slot] = existing
         return existing
     end
 
-    -- Only create our own label — never hijack the game's value text.
     local label = Instance.new('TextLabel')
     label.Name = 'GG2_FruitValue'
     label.BackgroundTransparency = 1
-    label.AnchorPoint = Vector2.new(1, 0)
-    label.Position = UDim2.new(1, -2, 0, 1)
-    label.Size = UDim2.fromOffset(56, 14)
-    label.ZIndex = (slot.ZIndex or 1) + 8
     label.Font = Enum.Font.GothamBold
-    label.TextSize = 11
     label.TextColor3 = Color3.fromRGB(0, 255, 0)
-    label.TextXAlignment = Enum.TextXAlignment.Right
-    label.TextYAlignment = Enum.TextYAlignment.Top
-    label.TextStrokeTransparency = 0.2
+    label.TextStrokeTransparency = 0.15
     label.TextStrokeColor3 = Color3.new(0, 0, 0)
     label.Text = ''
     label.Visible = false
     label.Parent = slot
 
     local stroke = Instance.new('UIStroke')
-    stroke.Thickness = 1.4
+    stroke.Thickness = 1.5
     stroke.Color = Color3.new(0, 0, 0)
     stroke.Parent = label
 
+    positionFruitValueOverStar(slot, label)
     State.FruitValueOverlayLabels[slot] = label
     return label
 end
@@ -7782,20 +7867,9 @@ function updateFruitValueOverlays()
             if value > 0 then
                 label.Text = formatInvCurrency(value)
                 label.TextColor3 = Color3.fromRGB(0, 255, 0)
+                positionFruitValueOverStar(slot, label)
                 label.Visible = true
-
-                -- Hide the game's top-left $ so only the star-side value shows.
-                for _, desc in slot:GetDescendants() do
-                    if desc:IsA('TextLabel') and desc ~= label then
-                        local text = tostring(desc.Text or '')
-                        if text:find('%$') and desc.Name ~= 'GG2_FruitValue' then
-                            if desc:GetAttribute('GG2_WasVisible') == nil then
-                                desc:SetAttribute('GG2_WasVisible', desc.Visible)
-                            end
-                            desc.Visible = false
-                        end
-                    end
-                end
+                hideSlotNativeMoneyLabels(slot, label)
             else
                 label.Text = ''
                 label.Visible = false
