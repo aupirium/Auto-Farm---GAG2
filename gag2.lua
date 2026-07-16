@@ -876,6 +876,7 @@ local State = {
     OptimizerMeshCache = {},
     HarvestWeightCache = setmetatable({}, { __mode = 'k' }),
     HarvestAttemptAt = {},
+    HarvestErrorNotified = false,
     PlantMemory = {},
     CameraBlackoutEnabled = false,
     CameraBlackoutOriginalType = nil,
@@ -1353,11 +1354,18 @@ function syncPlantMemoryFromGarden()
     end
 
     for plantId, plant in garden do
+        if typeof(plant) ~= 'table' then
+            continue
+        end
+
         local id = tostring(plantId)
         local mem = State.PlantMemory[id]
         if not mem then
             mem = { plantId = id, fruits = {} }
             State.PlantMemory[id] = mem
+        end
+        if typeof(mem.fruits) ~= 'table' then
+            mem.fruits = {}
         end
 
         mem.plantName = plant.PlantName or mem.plantName
@@ -1371,6 +1379,10 @@ function syncPlantMemoryFromGarden()
 
         if typeof(plant.Fruits) == 'table' then
             for fruitId, fruit in plant.Fruits do
+                if typeof(fruit) ~= 'table' then
+                    continue
+                end
+
                 local fid = tostring(fruitId)
                 local fmem = mem.fruits[fid] or { fruitId = fid }
                 fmem.age = fruit.Age or fmem.age
@@ -2710,18 +2722,69 @@ end
 -- means "nothing checked" and correctly means harvest nothing.
 function getSelectedHarvestPlantsSet()
     local selected = Options and Options.HarvestPlantTypes and Options.HarvestPlantTypes.Value
-    if typeof(selected) ~= 'table' then
-        return nil
-    end
-
     local set = {}
-    for label, isSelected in selected do
-        if isSelected == true then
-            set[label] = true
+
+    if typeof(selected) == 'table' then
+        for key, value in selected do
+            -- Map style: { ["Dragon's Breath"] = true }
+            if value == true and type(key) == 'string' then
+                set[key] = true
+            -- Array style: { "Dragon's Breath", "Hypno Bloom" }
+            elseif type(value) == 'string' then
+                set[value] = true
+            end
         end
     end
 
+    -- Fallback to saved config if dropdown looks empty but we have saved picks.
+    if next(set) == nil and typeof(State.ConfigHarvestPlants) == 'table' then
+        for _, name in State.ConfigHarvestPlants do
+            if type(name) == 'string' and name ~= '' then
+                set[name] = true
+            end
+        end
+    end
+
+    -- nil => harvest all (dropdown missing). empty table => harvest none.
+    if typeof(selected) ~= 'table' and next(set) == nil then
+        return nil
+    end
+
     return set
+end
+
+function isPlantTypeHarvestAllowed(allowedSet, garden, plantId)
+    if not allowedSet then
+        return true
+    end
+
+    if next(allowedSet) == nil then
+        return false
+    end
+
+    local plant = garden and (garden[plantId] or garden[tostring(plantId)])
+    if typeof(plant) ~= 'table' then
+        local mem = State.PlantMemory[tostring(plantId or '')]
+        if mem then
+            if mem.plantName and allowedSet[mem.plantName] then
+                return true
+            end
+            if mem.seedName and allowedSet[mem.seedName] then
+                return true
+            end
+        end
+        return false
+    end
+
+    local plantName = plant.PlantName
+    local seedName = plant.SeedName
+    if type(plantName) == 'string' and allowedSet[plantName] == true then
+        return true
+    end
+    if type(seedName) == 'string' and allowedSet[seedName] == true then
+        return true
+    end
+    return false
 end
 
 function applyHarvestPlantsToDropdown(names)
@@ -4695,32 +4758,6 @@ function collectFruit(plantId, fruitId)
     return ok
 end
 
-function isPlantTypeHarvestAllowed(allowedSet, garden, plantId)
-    if not allowedSet then
-        return true
-    end
-
-    -- Empty selection = harvest nothing (intentional).
-    if next(allowedSet) == nil then
-        return false
-    end
-
-    local plant = garden and garden[plantId]
-    if not plant then
-        return false
-    end
-
-    local plantName = plant.PlantName
-    local seedName = plant.SeedName
-    if type(plantName) == 'string' and allowedSet[plantName] == true then
-        return true
-    end
-    if type(seedName) == 'string' and allowedSet[seedName] == true then
-        return true
-    end
-    return false
-end
-
 function isSyncFruitRipe(fruitData)
     if typeof(fruitData) ~= 'table' then
         return false
@@ -4743,55 +4780,68 @@ end
     GardenSync-first harvest using the real game remote:
       Networking.Garden.CollectFruit:Fire(plantId, fruitId)
     Same call site as HarvestPromptController / FruitMagnetController.
-    Works with optimizer plant deletion because ripe Age/MaxAge live in
-    GardenSync, not in workspace models.
 ]]
 function harvestFruits(maxKg)
-    maxKg = tonumber(maxKg) or 999
-    local garden = GardenSync:GetGarden(LocalPlayer.UserId)
-    if typeof(garden) ~= 'table' then
-        return
-    end
-
-    syncPlantMemoryFromGarden()
-
-    local allowedSet = getSelectedHarvestPlantsSet()
-    local optimizerOn = State.OptimizerEnabled == true
-
-    for plantId, plant in garden do
-        if not isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
-            continue
+    local ok, err = pcall(function()
+        maxKg = tonumber(maxKg) or 999
+        local garden = GardenSync:GetGarden(LocalPlayer.UserId)
+        if typeof(garden) ~= 'table' then
+            return
         end
 
-        if typeof(plant) == 'table' and typeof(plant.Fruits) == 'table' then
-            for fruitId, fruit in plant.Fruits do
-                local ripe = isSyncFruitRipe(fruit) or isFruitRipe(fruit, nil)
+        pcall(syncPlantMemoryFromGarden)
 
+        local allowedSet = getSelectedHarvestPlantsSet()
+        local optimizerOn = State.OptimizerEnabled == true
+
+        for plantId, plant in garden do
+            if typeof(plant) ~= 'table' then
+                continue
+            end
+
+            if not isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
+                continue
+            end
+
+            local hasFruits = typeof(plant.Fruits) == 'table' and next(plant.Fruits) ~= nil
+
+            if hasFruits then
+                for fruitId, fruit in plant.Fruits do
+                    if typeof(fruit) ~= 'table' then
+                        continue
+                    end
+
+                    local ripe = isSyncFruitRipe(fruit) or isFruitRipe(fruit, nil)
+                    if not ripe and optimizerOn then
+                        ripe = true
+                    end
+
+                    if ripe then
+                        local weight = getFruitWeightKg(nil, fruit, plantId, fruitId)
+                        if shouldHarvestFruit(weight, maxKg) then
+                            collectFruit(plantId, fruitId)
+                        end
+                    end
+                end
+            else
+                local ripe = isSyncFruitRipe(plant) or isFruitRipe(plant, nil)
                 if not ripe and optimizerOn then
                     ripe = true
                 end
 
                 if ripe then
-                    local weight = getFruitWeightKg(nil, fruit, plantId, fruitId)
+                    local weight = getFruitWeightKg(nil, plant, plantId, '')
                     if shouldHarvestFruit(weight, maxKg) then
-                        collectFruit(plantId, fruitId)
+                        collectFruit(plantId, '')
                     end
                 end
             end
-        elseif typeof(plant) == 'table' then
-            local ripe = isSyncFruitRipe(plant) or isFruitRipe(plant, nil)
-
-            if not ripe and optimizerOn then
-                ripe = true
-            end
-
-            if ripe then
-                local weight = getFruitWeightKg(nil, plant, plantId, '')
-                if shouldHarvestFruit(weight, maxKg) then
-                    collectFruit(plantId, '')
-                end
-            end
         end
+    end)
+
+    if not ok and Library and Library.Notify and not State.HarvestErrorNotified then
+        State.HarvestErrorNotified = true
+        Library:Notify('Auto harvest error: ' .. tostring(err))
     end
 end
 
@@ -4905,7 +4955,7 @@ function setAutoHarvestLoop(enabled)
 
             if ready then
                 local maxKg = getMaxHarvestKg()
-                harvestFruits(maxKg)
+                pcall(harvestFruits, maxKg)
             end
 
             task.wait(0)
