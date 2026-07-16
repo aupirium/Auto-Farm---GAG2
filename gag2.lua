@@ -5259,8 +5259,8 @@ function collectFruit(plantId, fruitId)
     local key = plantId .. '_' .. fruitId
     local now = os.clock()
     local last = State.HarvestAttemptAt[key]
-    -- Longer cooldown prevents CollectFruit remote spam (ping spikes).
-    if last and (now - last) < 1.0 then
+    -- Light per-fruit debounce only — same fruit, not global harvest rate.
+    if last and (now - last) < 0.15 then
         return false
     end
     State.HarvestAttemptAt[key] = now
@@ -5306,8 +5306,6 @@ function harvestFruits(maxKg)
 
         local allowedSet = getSelectedHarvestPlantsSet()
         local plantsFolder = getPlotPlantsFolder()
-        local fired = 0
-        local maxPerCycle = 4
 
         for plantId, plant in garden do
             if typeof(plant) ~= 'table' then
@@ -5326,8 +5324,6 @@ function harvestFruits(maxKg)
                         continue
                     end
 
-                    -- Never force-ripe under optimizer — that spam-fired CollectFruit
-                    -- on every unripe fruit and spiked ping.
                     local ripe = isSyncFruitRipe(fruit) or isFruitRipe(fruit, nil)
                     if not ripe then
                         continue
@@ -5346,12 +5342,7 @@ function harvestFruits(maxKg)
                         )
                     end
                     if shouldHarvestFruit(weight, maxKg) then
-                        if collectFruit(plantId, fruitId) then
-                            fired += 1
-                            if fired >= maxPerCycle then
-                                return
-                            end
-                        end
+                        collectFruit(plantId, fruitId)
                     end
                 end
             else
@@ -5373,12 +5364,7 @@ function harvestFruits(maxKg)
                     )
                 end
                 if shouldHarvestFruit(weight, maxKg) then
-                    if collectFruit(plantId, '') then
-                        fired += 1
-                        if fired >= maxPerCycle then
-                            return
-                        end
-                    end
+                    collectFruit(plantId, '')
                 end
             end
         end
@@ -5503,8 +5489,7 @@ function setAutoHarvestLoop(enabled)
                 pcall(harvestFruits, maxKg)
             end
 
-            -- Keep this well above CollectFruit cooldown; tight loops spike ping.
-            task.wait(0.45)
+            task.wait(0.05)
         end
         State.HarvestThread = nil
     end)
