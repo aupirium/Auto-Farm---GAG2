@@ -567,6 +567,21 @@ local AuctioneerFlags = require(ReplicatedStorage.SharedModules.Flags.Auctioneer
 local GardenSync = require(PlayerScripts.Controllers.GardenSyncController)
 local FruitVisualizer = require(PlayerScripts.Controllers.FruitVisualizerController)
 
+local FruitValueCalc
+pcall(function()
+    FruitValueCalc = require(ReplicatedStorage.SharedModules.FruitValueCalc)
+end)
+
+local TimeCycleData
+pcall(function()
+    TimeCycleData = require(ReplicatedStorage.SharedModules.TimeCycleData)
+end)
+
+local MoonGating
+pcall(function()
+    MoonGating = require(ReplicatedStorage.SharedModules.MoonGating)
+end)
+
 local HarvestedFruitHandleController
 pcall(function()
     HarvestedFruitHandleController = require(PlayerScripts.Controllers.HarvestedFruitHandleController)
@@ -883,6 +898,15 @@ local State = {
     CameraBlackoutEnabled = false,
     CameraBlackoutOriginalType = nil,
     CameraBlackoutCharacterConnection = nil,
+    EventPredictorHudEnabled = false,
+    EventPredictorGui = nil,
+    EventPredictorTileLabels = nil,
+    EventPredictorInvLabels = nil,
+    EventPredictorThread = nil,
+    EventPredictorPhases = nil,
+    EventPredictorCycleLen = 0,
+    EventPredictorInvCache = nil,
+    EventPredictorInvCacheAt = 0,
     ConfigLoading = false,
     AntiAfkConnection = nil,
     AutoSellThread = nil,
@@ -6785,6 +6809,643 @@ OptimizerBox:AddToggle('CameraBlackout', {
     end,
 })
 
+local EVENT_PREDICTOR_MOONS = {
+    {
+        key = 'Goldmoon',
+        title = 'Gold Moon',
+        bg = Color3.fromRGB(255, 210, 40),
+        moon = Color3.fromRGB(255, 230, 90),
+        border = Color3.fromRGB(255, 240, 120),
+    },
+    {
+        key = 'Bloodmoon',
+        title = 'Bloodmoon',
+        bg = Color3.fromRGB(140, 18, 28),
+        moon = Color3.fromRGB(160, 30, 40),
+        border = Color3.fromRGB(190, 40, 50),
+    },
+    {
+        key = 'Rainbow Moon',
+        title = 'Rainbow Moon',
+        bg = Color3.fromRGB(90, 60, 180),
+        moon = Color3.fromRGB(180, 120, 255),
+        border = Color3.fromRGB(255, 180, 60),
+        rainbow = true,
+    },
+    {
+        key = 'Mega Moon',
+        title = 'Mega Moon',
+        bg = Color3.fromRGB(90, 40, 160),
+        moon = Color3.fromRGB(190, 210, 230),
+        border = Color3.fromRGB(60, 220, 255),
+    },
+}
+
+function formatEventCountdown(seconds)
+    seconds = math.max(0, math.floor(tonumber(seconds) or 0))
+    local hours = math.floor(seconds / 3600)
+    local mins = math.floor((seconds % 3600) / 60)
+    local secs = seconds % 60
+    if hours > 0 then
+        return string.format('%dh %02dm %02ds', hours, mins, secs)
+    end
+    if mins > 0 then
+        return string.format('%dm %02ds', mins, secs)
+    end
+    return string.format('%ds', secs)
+end
+
+function formatInvCurrency(amount)
+    amount = math.floor(tonumber(amount) or 0)
+    local text = abbreviateNumber(amount)
+    if text == '' or text == nil then
+        text = tostring(amount)
+    end
+    return '$' .. text
+end
+
+function ensureEventPredictorPhases()
+    if State.EventPredictorPhases and State.EventPredictorCycleLen > 0 then
+        return State.EventPredictorPhases, State.EventPredictorCycleLen
+    end
+
+    local phases = {}
+    local total = 0
+
+    if TimeCycleData and typeof(TimeCycleData.Data) == 'table' then
+        for name, data in TimeCycleData.Data do
+            if typeof(data) == 'table' then
+                local duration = tonumber(data.Lasts) or 0
+                table.insert(phases, {
+                    Name = name,
+                    Weathers = data.Weathers,
+                    Duration = duration,
+                    Order = tonumber(data.StartOrder) or 0,
+                })
+                total = total + duration
+            end
+        end
+    end
+
+    table.sort(phases, function(a, b)
+        return a.Order < b.Order
+    end)
+
+    State.EventPredictorPhases = phases
+    State.EventPredictorCycleLen = total
+    return phases, total
+end
+
+function isMoonNaturallySpawnable(weatherName)
+    if MoonGating and MoonGating.IsNaturallySpawnable then
+        local ok, spawnable = pcall(MoonGating.IsNaturallySpawnable, weatherName)
+        if ok then
+            return spawnable ~= false
+        end
+    end
+    return true
+end
+
+function pickEventWeather(phase, rng)
+    if not phase or typeof(phase.Weathers) ~= 'table' then
+        return nil
+    end
+
+    local totalChance = 0
+    for weatherName, weatherData in phase.Weathers do
+        if typeof(weatherData) == 'table'
+            and not weatherData.AdminOnly
+            and isMoonNaturallySpawnable(weatherName)
+        then
+            totalChance = totalChance + (tonumber(weatherData.Chance) or 0)
+        end
+    end
+
+    if totalChance <= 0 then
+        for weatherName, weatherData in phase.Weathers do
+            if typeof(weatherData) == 'table'
+                and not weatherData.AdminOnly
+                and isMoonNaturallySpawnable(weatherName)
+            then
+                return weatherName
+            end
+        end
+        return nil
+    end
+
+    local roll = rng:NextNumber() * totalChance
+    local cumulative = 0
+    for weatherName, weatherData in phase.Weathers do
+        if typeof(weatherData) == 'table'
+            and not weatherData.AdminOnly
+            and isMoonNaturallySpawnable(weatherName)
+        then
+            cumulative = cumulative + (tonumber(weatherData.Chance) or 0)
+            if roll <= cumulative then
+                return weatherName
+            end
+        end
+    end
+
+    for weatherName, weatherData in phase.Weathers do
+        if typeof(weatherData) == 'table'
+            and not weatherData.AdminOnly
+            and isMoonNaturallySpawnable(weatherName)
+        then
+            return weatherName
+        end
+    end
+
+    return nil
+end
+
+function getWeatherForEventPhase(cycleIndex, phaseIndex, phase)
+    return pickEventWeather(phase, Random.new((cycleIndex * 1000) + phaseIndex))
+end
+
+function getEventCycleState()
+    local phases, cycleLen = ensureEventPredictorPhases()
+    if #phases == 0 or cycleLen <= 0 then
+        return nil
+    end
+
+    local activePhase = workspace:GetAttribute('ActivePhase')
+    local phaseDuration = workspace:GetAttribute('PhaseDuration')
+    if typeof(activePhase) ~= 'string' or not phaseDuration then
+        return nil
+    end
+
+    local remaining = tonumber(phaseDuration) - workspace:GetServerTimeNow()
+    if not remaining then
+        remaining = 0
+    end
+
+    local cycleIndex = math.floor(os.time() / cycleLen)
+    for phaseIndex, phase in ipairs(phases) do
+        if phase.Name == activePhase then
+            return {
+                cycleIndex = cycleIndex,
+                phaseIndex = phaseIndex,
+                phase = phase,
+                remaining = math.max(0, remaining),
+                phases = phases,
+                cycleLen = cycleLen,
+            }
+        end
+    end
+
+    return nil
+end
+
+function predictMoonCountdowns()
+    local results = {}
+    for _, moon in ipairs(EVENT_PREDICTOR_MOONS) do
+        results[moon.key] = nil
+    end
+
+    local activeWeather = workspace:GetAttribute('ActiveWeather')
+    if typeof(activeWeather) == 'string' and results[activeWeather] == nil then
+        -- keep nil map for tracked moons only
+    end
+    for _, moon in ipairs(EVENT_PREDICTOR_MOONS) do
+        if activeWeather == moon.key then
+            results[moon.key] = 0
+        end
+    end
+
+    local state = getEventCycleState()
+    if not state then
+        return results
+    end
+
+    local timeUntil = state.remaining
+    local cycleIndex = state.cycleIndex
+    local phaseIndex = state.phaseIndex + 1
+    local found = 0
+    local needed = #EVENT_PREDICTOR_MOONS
+    for _, moon in ipairs(EVENT_PREDICTOR_MOONS) do
+        if results[moon.key] ~= nil then
+            found = found + 1
+        end
+    end
+
+    local safety = 0
+    while found < needed and safety < 800 do
+        safety = safety + 1
+        if phaseIndex > #state.phases then
+            phaseIndex = 1
+            cycleIndex = cycleIndex + 1
+        end
+
+        local phase = state.phases[phaseIndex]
+        local weather = getWeatherForEventPhase(cycleIndex, phaseIndex, phase)
+        if weather and results[weather] == nil then
+            results[weather] = timeUntil
+            found = found + 1
+        end
+
+        timeUntil = timeUntil + (tonumber(phase.Duration) or 0)
+        phaseIndex = phaseIndex + 1
+    end
+
+    return results
+end
+
+function getInventoryFruitValue()
+    local now = os.clock()
+    if State.EventPredictorInvCache and (now - (State.EventPredictorInvCacheAt or 0)) < 2 then
+        return State.EventPredictorInvCache.total, State.EventPredictorInvCache.count
+    end
+
+    local total = 0
+    local count = 0
+
+    local previewOk, preview = pcall(function()
+        return Networking.NPCS.PreviewSellAll:Fire()
+    end)
+    if previewOk and typeof(preview) == 'table' then
+        local value = tonumber(preview.TotalBaseValue) or tonumber(preview.TotalValue)
+        local fruitCount = tonumber(preview.FruitCount)
+        if value and value >= 0 then
+            total = value
+        end
+        if fruitCount and fruitCount >= 0 then
+            count = fruitCount
+        end
+        if total > 0 or count > 0 then
+            State.EventPredictorInvCache = { total = total, count = count }
+            State.EventPredictorInvCacheAt = now
+            return total, count
+        end
+    end
+
+    if not FruitValueCalc then
+        count = countHarvestedFruits()
+        State.EventPredictorInvCache = { total = 0, count = count }
+        State.EventPredictorInvCacheAt = now
+        return 0, count
+    end
+
+    for _, tool in getHarvestedFruitTools() do
+        count = count + 1
+        local fruitName = tool:GetAttribute('FruitName')
+            or tool:GetAttribute('Fruit')
+            or tool.Name
+        local sizeMulti = tool:GetAttribute('SizeMultiplier')
+            or tool:GetAttribute('SizeMulti')
+            or 1
+        local mutation = tool:GetAttribute('Mutation')
+        local decay = tool:GetAttribute('DecayAlpha')
+        local ok, value = pcall(FruitValueCalc, fruitName, sizeMulti, mutation, LocalPlayer, decay)
+        if ok and typeof(value) == 'number' then
+            total = total + value
+        end
+    end
+
+    State.EventPredictorInvCache = { total = total, count = count }
+    State.EventPredictorInvCacheAt = now
+    return total, count
+end
+
+function applyOutlinedText(label)
+    label.TextColor3 = Color3.new(1, 1, 1)
+    label.Font = Enum.Font.GothamBold
+    label.TextScaled = true
+    label.BackgroundTransparency = 1
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.TextYAlignment = Enum.TextYAlignment.Center
+
+    local stroke = Instance.new('UIStroke')
+    stroke.Thickness = 2.2
+    stroke.Color = Color3.new(0, 0, 0)
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Contextual
+    stroke.Parent = label
+end
+
+function getMoonWeatherImage(weatherKey)
+    if not TimeCycleData or typeof(TimeCycleData.Data) ~= 'table' then
+        return nil
+    end
+
+    for _, phaseData in TimeCycleData.Data do
+        if typeof(phaseData) == 'table' and typeof(phaseData.Weathers) == 'table' then
+            local weather = phaseData.Weathers[weatherKey]
+            if typeof(weather) == 'table' and typeof(weather.Image) == 'string' and weather.Image ~= '' then
+                return weather.Image
+            end
+        end
+    end
+
+    return nil
+end
+
+function createEventMoonTile(parent, moon, layoutOrder)
+    local tile = Instance.new('Frame')
+    tile.Name = moon.key
+    tile.BackgroundColor3 = moon.bg
+    tile.BorderSizePixel = 0
+    tile.Size = UDim2.fromOffset(78, 78)
+    tile.LayoutOrder = layoutOrder
+    tile.Parent = parent
+
+    local corner = Instance.new('UICorner')
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = tile
+
+    local border = Instance.new('UIStroke')
+    border.Thickness = 2
+    border.Color = moon.border
+    border.Parent = tile
+
+    if moon.rainbow then
+        local gradient = Instance.new('UIGradient')
+        gradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(170, 60, 255)),
+            ColorSequenceKeypoint.new(0.2, Color3.fromRGB(60, 120, 255)),
+            ColorSequenceKeypoint.new(0.4, Color3.fromRGB(40, 220, 120)),
+            ColorSequenceKeypoint.new(0.6, Color3.fromRGB(255, 230, 60)),
+            ColorSequenceKeypoint.new(0.8, Color3.fromRGB(255, 140, 40)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 60, 70)),
+        })
+        gradient.Rotation = 35
+        gradient.Parent = tile
+    end
+
+    local grid = Instance.new('Frame')
+    grid.Name = 'Grid'
+    grid.BackgroundColor3 = Color3.new(0, 0, 0)
+    grid.BackgroundTransparency = 0.82
+    grid.BorderSizePixel = 0
+    grid.Size = UDim2.fromScale(1, 1)
+    grid.ZIndex = 1
+    grid.Parent = tile
+
+    local gridGrad = Instance.new('UIGradient')
+    gridGrad.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0.35),
+        NumberSequenceKeypoint.new(0.5, 0.75),
+        NumberSequenceKeypoint.new(1, 0.35),
+    })
+    gridGrad.Rotation = 45
+    gridGrad.Parent = grid
+
+    local title = Instance.new('TextLabel')
+    title.Name = 'Title'
+    title.Size = UDim2.new(1, -4, 0, 16)
+    title.Position = UDim2.new(0, 2, 0, 2)
+    title.Text = moon.title
+    title.ZIndex = 3
+    title.Parent = tile
+    applyOutlinedText(title)
+
+    local weatherImage = getMoonWeatherImage(moon.key)
+    if weatherImage then
+        local moonIcon = Instance.new('ImageLabel')
+        moonIcon.Name = 'Moon'
+        moonIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+        moonIcon.Position = UDim2.new(0.5, 0, 0.52, 0)
+        moonIcon.Size = UDim2.fromOffset(moon.key == 'Mega Moon' and 42 or 34, moon.key == 'Mega Moon' and 42 or 34)
+        moonIcon.BackgroundTransparency = 1
+        moonIcon.Image = weatherImage
+        moonIcon.ScaleType = Enum.ScaleType.Fit
+        moonIcon.ZIndex = 2
+        moonIcon.Parent = tile
+    else
+        local moonIcon = Instance.new('Frame')
+        moonIcon.Name = 'Moon'
+        moonIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+        moonIcon.Position = UDim2.new(0.5, 0, 0.52, 0)
+        moonIcon.Size = UDim2.fromOffset(34, 34)
+        moonIcon.BackgroundColor3 = moon.moon
+        moonIcon.BorderSizePixel = 0
+        moonIcon.ZIndex = 2
+        moonIcon.Parent = tile
+
+        local moonCorner = Instance.new('UICorner')
+        moonCorner.CornerRadius = UDim.new(1, 0)
+        moonCorner.Parent = moonIcon
+
+        if moon.rainbow then
+            local moonGrad = Instance.new('UIGradient')
+            moonGrad.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 80, 160)),
+                ColorSequenceKeypoint.new(0.35, Color3.fromRGB(80, 180, 255)),
+                ColorSequenceKeypoint.new(0.7, Color3.fromRGB(80, 255, 140)),
+                ColorSequenceKeypoint.new(1, Color3.fromRGB(255, 220, 70)),
+            })
+            moonGrad.Rotation = 90
+            moonGrad.Parent = moonIcon
+        end
+    end
+
+    local timer = Instance.new('TextLabel')
+    timer.Name = 'Timer'
+    timer.Size = UDim2.new(1, -4, 0, 16)
+    timer.Position = UDim2.new(0, 2, 1, -18)
+    timer.Text = '...'
+    timer.ZIndex = 3
+    timer.Parent = tile
+    applyOutlinedText(timer)
+
+    return timer
+end
+
+function buildEventPredictorGui()
+    local playerGui = LocalPlayer:FindFirstChild('PlayerGui')
+    if not playerGui then
+        return nil
+    end
+
+    local existing = playerGui:FindFirstChild('GG2_EventPredictor')
+    if existing then
+        existing:Destroy()
+    end
+
+    local gui = Instance.new('ScreenGui')
+    gui.Name = 'GG2_EventPredictor'
+    gui.ResetOnSpawn = false
+    gui.IgnoreGuiInset = true
+    gui.DisplayOrder = 100
+    gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    gui.Parent = playerGui
+
+    local root = Instance.new('Frame')
+    root.Name = 'Root'
+    root.AnchorPoint = Vector2.new(1, 1)
+    root.Position = UDim2.new(1, -10, 1, -10)
+    root.Size = UDim2.fromOffset(324, 112)
+    root.BackgroundTransparency = 1
+    root.Parent = gui
+
+    local invBar = Instance.new('Frame')
+    invBar.Name = 'InvValue'
+    invBar.Size = UDim2.new(1, 0, 0, 28)
+    invBar.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    invBar.BackgroundTransparency = 0.15
+    invBar.BorderSizePixel = 0
+    invBar.Parent = root
+
+    local invCorner = Instance.new('UICorner')
+    invCorner.CornerRadius = UDim.new(0, 6)
+    invCorner.Parent = invBar
+
+    local fruitCount = Instance.new('TextLabel')
+    fruitCount.Name = 'FruitCount'
+    fruitCount.Size = UDim2.new(0.55, -6, 1, 0)
+    fruitCount.Position = UDim2.new(0, 8, 0, 0)
+    fruitCount.Text = '0/100 Fruits'
+    fruitCount.TextXAlignment = Enum.TextXAlignment.Left
+    fruitCount.Parent = invBar
+    applyOutlinedText(fruitCount)
+    fruitCount.TextScaled = false
+    fruitCount.TextSize = 16
+
+    local invValue = Instance.new('TextLabel')
+    invValue.Name = 'Value'
+    invValue.Size = UDim2.new(0.45, -8, 1, 0)
+    invValue.Position = UDim2.new(0.55, 0, 0, 0)
+    invValue.Text = '$0'
+    invValue.TextColor3 = Color3.fromRGB(60, 255, 90)
+    invValue.Font = Enum.Font.GothamBold
+    invValue.TextScaled = false
+    invValue.TextSize = 18
+    invValue.BackgroundTransparency = 1
+    invValue.TextXAlignment = Enum.TextXAlignment.Right
+    invValue.Parent = invBar
+
+    local invStroke = Instance.new('UIStroke')
+    invStroke.Thickness = 1.8
+    invStroke.Color = Color3.new(0, 0, 0)
+    invStroke.Parent = invValue
+
+    local row = Instance.new('Frame')
+    row.Name = 'Moons'
+    row.Position = UDim2.new(0, 0, 0, 32)
+    row.Size = UDim2.new(1, 0, 0, 78)
+    row.BackgroundTransparency = 1
+    row.Parent = root
+
+    local layout = Instance.new('UIListLayout')
+    layout.FillDirection = Enum.FillDirection.Horizontal
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 4)
+    layout.Parent = row
+
+    local timers = {}
+    for i, moon in ipairs(EVENT_PREDICTOR_MOONS) do
+        timers[moon.key] = createEventMoonTile(row, moon, i)
+    end
+
+    State.EventPredictorGui = gui
+    State.EventPredictorTileLabels = timers
+    State.EventPredictorInvLabels = {
+        FruitCount = fruitCount,
+        Value = invValue,
+    }
+
+    return gui
+end
+
+function updateEventPredictorHud()
+    if not State.EventPredictorHudEnabled then
+        return
+    end
+
+    if not State.EventPredictorGui or not State.EventPredictorGui.Parent then
+        buildEventPredictorGui()
+    end
+
+    local countdowns = predictMoonCountdowns()
+    if State.EventPredictorTileLabels then
+        for _, moon in ipairs(EVENT_PREDICTOR_MOONS) do
+            local label = State.EventPredictorTileLabels[moon.key]
+            if label then
+                local seconds = countdowns[moon.key]
+                if seconds == 0 then
+                    label.Text = 'Active'
+                elseif typeof(seconds) == 'number' then
+                    label.Text = formatEventCountdown(seconds)
+                else
+                    label.Text = '...'
+                end
+            end
+        end
+    end
+
+    local value, count = getInventoryFruitValue()
+    local maxCap = tonumber(LocalPlayer:GetAttribute('MaxFruitCapacity'))
+        or getInventoryCapacity()
+        or 100
+    local fruitCount = tonumber(LocalPlayer:GetAttribute('FruitCount')) or count or 0
+
+    if State.EventPredictorInvLabels then
+        if State.EventPredictorInvLabels.FruitCount then
+            State.EventPredictorInvLabels.FruitCount.Text = string.format('%d/%d Fruits', fruitCount, maxCap)
+        end
+        if State.EventPredictorInvLabels.Value then
+            State.EventPredictorInvLabels.Value.Text = formatInvCurrency(value)
+        end
+    end
+end
+
+function setEventPredictorHud(enabled)
+    enabled = enabled == true
+
+    if not enabled then
+        State.EventPredictorHudEnabled = false
+        if State.EventPredictorThread then
+            pcall(task.cancel, State.EventPredictorThread)
+            State.EventPredictorThread = nil
+        end
+        if State.EventPredictorGui then
+            pcall(function()
+                State.EventPredictorGui:Destroy()
+            end)
+            State.EventPredictorGui = nil
+        end
+        State.EventPredictorTileLabels = nil
+        State.EventPredictorInvLabels = nil
+        return
+    end
+
+    if State.EventPredictorHudEnabled and State.EventPredictorThread then
+        return
+    end
+
+    State.EventPredictorHudEnabled = true
+    ensureEventPredictorPhases()
+    buildEventPredictorGui()
+    updateEventPredictorHud()
+
+    if State.EventPredictorThread then
+        pcall(task.cancel, State.EventPredictorThread)
+    end
+
+    State.EventPredictorThread = task.spawn(function()
+        while State.EventPredictorHudEnabled and not Library.Unloaded do
+            local ok, err = pcall(updateEventPredictorHud)
+            if not ok then
+                warn('[GG2] Event predictor update failed:', err)
+            end
+            task.wait(1)
+        end
+    end)
+end
+
+OptimizerBox:AddToggle('EventPredictorHud', {
+    Text = 'Event Predictor HUD',
+    Default = true,
+    Tooltip = 'Bottom-right Gold/Blood/Rainbow/Mega moon timers + inventory fruit value (matches game cycle RNG)',
+    Callback = function(value)
+        if State.ConfigLoading then
+            return
+        end
+
+        setEventPredictorHud(value)
+    end,
+})
+
 function shutdownScript()
     if Library.Unloaded then
         return
@@ -6798,6 +7459,7 @@ function shutdownScript()
     cancelOptimizerPendingApply()
     pcall(setOptimizer, false)
     pcall(setCameraBlackout, false)
+    pcall(setEventPredictorHud, false)
     pcall(setAutoHarvestLoop, false)
     pcall(setAutoWateringLoop, false)
     pcall(setAutoBuyLoop, false)
@@ -7142,6 +7804,10 @@ task.defer(function()
 
     if Toggles.CameraBlackout and Toggles.CameraBlackout.Value then
         setCameraBlackout(true)
+    end
+
+    if not Toggles.EventPredictorHud or Toggles.EventPredictorHud.Value ~= false then
+        setEventPredictorHud(true)
     end
 
     waitForGardenReady(45)
