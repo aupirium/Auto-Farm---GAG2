@@ -1,5 +1,14 @@
 local GENV = getgenv()
 
+if GENV.GG2_AutoFarmShutdown then
+    pcall(GENV.GG2_AutoFarmShutdown)
+    task.wait(0.05)
+end
+
+if GENV.GG2_FromAutoExec then
+    GENV.GG2_AutoFarmRunning = nil
+end
+
 if identifyexecutor then
     local ok, executorName = pcall(function()
         return select(1, identifyexecutor())
@@ -9,20 +18,11 @@ if identifyexecutor then
     end
 end
 
--- Same JobId = already running on this server. Blocks the "10000x execute"
--- loop when Volt autoexec + queue_on_teleport both fire, or when multiple
--- bootstrap files (rejoin.lua / GG2.lua) land in the autoexec folder.
-if GENV.GG2_AutoFarmRunning and GENV.GG2_AutoFarmJobId == game.JobId then
+if GENV.GG2_AutoFarmRunning then
     return
 end
 
-if GENV.GG2_AutoFarmShutdown then
-    pcall(GENV.GG2_AutoFarmShutdown)
-    task.wait(0.05)
-end
-
 GENV.GG2_AutoFarmRunning = true
-GENV.GG2_AutoFarmJobId = game.JobId
 
 repeat task.wait() until game:IsLoaded()
 
@@ -158,14 +158,12 @@ if not GENV.GG2_SkipRemoteUpdate and not GENV.GG2_FromAutoExec and type(writefil
                 task.wait(0.05)
             end
             GENV.GG2_AutoFarmRunning = false
-            GENV.GG2_AutoFarmJobId = nil
             local func = loadstring(remote, AUTO_FARM_SCRIPT)
             if func then
                 func()
                 return
             end
             GENV.GG2_AutoFarmRunning = true
-            GENV.GG2_AutoFarmJobId = game.JobId
         end
     end
 end
@@ -461,14 +459,6 @@ end
 
 function saveConfigBeforeTeleport()
     pcall(function()
-        -- Never overwrite the saved config with defaults. The rejoin-spam bug
-        -- was doing exactly that: teleports fired before LoadAutoloadConfig
-        -- finished, so SaveManager:Save wrote empty/default toggles over the
-        -- real autoload file and "reset" the config.
-        if State.ConfigLoading or not State.ConfigLoadedOk then
-            return
-        end
-
         captureConfigTargetPlant()
         captureConfigHarvestPlants()
 
@@ -876,7 +866,8 @@ local State = {
     OptimizerApplyToken = 0,
     OptimizerWorldScanThread = nil,
     OptimizerWorldDescendantConnection = nil,
-    OptimizerGardensChildConnection = nil,
+    OptimizerGardenChildConnection = nil,
+    OptimizerPlotIdConnection = nil,
     OptimizerPendingApply = nil,
     OptimizerPartCache = {},
     OptimizerEnforceConnections = {},
@@ -886,7 +877,6 @@ local State = {
     CameraBlackoutOriginalType = nil,
     CameraBlackoutCharacterConnection = nil,
     ConfigLoading = false,
-    ConfigLoadedOk = false,
     AntiAfkConnection = nil,
     AutoSellThread = nil,
     LastHarvest = 0,
@@ -1063,14 +1053,52 @@ function watchOptimizerEnforcement(inst, prop, offValue, extra)
 end
 
 --[[
+    Client-only wipe of every Gardens plot that isn't yours. This is the big
+    FPS win from the high-FPS optimizers: other players' plants/pets/effects
+    never get rendered at all. Destroy is local - the server still has them,
+    farming still works, and turning the optimizer off cannot restore them
+    until you rejoin.
+]]
+function deleteOtherPlayersGardens()
+    local ownPlot = getPlot()
+    if not ownPlot then
+        return false
+    end
+
+    for _, plot in Gardens:GetChildren() do
+        if plot ~= ownPlot then
+            pcall(function()
+                plot:Destroy()
+            end)
+        end
+    end
+
+    return true
+end
+
+function isUnderOtherPlayersGarden(inst)
+    local ownPlot = getPlot()
+    if not ownPlot then
+        return false
+    end
+
+    local current = inst
+    while current and current ~= workspace do
+        if current.Parent == Gardens then
+            return current ~= ownPlot
+        end
+        current = current.Parent
+    end
+
+    return false
+end
+
+--[[
     Unified, single-pass optimizer hider.
     Every instance is touched at most once (guarded by OptimizerPartCache), so
     re-scans and the live DescendantAdded watcher stay effectively free.
-    Plant/fruit geometry (anything under a plot's "Plants" folder, on every
-    plot, including other players') gets fully hidden (invisible + non
-    collidable). The rest of the world (ground, plot land, decorations) just
-    gets simplified (no textures/decals/shadows) so it stays visible but
-    cheap to render.
+    Your plant/fruit geometry gets fully hidden; other players' entire plots
+    are deleted separately. The rest of the world just gets simplified.
 ]]
 function optimizerHideInstance(inst)
     if State.OptimizerPartCache[inst] then
@@ -1078,6 +1106,19 @@ function optimizerHideInstance(inst)
     end
 
     if isLocalPlayerDescendant(inst) or isCharacterPart(inst) then
+        return
+    end
+
+    if isUnderOtherPlayersGarden(inst) then
+        local plot = inst
+        while plot and plot.Parent ~= Gardens do
+            plot = plot.Parent
+        end
+        if plot and plot.Parent == Gardens and plot ~= getPlot() then
+            pcall(function()
+                plot:Destroy()
+            end)
+        end
         return
     end
 
@@ -1133,47 +1174,9 @@ function optimizerHideInstance(inst)
     end
 end
 
---[[
-    workspace:GetDescendants() returns instances in whatever internal order
-    Roblox happens to store them, NOT prioritized by what matters most for
-    FPS. On a busy public server the full sweep (hundreds of thousands of
-    world decals/parts) can take a while to complete, and if Gardens happens
-    to be enumerated late, OTHER players' plants - the single biggest FPS
-    cost, since they're the ones actively growing/emitting particles - can
-    stay fully visible for a long time, or forever if the scan can't keep up
-    with a low frame rate. This runs first and goes straight for every
-    plot's Plants folder (yours AND everyone else's) so nothing needs to
-    wait its turn behind irrelevant world geometry.
-]]
-function primeOptimizerGardens(applyToken)
-    if not Gardens then
-        return
-    end
-
-    local processed = 0
-    for _, plot in Gardens:GetChildren() do
-        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-            return
-        end
-
-        local plantsFolder = plot:FindFirstChild('Plants')
-        if plantsFolder then
-            for _, desc in plantsFolder:GetDescendants() do
-                optimizerHideInstance(desc)
-
-                processed += 1
-                if processed % 500 == 0 then
-                    RunService.Heartbeat:Wait()
-                    if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-                        return
-                    end
-                end
-            end
-        end
-    end
-end
-
 function scanOptimizerWorld(applyToken)
+    deleteOtherPlayersGardens()
+
     local descendants = workspace:GetDescendants()
     for i = 1, #descendants do
         if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
@@ -1236,6 +1239,18 @@ function applyWorldOptimizer()
     end
 end
 
+function stopOptimizerGardenWatchers()
+    if State.OptimizerGardenChildConnection then
+        State.OptimizerGardenChildConnection:Disconnect()
+        State.OptimizerGardenChildConnection = nil
+    end
+
+    if State.OptimizerPlotIdConnection then
+        State.OptimizerPlotIdConnection:Disconnect()
+        State.OptimizerPlotIdConnection = nil
+    end
+end
+
 function startWorldOptimizerMaintenance(applyToken)
     if State.OptimizerWorldScanThread then
         pcall(task.cancel, State.OptimizerWorldScanThread)
@@ -1247,15 +1262,33 @@ function startWorldOptimizerMaintenance(applyToken)
         State.OptimizerWorldDescendantConnection = nil
     end
 
-    if State.OptimizerGardensChildConnection then
-        State.OptimizerGardensChildConnection:Disconnect()
-        State.OptimizerGardensChildConnection = nil
-    end
-
+    stopOptimizerGardenWatchers()
     cleanupOptimizerLegacyCosmetics()
 
-    -- Hook new instances (plant growth, new fruit, new plots joining) first so
-    -- nothing added mid-scan is missed, then run the one-time full sweep.
+    -- Wipe other plots the instant they stream in (player joins / plot loads).
+    State.OptimizerGardenChildConnection = Gardens.ChildAdded:Connect(function(plot)
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+
+        local ownPlot = getPlot()
+        if ownPlot and plot ~= ownPlot then
+            pcall(function()
+                plot:Destroy()
+            end)
+        end
+    end)
+
+    -- PlotId can arrive after the first pass; re-wipe as soon as we know ours.
+    State.OptimizerPlotIdConnection = LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+        deleteOtherPlayersGardens()
+    end)
+
+    -- Hook new instances (plant growth, new fruit) first so nothing added
+    -- mid-scan is missed, then wipe other gardens + run the world sweep.
     State.OptimizerWorldDescendantConnection = workspace.DescendantAdded:Connect(function(desc)
         if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
             return
@@ -1264,32 +1297,20 @@ function startWorldOptimizerMaintenance(applyToken)
         optimizerHideInstance(desc)
     end)
 
-    -- A whole new plot (another player joining/streaming in) needs its
-    -- Plants folder hidden the instant it appears, not whenever the slow
-    -- full-world scan eventually gets around to it.
-    if Gardens then
-        State.OptimizerGardensChildConnection = Gardens.ChildAdded:Connect(function(plot)
+    State.OptimizerWorldScanThread = task.spawn(function()
+        -- Wait briefly for PlotId if needed so we never delete our own plot.
+        local deadline = os.clock() + 30
+        while not getPlot() and os.clock() < deadline do
             if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
                 return
             end
+            task.wait(0.25)
+        end
 
-            task.defer(function()
-                if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-                    return
-                end
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
 
-                local plantsFolder = plot:FindFirstChild('Plants') or plot:WaitForChild('Plants', 5)
-                if plantsFolder then
-                    for _, desc in plantsFolder:GetDescendants() do
-                        optimizerHideInstance(desc)
-                    end
-                end
-            end)
-        end)
-    end
-
-    State.OptimizerWorldScanThread = task.spawn(function()
-        primeOptimizerGardens(applyToken)
         scanOptimizerWorld(applyToken)
 
         if applyToken == State.OptimizerApplyToken and State.OptimizerEnabled then
@@ -1304,15 +1325,12 @@ function restoreWorldOptimizer()
         State.OptimizerWorldDescendantConnection = nil
     end
 
-    if State.OptimizerGardensChildConnection then
-        State.OptimizerGardensChildConnection:Disconnect()
-        State.OptimizerGardensChildConnection = nil
-    end
-
     if State.OptimizerWorldScanThread then
         pcall(task.cancel, State.OptimizerWorldScanThread)
         State.OptimizerWorldScanThread = nil
     end
+
+    stopOptimizerGardenWatchers()
 
     if State.OptimizerOriginal then
         local o = State.OptimizerOriginal
@@ -4495,59 +4513,10 @@ function ensureWeatherHideUntilValid()
         return
     end
 
-    -- Only clear truly broken state (Hiding with no timer). A real elapsed
-    -- timer is left alone so resumeWeatherDodgeFromSavedState / tryRejoinHome
-    -- can finish the dodge when this boot came from auto-exec.
     if hideUntil <= 0 then
-        clearWeatherState({ keepWalkBack = State.PendingWalkBack or State.PendingWalkToSaved })
+        State.HideUntil = now + 120
+        saveWeatherState()
     end
-end
-
---[[
-    Manual execute should never teleport just because a leftover weather file
-    says we were mid-dodge. Only resume leave/rejoin when this boot came from
-    queue_on_teleport (GG2_FromAutoExec), or when a blocked weather is
-    actually active right now.
-]]
-function resumeWeatherDodgeFromSavedState()
-    if not State.WeatherHiding then
-        return
-    end
-
-    local fromAutoExec = GENV.GG2_FromAutoExec == true
-    local blockedActive = false
-    pcall(function()
-        local blocked = getBlockedWeathers()
-        blockedActive = findBlockedWeather(blocked) ~= nil
-    end)
-
-    if isWeatherHideTimerElapsed() then
-        if fromAutoExec then
-            task.defer(tryRejoinHome)
-            if not isStillOnWeatherHomeServer() then
-                startWeatherRejoinWorker()
-            end
-        else
-            -- Manual execute after the dodge timer already ended - just
-            -- settle on this server, don't teleport.
-            clearWeatherState({ keepWalkBack = true })
-        end
-        return
-    end
-
-    if not fromAutoExec and not blockedActive then
-        -- Manual execute with a leftover "hiding" flag but no bad weather
-        -- currently playing - drop the stale dodge instead of leaving.
-        clearWeatherState({ keepWalkBack = true })
-        return
-    end
-
-    if isStillOnWeatherHomeServer() then
-        task.defer(function()
-            retryLeaveIfStillHome()
-        end)
-    end
-    startWeatherHideWait()
 end
 
 function saveWeatherState()
@@ -4731,15 +4700,9 @@ if not Players.LocalPlayer then
     Players.PlayerAdded:Wait()
 end
 
--- Already running on this exact server = skip. Prevents Volt autoexec +
--- queue_on_teleport (or duplicate bootstrap files) from stacking executions.
-local genv = getgenv()
-if genv.GG2_AutoFarmRunning and genv.GG2_AutoFarmJobId == game.JobId then
-    return
-end
-
-genv.GG2_FromAutoExec = true
-genv.GG2_SkipRemoteUpdate = true
+getgenv().GG2_AutoFarmRunning = nil
+getgenv().GG2_FromAutoExec = true
+getgenv().GG2_SkipRemoteUpdate = true
 
 local isfile = isfile or function(file)
     local suc, res = pcall(function()
@@ -4755,12 +4718,9 @@ local function runSource(source, label)
         return false
     end
 
-    if genv.GG2_AutoFarmRunning and genv.GG2_AutoFarmJobId == game.JobId then
-        return true
-    end
-
-    genv.GG2_FromAutoExec = true
-    genv.GG2_SkipRemoteUpdate = true
+    getgenv().GG2_AutoFarmRunning = nil
+    getgenv().GG2_FromAutoExec = true
+    getgenv().GG2_SkipRemoteUpdate = true
 
     local func, err = loadFn(source, label or 'gg2')
     if not func then
@@ -4810,30 +4770,20 @@ function persistAutoExecBootstrap()
     end
 
     ensureGg2Folders()
-    -- ONLY write the one bootstrap file under GG2/. Never spam autoexec/
-    -- (Volt runs every file there on join - writing rejoin.lua + GG2.lua
-    -- into it is what caused the "executes 10000x" loop).
-    pcall(function()
-        writefile(GG2_AUTOEXEC_FILE, getAutoExecQueueScript())
-    end)
+    local scriptBody = getAutoExecQueueScript()
+    local paths = {
+        GG2_AUTOEXEC_FILE,
+        'rejoin.lua',
+        'autoexec/rejoin.lua',
+        'Autoexec/rejoin.lua',
+        'autoexec/GG2.lua',
+        'Autoexec/GG2.lua',
+    }
 
-    -- One-time cleanup of leftover spam from older builds that wrote into
-    -- the executor autoexec folder (caused infinite re-exec on every join).
-    if delfile and not GENV.GG2_CleanedAutoExecSpam then
-        GENV.GG2_CleanedAutoExecSpam = true
-        for _, path in {
-            'rejoin.lua',
-            'autoexec/rejoin.lua',
-            'Autoexec/rejoin.lua',
-            'autoexec/GG2.lua',
-            'Autoexec/GG2.lua',
-        } do
-            pcall(function()
-                if isfile(path) then
-                    delfile(path)
-                end
-            end)
-        end
+    for _, path in paths do
+        pcall(function()
+            writefile(path, scriptBody)
+        end)
     end
 
     return true
@@ -5777,7 +5727,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Client FPS boost: hides every plant/fruit (yours and everyone else\'s) and deletes their particles/meshes/glow effects outright (not just disabled) so a fruit ripening can\'t flash them back on, while keeping plots/land visible. Simplifies world materials/water. No sky or lighting changes. Farming/harvest still works normally.',
+    Tooltip = 'Client FPS boost: deletes every other player\'s garden plot (client-side only - yours stays), hides your plants/fruits, and deletes particles/meshes/glow so ripening can\'t flash them back on. Simplifies world materials/water. No sky changes. Farming still works. Other gardens only come back after a rejoin.',
     Callback = function(value)
         if State.ConfigLoading then
             return
@@ -5839,7 +5789,6 @@ function shutdownScript()
     end)
 
     GENV.GG2_AutoFarmRunning = false
-    GENV.GG2_AutoFarmJobId = nil
     GENV.GG2_Library = nil
 end
 
@@ -6082,7 +6031,21 @@ setupWeatherErrorReconnect()
 setupAuctionNetworking()
 
 if State.WeatherHiding then
-    resumeWeatherDodgeFromSavedState()
+    if isWeatherHideTimerElapsed() then
+        if isStillOnWeatherHomeServer() then
+            task.defer(tryRejoinHome)
+        else
+            task.defer(tryRejoinHome)
+            startWeatherRejoinWorker()
+        end
+    else
+        if isStillOnWeatherHomeServer() then
+            task.defer(function()
+                retryLeaveIfStillHome()
+            end)
+        end
+        startWeatherHideWait()
+    end
 elseif State.ReturnPlaceId and game.PlaceId == State.ReturnPlaceId then
     if not State.PendingWalkToSaved
         and not State.PendingWalkBack
@@ -6099,7 +6062,7 @@ persistLoaderScript()
 if getQueueOnTeleport() and writefile then
     task.defer(function()
         if Library and Library.Notify then
-            Library:Notify('Auto-exec ready (queue_on_teleport). Optional: copy GG2/rejoin.lua into Volt autoexec once')
+            Library:Notify('Auto-exec queued. For menu rejoin: add GG2/rejoin.lua to Volt autoexec folder')
         end
     end)
 end
@@ -6129,19 +6092,10 @@ end
 
 task.defer(function()
     State.ConfigLoading = true
-    State.ConfigLoadedOk = false
-    local loadOk = pcall(function()
-        SaveManager:LoadAutoloadConfig()
-    end)
+    SaveManager:LoadAutoloadConfig()
     State.ConfigLoading = false
-    State.ConfigLoadedOk = loadOk == true
     syncTargetPlantFromSavedConfig()
-    -- Don't capture/overwrite plant files until the UI has been synced from
-    -- the loaded config - capturing right after a failed/partial load is how
-    -- empty defaults got written over real settings during the rejoin loop.
-    if State.ConfigLoadedOk then
-        captureConfigTargetPlant()
-    end
+    captureConfigTargetPlant()
     syncHarvestPlantsFromSavedConfig()
     if Options.MenuKeybind then
         Library.ToggleKeybind = Options.MenuKeybind
@@ -6185,10 +6139,8 @@ task.defer(function()
         setWeatherDodge(true)
     elseif State.WeatherHiding and not isWeatherHideTimerElapsed() then
         setWeatherDodge(true)
-    elseif State.WeatherHiding and isWeatherHideTimerElapsed() and GENV.GG2_FromAutoExec then
-        task.defer(tryRejoinHome)
     elseif State.WeatherHiding and isWeatherHideTimerElapsed() then
-        clearWeatherState({ keepWalkBack = true })
+        task.defer(tryRejoinHome)
     end
 
     task.wait(1.5)
@@ -6200,10 +6152,7 @@ task.defer(function()
     task.wait(0.1)
     pcall(refreshMailInventory)
     updateWeatherLabels()
-
-    -- Clear after boot so a later manual re-execute isn't treated as a
-    -- mid-dodge auto-exec resume.
-    GENV.GG2_FromAutoExec = nil
+    queueTeleportScript()
 end)
 
 LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
