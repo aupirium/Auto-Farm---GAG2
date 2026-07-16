@@ -572,6 +572,11 @@ pcall(function()
     FruitValueCalc = require(ReplicatedStorage.SharedModules.FruitValueCalc)
 end)
 
+local FruitProxyUtil
+pcall(function()
+    FruitProxyUtil = require(ReplicatedStorage.SharedModules.FruitProxyUtil)
+end)
+
 local TimeCycleData
 pcall(function()
     TimeCycleData = require(ReplicatedStorage.SharedModules.TimeCycleData)
@@ -2786,8 +2791,11 @@ function applyTargetPlantToDropdown(plantName)
         table.insert(values, plantName)
     end
 
-    Options.TargetPlant:SetValues(values)
-    Options.TargetPlant:SetValue(plantName)
+    if not safeSetDropdownValues(Options.TargetPlant, values) then
+        State.ConfigTargetPlant = plantName
+        return true
+    end
+    safeSetDropdownValue(Options.TargetPlant, plantName)
     State.ConfigTargetPlant = plantName
     return true
 end
@@ -2810,6 +2818,28 @@ function captureConfigTargetPlant()
         State.ConfigTargetPlant = plantName
         saveTargetPlantFile(plantName)
     end
+end
+
+function safeSetDropdownValues(option, values)
+    if not option or type(option.SetValues) ~= 'function' or type(values) ~= 'table' then
+        return false
+    end
+
+    local ok = pcall(function()
+        option:SetValues(values)
+    end)
+    return ok == true
+end
+
+function safeSetDropdownValue(option, value)
+    if not option or type(option.SetValue) ~= 'function' then
+        return false
+    end
+
+    local ok = pcall(function()
+        option:SetValue(value)
+    end)
+    return ok == true
 end
 
 function refreshTargetPlantDropdown()
@@ -2843,14 +2873,16 @@ function refreshTargetPlantDropdown()
         table.insert(values, preferred)
     end
 
-    Options.TargetPlant:SetValues(values)
+    if not safeSetDropdownValues(Options.TargetPlant, values) then
+        return
+    end
 
     if preferred and preferred ~= 'None' and preferred ~= '' then
-        Options.TargetPlant:SetValue(preferred)
+        safeSetDropdownValue(Options.TargetPlant, preferred)
         State.ConfigTargetPlant = preferred
         saveTargetPlantFile(preferred)
     else
-        Options.TargetPlant:SetValue('None')
+        safeSetDropdownValue(Options.TargetPlant, 'None')
     end
 end
 
@@ -3080,8 +3112,10 @@ function refreshHarvestPlantsDropdown()
     end
 
     table.sort(names)
-    Options.HarvestPlantTypes:SetValues(values)
-    Options.HarvestPlantTypes:SetValue(selection)
+    if not safeSetDropdownValues(Options.HarvestPlantTypes, values) then
+        return
+    end
+    safeSetDropdownValue(Options.HarvestPlantTypes, selection)
     State.ConfigHarvestPlants = names
 end
 
@@ -3343,7 +3377,22 @@ function setAutoWateringLoop(enabled)
 end
 
 function isFruitTool(tool)
-    if not tool or not tool:IsA('Tool') then
+    if not tool then
+        return false
+    end
+
+    if FruitProxyUtil and FruitProxyUtil.IsFruitInstance then
+        local ok, isFruit = pcall(FruitProxyUtil.IsFruitInstance, tool)
+        if ok and isFruit then
+            return true
+        end
+    end
+
+    if tool:IsA('Configuration') and tool:GetAttribute('FruitProxy') == true then
+        return true
+    end
+
+    if not tool:IsA('Tool') then
         return false
     end
 
@@ -3351,7 +3400,17 @@ function isFruitTool(tool)
         return true
     end
 
-    return typeof(tool:GetAttribute('FruitName')) == 'string' and tool:GetAttribute('FruitName') ~= ''
+    if typeof(tool:GetAttribute('FruitName')) == 'string' and tool:GetAttribute('FruitName') ~= '' then
+        return true
+    end
+
+    -- Inventory treats any tool with a Fruit attribute as a harvested fruit,
+    -- including favorited ones.
+    if tool:GetAttribute('Fruit') ~= nil then
+        return true
+    end
+
+    return false
 end
 
 function countHarvestedFruits()
@@ -3413,9 +3472,11 @@ function getHarvestedFruitTools()
 
     for _, container in { LocalPlayer:FindFirstChild('Backpack'), getCharacter() } do
         if container then
-            for _, tool in container:GetChildren() do
-                if isFruitTool(tool) then
-                    table.insert(tools, tool)
+            for _, child in container:GetChildren() do
+                -- Include real fruit Tools AND FruitProxy Configuration
+                -- instances (most favorited / uneqipped fruits are proxies).
+                if isFruitTool(child) then
+                    table.insert(tools, child)
                 end
             end
         end
@@ -6861,7 +6922,56 @@ function formatInvCurrency(amount)
     if text == '' or text == nil then
         text = tostring(amount)
     end
+    -- Inventory header uses a leading $ (same as slot value labels).
+    if string.sub(text, 1, 1) == '$' then
+        return text
+    end
     return '$' .. text
+end
+
+function readGameInventoryHeaderValue()
+    local playerGui = LocalPlayer:FindFirstChild('PlayerGui')
+    local backpackGui = playerGui and playerGui:FindFirstChild('BackpackGui')
+    local inventory = backpackGui
+        and backpackGui:FindFirstChild('Backpack')
+        and backpackGui.Backpack:FindFirstChild('Inventory')
+    if not inventory then
+        return nil, nil
+    end
+
+    local fruitInventory = inventory:FindFirstChild('FruitInventory')
+    if fruitInventory and fruitInventory:IsA('TextLabel') then
+        local text = tostring(fruitInventory.Text or '')
+        -- Formats seen: "34/100 Fruits | $6.2B" or separate value sibling.
+        local countText, valueText = text:match('^(%d+%s*/%s*%d+%s*Fruits)%s*|%s*(.+)$')
+        if valueText and valueText ~= '' then
+            return countText, valueText:gsub('%s+$', '')
+        end
+
+        local valueOnly = text:match('%$[%d%.]+[KMBTQkmbtq]?')
+            or text:match('%$[%d%,%.]+')
+        if valueOnly then
+            local fruits = text:match('%d+%s*/%s*%d+%s*Fruits')
+            return fruits, valueOnly
+        end
+    end
+
+    for _, child in inventory:GetChildren() do
+        if child:IsA('TextLabel') or child:IsA('TextButton') then
+            local text = tostring(child.Text or '')
+            if text:find('%$') and (text:find('B') or text:find('M') or text:find('K') or text:find('T')) then
+                if text:find('Fruits') then
+                    local countText, valueText = text:match('^(%d+%s*/%s*%d+%s*Fruits)%s*|%s*(.+)$')
+                    if valueText then
+                        return countText, valueText:gsub('%s+$', '')
+                    end
+                end
+                return nil, text
+            end
+        end
+    end
+
+    return nil, nil
 end
 
 function ensureEventPredictorPhases()
@@ -7051,55 +7161,64 @@ function predictMoonCountdowns()
     return results
 end
 
+function getToolFruitValue(tool)
+    if not tool or not FruitValueCalc then
+        return 0
+    end
+
+    local fruitName = tool:GetAttribute('FruitName')
+        or tool:GetAttribute('Fruit')
+    if typeof(fruitName) ~= 'string' or fruitName == '' then
+        -- Proxy/tool Name looks like: "Dragon's Breath [Glow] [249.48kg]"
+        fruitName = tostring(tool.Name or ''):match('^([^%[]+)') or tool.Name
+        fruitName = tostring(fruitName):gsub('%s+$', '')
+    end
+    if typeof(fruitName) ~= 'string' or fruitName == '' then
+        return 0
+    end
+
+    local sizeMulti = tool:GetAttribute('SizeMultiplier')
+        or tool:GetAttribute('SizeMulti')
+        or 1
+    sizeMulti = tonumber(sizeMulti) or 1
+
+    local mutation = tool:GetAttribute('Mutation')
+    if mutation == '' or mutation == 'None' then
+        mutation = nil
+    end
+
+    local decay = tool:GetAttribute('DecayAlpha')
+    local ok, value = pcall(FruitValueCalc, fruitName, sizeMulti, mutation, LocalPlayer, decay)
+    if ok and typeof(value) == 'number' then
+        return value
+    end
+
+    ok, value = pcall(FruitValueCalc, fruitName, sizeMulti, mutation, tool, decay)
+    if ok and typeof(value) == 'number' then
+        return value
+    end
+
+    return 0
+end
+
 function getInventoryFruitValue()
     local now = os.clock()
-    if State.EventPredictorInvCache and (now - (State.EventPredictorInvCacheAt or 0)) < 2 then
+    if State.EventPredictorInvCache and (now - (State.EventPredictorInvCacheAt or 0)) < 1 then
         return State.EventPredictorInvCache.total, State.EventPredictorInvCache.count
     end
 
+    -- Never use PreviewSellAll here: it excludes favorited fruits, which is
+    -- why the HUD showed ~$8K while the inventory header showed billions.
     local total = 0
     local count = 0
 
-    local previewOk, preview = pcall(function()
-        return Networking.NPCS.PreviewSellAll:Fire()
-    end)
-    if previewOk and typeof(preview) == 'table' then
-        local value = tonumber(preview.TotalBaseValue) or tonumber(preview.TotalValue)
-        local fruitCount = tonumber(preview.FruitCount)
-        if value and value >= 0 then
-            total = value
-        end
-        if fruitCount and fruitCount >= 0 then
-            count = fruitCount
-        end
-        if total > 0 or count > 0 then
-            State.EventPredictorInvCache = { total = total, count = count }
-            State.EventPredictorInvCacheAt = now
-            return total, count
-        end
-    end
-
-    if not FruitValueCalc then
-        count = countHarvestedFruits()
-        State.EventPredictorInvCache = { total = 0, count = count }
-        State.EventPredictorInvCacheAt = now
-        return 0, count
-    end
-
     for _, tool in getHarvestedFruitTools() do
         count = count + 1
-        local fruitName = tool:GetAttribute('FruitName')
-            or tool:GetAttribute('Fruit')
-            or tool.Name
-        local sizeMulti = tool:GetAttribute('SizeMultiplier')
-            or tool:GetAttribute('SizeMulti')
-            or 1
-        local mutation = tool:GetAttribute('Mutation')
-        local decay = tool:GetAttribute('DecayAlpha')
-        local ok, value = pcall(FruitValueCalc, fruitName, sizeMulti, mutation, LocalPlayer, decay)
-        if ok and typeof(value) == 'number' then
-            total = total + value
-        end
+        total = total + getToolFruitValue(tool)
+    end
+
+    if count == 0 then
+        count = tonumber(LocalPlayer:GetAttribute('FruitCount')) or 0
     end
 
     State.EventPredictorInvCache = { total = total, count = count }
@@ -7289,34 +7408,25 @@ function buildEventPredictorGui()
     invCorner.CornerRadius = UDim.new(0, 6)
     invCorner.Parent = invBar
 
-    local fruitCount = Instance.new('TextLabel')
-    fruitCount.Name = 'FruitCount'
-    fruitCount.Size = UDim2.new(0.55, -6, 1, 0)
-    fruitCount.Position = UDim2.new(0, 8, 0, 0)
-    fruitCount.Text = '0/100 Fruits'
-    fruitCount.TextXAlignment = Enum.TextXAlignment.Left
-    fruitCount.Parent = invBar
-    applyOutlinedText(fruitCount)
-    fruitCount.TextScaled = false
-    fruitCount.TextSize = 16
+    -- Matches inventory header: "34/100 Fruits | $6.2B"
+    local header = Instance.new('TextLabel')
+    header.Name = 'Header'
+    header.Size = UDim2.new(1, -12, 1, 0)
+    header.Position = UDim2.new(0, 8, 0, 0)
+    header.BackgroundTransparency = 1
+    header.RichText = true
+    header.Font = Enum.Font.GothamBold
+    header.TextSize = 18
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.TextYAlignment = Enum.TextYAlignment.Center
+    header.Text = '0/100 Fruits | <font color="#00FF00">$0</font>'
+    header.TextColor3 = Color3.new(1, 1, 1)
+    header.Parent = invBar
 
-    local invValue = Instance.new('TextLabel')
-    invValue.Name = 'Value'
-    invValue.Size = UDim2.new(0.45, -8, 1, 0)
-    invValue.Position = UDim2.new(0.55, 0, 0, 0)
-    invValue.Text = '$0'
-    invValue.TextColor3 = Color3.fromRGB(60, 255, 90)
-    invValue.Font = Enum.Font.GothamBold
-    invValue.TextScaled = false
-    invValue.TextSize = 18
-    invValue.BackgroundTransparency = 1
-    invValue.TextXAlignment = Enum.TextXAlignment.Right
-    invValue.Parent = invBar
-
-    local invStroke = Instance.new('UIStroke')
-    invStroke.Thickness = 1.8
-    invStroke.Color = Color3.new(0, 0, 0)
-    invStroke.Parent = invValue
+    local headerStroke = Instance.new('UIStroke')
+    headerStroke.Thickness = 1.6
+    headerStroke.Color = Color3.new(0, 0, 0)
+    headerStroke.Parent = header
 
     local row = Instance.new('Frame')
     row.Name = 'Moons'
@@ -7340,8 +7450,7 @@ function buildEventPredictorGui()
     State.EventPredictorGui = gui
     State.EventPredictorTileLabels = timers
     State.EventPredictorInvLabels = {
-        FruitCount = fruitCount,
-        Value = invValue,
+        Header = header,
     }
 
     return gui
@@ -7378,14 +7487,25 @@ function updateEventPredictorHud()
         or getInventoryCapacity()
         or 100
     local fruitCount = tonumber(LocalPlayer:GetAttribute('FruitCount')) or count or 0
+    local countText = string.format('%d/%d Fruits', fruitCount, maxCap)
+    local valueText = formatInvCurrency(value)
 
-    if State.EventPredictorInvLabels then
-        if State.EventPredictorInvLabels.FruitCount then
-            State.EventPredictorInvLabels.FruitCount.Text = string.format('%d/%d Fruits', fruitCount, maxCap)
-        end
-        if State.EventPredictorInvLabels.Value then
-            State.EventPredictorInvLabels.Value.Text = formatInvCurrency(value)
-        end
+    -- Prefer the live inventory header text when it already includes worth,
+    -- so we stay pixel-matched with the game's own total.
+    local gameCount, gameValue = readGameInventoryHeaderValue()
+    if typeof(gameValue) == 'string' and gameValue ~= '' then
+        valueText = gameValue
+    end
+    if typeof(gameCount) == 'string' and gameCount ~= '' then
+        countText = gameCount
+    end
+
+    if State.EventPredictorInvLabels and State.EventPredictorInvLabels.Header then
+        State.EventPredictorInvLabels.Header.Text = string.format(
+            '%s | <font color="#00FF00">%s</font>',
+            countText,
+            valueText
+        )
     end
 end
 
@@ -7811,8 +7931,13 @@ task.defer(function()
     end
 
     waitForGardenReady(45)
-    refreshTargetPlantDropdown()
-    refreshHarvestPlantsDropdown()
+    task.defer(function()
+        if Library.Unloaded then
+            return
+        end
+        pcall(refreshTargetPlantDropdown)
+        pcall(refreshHarvestPlantsDropdown)
+    end)
     doStartupWalk()
 
     if Toggles.AutoWateringCan and Toggles.AutoWateringCan.Value then
