@@ -1003,10 +1003,11 @@ function isCharacterPart(part)
 end
 
 --[[
-    Matched to the high-FPS reference clip: empty dirt beds, night sky, other
-    gardens gone, FPS unlocked. Plant MODELS are deleted for FPS; auto-harvest
-    reads GardenSync (plantId/fruitId/ripe/weight) and fires CollectFruit -
-    it does not need the 3D models to exist locally.
+    High-FPS optimizer:
+    - Other players: wipe their whole garden + characters
+    - Your plants: delete the heavy plant meshes, but KEEP fruit models
+      (made invisible) so weight/harvest paths that touch instances still work
+    - Night sky / graphics / FPS unlock stay the same
 ]]
 local OPTIMIZER_DESTROY_CLASSES = {
     ParticleEmitter = true,
@@ -1021,6 +1022,12 @@ local OPTIMIZER_DESTROY_CLASSES = {
     SurfaceLight = true,
     Decal = true,
     Texture = true,
+}
+
+-- Keep these under your plant model; everything else is visual junk.
+local OPTIMIZER_PLANT_KEEP_NAMES = {
+    Fruits = true,
+    Base = true,
 }
 
 local OPTIMIZER_SKY_ASSET = 'rbxassetid://136622198885324'
@@ -1378,15 +1385,169 @@ end
 
 --[[
     Don't wipe a plant until PlantId exists and we've snapshotted it.
-    Early DescendantAdded events used to destroy models before PlantId
-    replicated, which emptied PlantMemory and broke gear/fruits/harvest.
+    Then strip plant visuals but KEEP fruits (invisible) for harvest/weight.
 ]]
-function optimizerDestroyOwnPlant(model)
+function hideOptimizerPart(part)
+    if not part or not part:IsA('BasePart') then
+        return
+    end
+
+    pcall(function()
+        part.Transparency = 1
+        part.LocalTransparencyModifier = 1
+        part.CastShadow = false
+        part.CanCollide = false
+        part.Anchored = true
+        if part.Material ~= Enum.Material.SmoothPlastic then
+            part.Material = Enum.Material.SmoothPlastic
+        end
+    end)
+end
+
+function isUnderOwnFruitsFolder(inst)
+    local current = inst
+    while current and current ~= workspace do
+        if current.Name == 'Fruits' then
+            local plant = current.Parent
+            if plant and plant.Parent and plant.Parent.Name == 'Plants' then
+                local plot = plant.Parent.Parent
+                local ownPlot = getPlot()
+                if ownPlot and plot == ownPlot then
+                    return true, plant, current
+                end
+            end
+        end
+        current = current.Parent
+    end
+    return false
+end
+
+function hideFruitModel(fruitModel)
+    if not fruitModel or not fruitModel.Parent then
+        return
+    end
+
+    local function scrub(desc)
+        if not desc or not desc.Parent then
+            return
+        end
+
+        if desc:IsA('ProximityPrompt') then
+            return
+        end
+
+        if OPTIMIZER_DESTROY_CLASSES[desc.ClassName] then
+            pcall(function()
+                desc:Destroy()
+            end)
+            return
+        end
+
+        if desc:IsA('BillboardGui') then
+            local keepGui = desc.Name == 'HarvestPromptLabel'
+                or desc:FindFirstChildWhichIsA('ProximityPrompt', true) ~= nil
+            if not keepGui then
+                pcall(function()
+                    desc:Destroy()
+                end)
+            end
+            return
+        end
+
+        -- Drop heavy fruit meshes; keep Base/HarvestPart as invisible anchors.
+        if desc.Parent == fruitModel
+            and (desc:IsA('MeshPart') or desc:IsA('Model') or desc:IsA('Folder'))
+            and desc.Name ~= 'Base'
+            and desc.Name ~= 'HarvestPart'
+            and desc.Name ~= 'Anthers' then
+            -- Anthers are many parts - delete for FPS.
+            pcall(function()
+                desc:Destroy()
+            end)
+            return
+        end
+
+        if desc.Name == 'Anthers' then
+            pcall(function()
+                desc:Destroy()
+            end)
+            return
+        end
+
+        if desc:IsA('BasePart') then
+            hideOptimizerPart(desc)
+        end
+    end
+
+    if State.OptimizerPartCache[fruitModel] == 'fruitHidden' then
+        for _, desc in fruitModel:GetDescendants() do
+            scrub(desc)
+        end
+        return
+    end
+
+    State.OptimizerPartCache[fruitModel] = 'fruitHidden'
+
+    -- Direct children first so mesh folders get removed quickly.
+    for _, child in fruitModel:GetChildren() do
+        scrub(child)
+    end
+    for _, desc in fruitModel:GetDescendants() do
+        scrub(desc)
+    end
+
+    if fruitModel:IsA('BasePart') then
+        hideOptimizerPart(fruitModel)
+    end
+end
+
+function stripOwnPlantVisuals(model)
     if not model or not model.Parent or model.Parent.Name ~= 'Plants' then
         return
     end
 
-    if State.OptimizerPartCache[model] then
+    pcall(snapshotPlantModel, model)
+
+    for _, child in model:GetChildren() do
+        if child.Name == 'Fruits' then
+            for _, fruit in child:GetChildren() do
+                hideFruitModel(fruit)
+            end
+        elseif child.Name == 'Base' and child:IsA('BasePart') then
+            -- Keep one invisible anchor so plant position still exists.
+            hideOptimizerPart(child)
+            State.OptimizerPartCache[child] = 'plantBase'
+        else
+            -- Heavy plant meshes / debug / spawn markers.
+            pcall(function()
+                child:Destroy()
+            end)
+        end
+    end
+
+    State.OptimizerPartCache[model] = 'plantStripped'
+end
+
+function optimizerStripOwnPlant(model)
+    if not model or not model.Parent or model.Parent.Name ~= 'Plants' then
+        return
+    end
+
+    if State.OptimizerPartCache[model] == 'plantStripped' then
+        -- Plant already stripped; only clean new visual junk / new fruits.
+        for _, child in model:GetChildren() do
+            if child.Name == 'Fruits' then
+                for _, fruit in child:GetChildren() do
+                    hideFruitModel(fruit)
+                end
+            elseif child.Name == 'Base' and child:IsA('BasePart') then
+                hideOptimizerPart(child)
+            elseif not OPTIMIZER_PLANT_KEEP_NAMES[child.Name] then
+                pcall(function()
+                    child:Destroy()
+                end)
+            end
+        end
         return
     end
 
@@ -1394,15 +1555,11 @@ function optimizerDestroyOwnPlant(model)
         if not model or not model.Parent or not State.OptimizerEnabled then
             return
         end
-        if State.OptimizerPartCache[model] then
+        if State.OptimizerPartCache[model] == 'plantStripped' then
+            optimizerStripOwnPlant(model)
             return
         end
-
-        State.OptimizerPartCache[model] = true
-        pcall(snapshotPlantModel, model)
-        pcall(function()
-            model:Destroy()
-        end)
+        stripOwnPlantVisuals(model)
     end
 
     if model:GetAttribute('PlantId') then
@@ -1547,8 +1704,8 @@ function getCachedFruitMemory(plantId, fruitId)
 end
 
 --[[
-    Empty dirt beds = destroy plant models (this is what hit ~400 FPS).
-    Snapshot first so gear/fruits/harvest still have positions + weights.
+    Strip own plant meshes (empty-looking beds) but keep fruit models invisible
+    so auto harvest / weight / fruits tab still have real instances.
 ]]
 function clearOwnPlantModels()
     snapshotOwnPlants()
@@ -1560,7 +1717,7 @@ function clearOwnPlantModels()
     end
 
     for _, child in plantsFolder:GetChildren() do
-        optimizerDestroyOwnPlant(child)
+        optimizerStripOwnPlant(child)
     end
 end
 
@@ -1630,14 +1787,42 @@ function optimizerHideInstance(inst)
         return
     end
 
-    -- Own plants/fruits: wait for PlantId, snapshot, then delete.
+    -- Own plants: strip meshes, keep fruits invisible.
     if isPlantInstance(inst) then
+        local underFruits, plantModel, fruitsFolder = isUnderOwnFruitsFolder(inst)
+        if underFruits and fruitsFolder then
+            local fruit = inst
+            while fruit and fruit.Parent and fruit.Parent ~= fruitsFolder do
+                fruit = fruit.Parent
+            end
+            if fruit and fruit.Parent == fruitsFolder then
+                hideFruitModel(fruit)
+            elseif OPTIMIZER_DESTROY_CLASSES[inst.ClassName] then
+                pcall(function()
+                    inst:Destroy()
+                end)
+            elseif inst:IsA('BasePart') then
+                hideOptimizerPart(inst)
+            end
+            return
+        end
+
         local model = inst
         while model and model.Parent and model.Parent.Name ~= 'Plants' do
             model = model.Parent
         end
         if model and model.Parent and model.Parent.Name == 'Plants' then
-            optimizerDestroyOwnPlant(model)
+            -- New visual junk re-added under an already-stripped plant.
+            if State.OptimizerPartCache[model] == 'plantStripped'
+                and inst ~= model
+                and inst.Parent == model
+                and not OPTIMIZER_PLANT_KEEP_NAMES[inst.Name] then
+                pcall(function()
+                    inst:Destroy()
+                end)
+                return
+            end
+            optimizerStripOwnPlant(model)
         end
         return
     end
@@ -6502,7 +6687,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'High FPS mode: unlocks FPS, night sky, lowest graphics, deletes other gardens/NPCs/characters, and deletes YOUR plant models (empty dirt beds). Snapshots plant positions/weights first so auto gear, fruits tab, and harvest still work. Other gardens only come back after rejoin.',
+    Tooltip = 'High FPS mode: unlocks FPS, night sky, lowest graphics, deletes OTHER players gardens/NPCs/characters, strips YOUR plant meshes but keeps fruits invisible so auto harvest/gear/fruits still work. Other gardens only come back after rejoin.',
     Callback = function(value)
         if State.ConfigLoading then
             return
