@@ -808,9 +808,6 @@ local State = {
     LastWatering = 0,
     LastSell = 0,
     EarningsWindow = {},
-    NoclipConnection = nil,
-    NoclipPlantState = {},
-    NoclipPlantConnection = nil,
     HarvestConnection = nil,
     HarvestThread = nil,
     WateringConnection = nil,
@@ -872,21 +869,9 @@ local State = {
     OptimizerPendingApply = nil,
     OptimizerPartCache = {},
     ConfigLoading = false,
-    OptimizerPlantIncomingQueue = nil,
-    PlantEmitterSet = {},
     AntiAfkConnection = nil,
     AutoSellThread = nil,
     LastHarvest = 0,
-    NoclipPlantApplyToken = 0,
-    PlantEffectMaintainConnection = nil,
-    PlantEmitterClearConnection = nil,
-    PlantEmitterCache = {},
-    PlantEmitterCacheAt = 0,
-    PlantWatchConnections = {},
-    GardensWatchConnection = nil,
-    FruitsFolderConnections = {},
-    PlantChildConnections = {},
-    NoclipCharConnection = nil,
     GardenFruits = {},
     FruitLabelMap = {},
     LoadingDismissThread = nil,
@@ -965,13 +950,6 @@ function startLoadingScreenAutoDismiss()
     end)
 end
 
-local OPTIMIZER_SKY_ASSET = 'rbxassetid://136622198885324'
-local OPTIMIZER_SKY_NAME = 'GG2OptimizerSky'
-
-function isGardenDescendant(inst)
-    return inst == Gardens or inst:IsDescendantOf(Gardens)
-end
-
 function isLocalPlayerDescendant(inst)
     local char = LocalPlayer.Character
     if not char or not inst then
@@ -987,71 +965,6 @@ function optimizerSafeSet(obj, prop, value)
     end)
 end
 
-function killPlantEmitter(emitter, skipClear)
-    emitter.Enabled = false
-    emitter.Rate = 0
-    if skipClear then
-        return
-    end
-
-    pcall(function()
-        emitter.Lifetime = NumberRange.new(0, 0)
-    end)
-    pcall(function()
-        emitter:Clear()
-    end)
-    pcall(function()
-        emitter.Transparency = NumberSequence.new(1)
-    end)
-end
-
-function rehidePlantInstance(inst)
-    if inst:IsA('BasePart') then
-        if inst.Transparency < 1 or inst.LocalTransparencyModifier < 1 or inst.CanCollide then
-            inst.CanCollide = false
-            inst.Transparency = 1
-            inst.LocalTransparencyModifier = 1
-        end
-    elseif inst:IsA('Decal') or inst:IsA('Texture') then
-        if inst.Transparency < 1 then
-            inst.Transparency = 1
-        end
-    elseif inst:IsA('BillboardGui') or inst:IsA('SurfaceGui') or inst:IsA('Highlight')
-        or inst:IsA('SelectionBox') or inst:IsA('ProximityPrompt') then
-        if inst.Enabled then
-            inst.Enabled = false
-        end
-    elseif inst:IsA('ParticleEmitter') then
-        killPlantEmitter(inst)
-    elseif inst:IsA('Trail') or inst:IsA('Beam') or inst:IsA('Fire') or inst:IsA('Smoke')
-        or inst:IsA('Sparkles') then
-        if inst.Enabled then
-            inst.Enabled = false
-        end
-    elseif inst:IsA('PointLight') or inst:IsA('SpotLight') or inst:IsA('Light') then
-        if inst.Enabled then
-            inst.Enabled = false
-        end
-    end
-end
-
-function getWatchedPlantsFolders()
-    local folders = {}
-
-    if Toggles.Noclip and Toggles.Noclip.Value then
-        local plotId = LocalPlayer:GetAttribute('PlotId')
-        if plotId then
-            local plot = Gardens:FindFirstChild('Plot' .. plotId)
-            local plants = plot and plot:FindFirstChild('Plants')
-            if plants then
-                table.insert(folders, plants)
-            end
-        end
-    end
-
-    return folders
-end
-
 function isPlantInstance(inst)
     local current = inst
     while current and current ~= workspace do
@@ -1061,325 +974,6 @@ function isPlantInstance(inst)
         current = current.Parent
     end
     return false
-end
-
-function trackPlantEmitter(emitter)
-    if not emitter:IsA('ParticleEmitter') then
-        return
-    end
-
-    if State.PlantEmitterSet[emitter] then
-        return
-    end
-
-    State.PlantEmitterSet[emitter] = true
-    table.insert(State.PlantEmitterCache, emitter)
-    killPlantEmitter(emitter, true)
-end
-
-function clearCachedPlantEmitters()
-    for _, emitter in State.PlantEmitterCache do
-        if emitter and emitter.Parent then
-            killPlantEmitter(emitter)
-        end
-    end
-end
-
-function suppressPlantVisual(inst, savedState, record)
-    local props = savedState[inst]
-
-    if inst:IsA('ParticleEmitter') then
-        if not props then
-            props = {
-                Enabled = inst.Enabled,
-                Rate = inst.Rate,
-                Lifetime = inst.Lifetime,
-            }
-            savedState[inst] = props
-            if record then
-                record(inst, props)
-            end
-        end
-        killPlantEmitter(inst)
-    elseif inst:IsA('Trail') or inst:IsA('Beam') then
-        if not props then
-            props = { Enabled = inst.Enabled }
-            savedState[inst] = props
-            if record then
-                record(inst, props)
-            end
-        end
-        inst.Enabled = false
-    elseif inst:IsA('Fire') or inst:IsA('Smoke') or inst:IsA('Sparkles') or inst:IsA('Light') then
-        if not props then
-            props = { Enabled = inst.Enabled }
-            savedState[inst] = props
-            if record then
-                record(inst, props)
-            end
-        end
-        inst.Enabled = false
-    elseif inst:IsA('Decal') or inst:IsA('Texture') then
-        if not props then
-            props = { Transparency = inst.Transparency }
-            savedState[inst] = props
-            if record then
-                record(inst, props)
-            end
-        end
-        inst.Transparency = 1
-    elseif inst:IsA('BillboardGui') or inst:IsA('SurfaceGui') or inst:IsA('Highlight')
-        or inst:IsA('SelectionBox') or inst:IsA('ProximityPrompt') then
-        if not props then
-            props = { Enabled = inst.Enabled }
-            savedState[inst] = props
-            if record then
-                record(inst, props)
-            end
-        end
-        inst.Enabled = false
-    elseif inst:IsA('PointLight') or inst:IsA('SpotLight') then
-        if not props then
-            props = { Enabled = inst.Enabled }
-            savedState[inst] = props
-            if record then
-                record(inst, props)
-            end
-        end
-        inst.Enabled = false
-    elseif inst:IsA('BasePart') then
-        if not props then
-            if State.OptimizerEnabled then
-                props = {
-                    CanCollide = inst.CanCollide,
-                    LocalTransparencyModifier = inst.LocalTransparencyModifier,
-                    Transparency = inst.Transparency,
-                    CastShadow = inst.CastShadow,
-                }
-            else
-                props = {
-                    CanCollide = inst.CanCollide,
-                    LocalTransparencyModifier = inst.LocalTransparencyModifier,
-                    Transparency = inst.Transparency,
-                    CastShadow = inst.CastShadow,
-                    Material = inst.Material,
-                    Reflectance = inst.Reflectance,
-                }
-            end
-            savedState[inst] = props
-            if record then
-                record(inst, props)
-            end
-        end
-        inst.CanCollide = false
-        inst.LocalTransparencyModifier = 1
-        inst.Transparency = 1
-        inst.CastShadow = false
-    end
-end
-
-function stopPlantEffectMaintain()
-    if State.PlantEffectMaintainConnection then
-        State.PlantEffectMaintainConnection:Disconnect()
-        State.PlantEffectMaintainConnection = nil
-    end
-
-    if State.PlantEmitterClearConnection then
-        State.PlantEmitterClearConnection:Disconnect()
-        State.PlantEmitterClearConnection = nil
-    end
-
-    stopPlantWatchers()
-    stopFruitsFolderWatchers()
-
-    State.PlantEmitterCache = {}
-    State.PlantEmitterSet = {}
-    State.PlantEmitterCacheAt = 0
-    State.OptimizerPlantIncomingQueue = nil
-end
-
-function shouldMaintainPlantEffects()
-    if Library.Unloaded then
-        return false
-    end
-
-    return Toggles.Noclip and Toggles.Noclip.Value == true
-end
-
-function forceSuppressPlantEffect(inst)
-    if inst:IsA('ParticleEmitter') then
-        killPlantEmitter(inst)
-    elseif inst:IsA('Trail') or inst:IsA('Beam') or inst:IsA('Fire') or inst:IsA('Smoke')
-        or inst:IsA('Sparkles') or inst:IsA('Light') then
-        inst.Enabled = false
-    end
-end
-
-function stopFruitsFolderWatchers()
-    for _, connection in State.FruitsFolderConnections do
-        connection:Disconnect()
-    end
-    State.FruitsFolderConnections = {}
-
-    for _, connection in State.PlantChildConnections do
-        connection:Disconnect()
-    end
-    State.PlantChildConnections = {}
-end
-
-function stopPlantWatchers()
-    for _, connection in State.PlantWatchConnections do
-        connection:Disconnect()
-    end
-    State.PlantWatchConnections = {}
-
-    if State.GardensWatchConnection then
-        State.GardensWatchConnection:Disconnect()
-        State.GardensWatchConnection = nil
-    end
-end
-
-function hideWatchedPlantInstance(desc)
-    if Toggles.Noclip and Toggles.Noclip.Value then
-        local plotId = LocalPlayer:GetAttribute('PlotId')
-        local plot = plotId and Gardens:FindFirstChild('Plot' .. plotId)
-        local plants = plot and plot:FindFirstChild('Plants')
-        if plants and desc:IsDescendantOf(plants) then
-            suppressPlantVisual(desc, State.NoclipPlantState)
-            trackPlantEmitter(desc)
-        end
-    end
-end
-
-function hideWatchedPlantTree(root)
-    if typeof(root) ~= 'Instance' then
-        return
-    end
-
-    local stack = { root }
-    while #stack > 0 do
-        local inst = table.remove(stack)
-        hideWatchedPlantInstance(inst)
-        local children = inst:GetChildren()
-        for i = #children, 1, -1 do
-            table.insert(stack, children[i])
-        end
-    end
-end
-
-function onPlantDescendantAdded(desc)
-    if not State.OptimizerPlantIncomingQueue then
-        State.OptimizerPlantIncomingQueue = {}
-    end
-    table.insert(State.OptimizerPlantIncomingQueue, desc)
-end
-
-function flushOptimizerPlantIncomingQueue(batchSize)
-    local queue = State.OptimizerPlantIncomingQueue
-    if not queue or #queue == 0 then
-        return
-    end
-
-    batchSize = batchSize or 64
-    local count = math.min(#queue, batchSize)
-    for _ = 1, count do
-        local inst = table.remove(queue)
-        if inst and inst.Parent then
-            hideWatchedPlantInstance(inst)
-        end
-    end
-end
-
-function ensureFruitsFolderWatchers()
-    if not shouldMaintainPlantEffects() then
-        stopFruitsFolderWatchers()
-        return
-    end
-
-    for _, plants in getWatchedPlantsFolders() do
-        if not State.PlantChildConnections[plants] then
-            State.PlantChildConnections[plants] = plants.ChildAdded:Connect(function(plantModel)
-                task.defer(function()
-                    hideWatchedPlantTree(plantModel)
-                    ensureFruitsFolderWatchers()
-                end)
-            end)
-        end
-
-        for _, plantModel in plants:GetChildren() do
-            local fruitsFolder = plantModel:FindFirstChild('Fruits')
-            if fruitsFolder and not State.FruitsFolderConnections[fruitsFolder] then
-                State.FruitsFolderConnections[fruitsFolder] = fruitsFolder.ChildAdded:Connect(function(fruitModel)
-                    task.defer(function()
-                        hideWatchedPlantTree(fruitModel)
-                    end)
-                end)
-            end
-        end
-    end
-end
-
-function ensurePlantWatchers()
-    if not shouldMaintainPlantEffects() then
-        stopPlantWatchers()
-        return
-    end
-
-    for _, plants in getWatchedPlantsFolders() do
-        if not State.PlantWatchConnections[plants] then
-            State.PlantWatchConnections[plants] = plants.DescendantAdded:Connect(onPlantDescendantAdded)
-        end
-    end
-
-    if not State.GardensWatchConnection then
-        State.GardensWatchConnection = Gardens.ChildAdded:Connect(function(child)
-            if child:FindFirstChild('Plants') then
-                task.defer(ensurePlantWatchers)
-            end
-        end)
-    end
-end
-
-function clearCachedPlantEmittersBatch(batchSize)
-    local cache = State.PlantEmitterCache
-    local count = #cache
-    if count == 0 then
-        return
-    end
-
-    batchSize = batchSize or 12
-    local startIndex = State.PlantEmitterClearIndex or 1
-
-    for i = 1, math.min(batchSize, count) do
-        local index = ((startIndex + i - 2) % count) + 1
-        local emitter = cache[index]
-        if emitter and emitter.Parent then
-            killPlantEmitter(emitter)
-        end
-    end
-
-    State.PlantEmitterClearIndex = (startIndex + batchSize - 1) % count + 1
-end
-
-function updatePlantEffectMaintain()
-    if not shouldMaintainPlantEffects() then
-        stopPlantEffectMaintain()
-        return
-    end
-
-    if not State.PlantEffectMaintainConnection then
-        State.PlantEffectMaintainConnection = RunService.Heartbeat:Connect(function()
-            if not shouldMaintainPlantEffects() then
-                stopPlantEffectMaintain()
-                return
-            end
-
-            flushOptimizerPlantIncomingQueue(64)
-        end)
-    end
-
-    ensurePlantWatchers()
-    ensureFruitsFolderWatchers()
 end
 
 function isCharacterPart(part)
@@ -1394,7 +988,6 @@ function isCharacterPart(part)
 end
 
 local OPTIMIZER_HIDE_CLASSES = {
-    ParticleEmitter = true,
     Beam = true,
     Trail = true,
     Fire = true,
@@ -1412,10 +1005,11 @@ local OPTIMIZER_LIGHT_CLASSES = {
     Unified, single-pass optimizer hider.
     Every instance is touched at most once (guarded by OptimizerPartCache), so
     re-scans and the live DescendantAdded watcher stay effectively free.
-    Plants/fruit geometry inside Gardens gets fully hidden (invisible + non
-    collidable) for every plot, including other players', while the rest of
-    the world just gets simplified (no textures/decals/shadows) so it stays
-    visible but cheap to render.
+    Plant/fruit geometry (anything under a plot's "Plants" folder, on every
+    plot, including other players') gets fully hidden (invisible + non
+    collidable). The rest of the world (ground, plot land, decorations) just
+    gets simplified (no textures/decals/shadows) so it stays visible but
+    cheap to render.
 ]]
 function optimizerHideInstance(inst)
     if State.OptimizerPartCache[inst] then
@@ -1429,7 +1023,7 @@ function optimizerHideInstance(inst)
     local className = inst.ClassName
 
     if inst:IsA('BasePart') then
-        local inGarden = isGardenDescendant(inst)
+        local isPlant = isPlantInstance(inst)
         local cache = {
             Material = inst.Material,
             CastShadow = inst.CastShadow,
@@ -1438,7 +1032,7 @@ function optimizerHideInstance(inst)
         inst.Material = Enum.Material.SmoothPlastic
         inst.CastShadow = false
 
-        if inGarden then
+        if isPlant then
             cache.Transparency = inst.Transparency
             cache.CanCollide = inst.CanCollide
             cache.LocalTransparencyModifier = inst.LocalTransparencyModifier
@@ -1451,13 +1045,23 @@ function optimizerHideInstance(inst)
     elseif className == 'Decal' or className == 'Texture' then
         State.OptimizerPartCache[inst] = { Transparency = inst.Transparency }
         inst.Transparency = 1
+    elseif className == 'ParticleEmitter' then
+        -- Already-emitted particles keep animating even after Enabled=false,
+        -- which is what causes stray puffs (e.g. Dragon's Breath smoke) to
+        -- flash briefly when a new one grows. Clear() removes them instantly.
+        State.OptimizerPartCache[inst] = { Enabled = inst.Enabled, Rate = inst.Rate }
+        inst.Enabled = false
+        inst.Rate = 0
+        pcall(function()
+            inst:Clear()
+        end)
     elseif OPTIMIZER_HIDE_CLASSES[className] then
         State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
         inst.Enabled = false
     elseif OPTIMIZER_LIGHT_CLASSES[className] then
         State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
         inst.Enabled = false
-    elseif className == 'ProximityPrompt' and isGardenDescendant(inst) then
+    elseif className == 'ProximityPrompt' and isPlantInstance(inst) then
         State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
         inst.Enabled = false
     end
@@ -1472,52 +1076,12 @@ function scanOptimizerWorld(applyToken)
 
         optimizerHideInstance(descendants[i])
 
-        if i % 400 == 0 then
+        if i % 1000 == 0 then
             RunService.Heartbeat:Wait()
         end
     end
 
     return true
-end
-
-function applyOptimizerLighting()
-    local skyClones = {}
-    for _, child in Lighting:GetChildren() do
-        if child:IsA('Sky') then
-            table.insert(skyClones, child:Clone())
-            pcall(function()
-                child:Destroy()
-            end)
-        end
-    end
-
-    State.OptimizerOriginal.SkyClones = skyClones
-
-    local existingSky = Lighting:FindFirstChild(OPTIMIZER_SKY_NAME)
-    if existingSky then
-        pcall(function()
-            existingSky:Destroy()
-        end)
-    end
-
-    local sky = Instance.new('Sky')
-    sky.Name = OPTIMIZER_SKY_NAME
-    sky.SkyboxBk = OPTIMIZER_SKY_ASSET
-    sky.SkyboxDn = OPTIMIZER_SKY_ASSET
-    sky.SkyboxFt = OPTIMIZER_SKY_ASSET
-    sky.SkyboxLf = OPTIMIZER_SKY_ASSET
-    sky.SkyboxRt = OPTIMIZER_SKY_ASSET
-    sky.SkyboxUp = OPTIMIZER_SKY_ASSET
-    sky.SunAngularSize = 0
-    sky.MoonAngularSize = 0
-    sky.Parent = Lighting
-
-    Lighting.GeographicLatitude = 41.75
-    Lighting.Brightness = 0
-    Lighting.ExposureCompensation = -0.5
-    Lighting.Ambient = Color3.fromRGB(80, 80, 95)
-    Lighting.OutdoorAmbient = Color3.fromRGB(60, 60, 70)
-    Lighting.ShadowColor = Color3.fromRGB(30, 30, 40)
 end
 
 -- One-time safety net in case an old build of this script left cosmetic
@@ -1552,20 +1116,11 @@ function applyWorldOptimizer()
     end)
 
     State.OptimizerOriginal = {
-        Brightness = Lighting.Brightness,
-        GeographicLatitude = Lighting.GeographicLatitude,
-        ExposureCompensation = Lighting.ExposureCompensation,
-        Ambient = Lighting.Ambient,
-        OutdoorAmbient = Lighting.OutdoorAmbient,
-        ShadowColor = Lighting.ShadowColor,
         TerrainDecoration = terrainDecoration,
         WaterWaveSize = terrain and terrain.WaterWaveSize,
         WaterWaveSpeed = terrain and terrain.WaterWaveSpeed,
         WaterReflectance = terrain and terrain.WaterReflectance,
-        SkyClones = {},
     }
-
-    applyOptimizerLighting()
 
     if terrain then
         optimizerSafeSet(terrain, 'Decoration', false)
@@ -1622,30 +1177,6 @@ function restoreWorldOptimizer()
         local o = State.OptimizerOriginal
 
         pcall(function()
-            Lighting.Brightness = o.Brightness
-            Lighting.GeographicLatitude = o.GeographicLatitude
-            Lighting.ExposureCompensation = o.ExposureCompensation
-            Lighting.Ambient = o.Ambient
-            Lighting.OutdoorAmbient = o.OutdoorAmbient
-            Lighting.ShadowColor = o.ShadowColor
-        end)
-
-        local customSky = Lighting:FindFirstChild(OPTIMIZER_SKY_NAME)
-        if customSky then
-            pcall(function()
-                customSky:Destroy()
-            end)
-        end
-
-        if o.SkyClones then
-            for _, skyClone in o.SkyClones do
-                if skyClone and skyClone:IsA('Sky') then
-                    skyClone.Parent = Lighting
-                end
-            end
-        end
-
-        pcall(function()
             local terrain = workspace:FindFirstChildOfClass('Terrain') or workspace.Terrain
             if terrain then
                 if o.TerrainDecoration ~= nil then
@@ -1694,15 +1225,10 @@ function scheduleOptimizerApply()
     cancelOptimizerPendingApply()
 
     State.OptimizerPendingApply = task.spawn(function()
+        -- Only real requirement: workspace needs to exist, which it does the
+        -- instant the loading screen is gone. No garden/extra waits needed -
+        -- the live DescendantAdded hook catches anything not loaded in yet.
         waitForLoadingScreenDismiss(180)
-
-        if Library.Unloaded or not Toggles.Optimizer or not Toggles.Optimizer.Value then
-            State.OptimizerPendingApply = nil
-            return
-        end
-
-        waitForGardenReady(90)
-        task.wait(5)
 
         if Library.Unloaded or not Toggles.Optimizer or not Toggles.Optimizer.Value then
             State.OptimizerPendingApply = nil
@@ -2062,126 +1588,6 @@ function getPlot()
         return Gardens:FindFirstChild('Plot' .. plotId)
     end
     return nil
-end
-
-function hidePlantVisual(inst)
-    suppressPlantVisual(inst, State.NoclipPlantState)
-    trackPlantEmitter(inst)
-end
-
-function restorePlantNoclip()
-    if State.NoclipPlantConnection then
-        State.NoclipPlantConnection:Disconnect()
-        State.NoclipPlantConnection = nil
-    end
-
-    for inst, props in State.NoclipPlantState do
-        if inst and inst.Parent then
-            for prop, val in props do
-                pcall(function()
-                    inst[prop] = val
-                end)
-            end
-        end
-    end
-
-    State.NoclipPlantState = {}
-    updatePlantEffectMaintain()
-end
-
-function applyPlantNoclip(enabled)
-    State.NoclipPlantApplyToken += 1
-    local applyToken = State.NoclipPlantApplyToken
-
-    restorePlantNoclip()
-
-    if not enabled then
-        return
-    end
-
-    task.spawn(function()
-        local plantsFolder
-        local deadline = os.clock() + 30
-
-        while not plantsFolder and os.clock() < deadline do
-            if applyToken ~= State.NoclipPlantApplyToken then
-                return
-            end
-
-            local plot = getPlot()
-            plantsFolder = plot and plot:FindFirstChild('Plants')
-            if not plantsFolder then
-                task.wait(0.25)
-            end
-        end
-
-        if not plantsFolder or applyToken ~= State.NoclipPlantApplyToken then
-            return
-        end
-
-        for _, plantModel in plantsFolder:GetChildren() do
-            if applyToken ~= State.NoclipPlantApplyToken then
-                return
-            end
-
-            hideWatchedPlantTree(plantModel)
-            task.wait(0.06)
-        end
-
-        updatePlantEffectMaintain()
-    end)
-end
-
-function setCharacterNoclip(char)
-    if not char then
-        return
-    end
-
-    for _, part in char:GetDescendants() do
-        if part:IsA('BasePart') then
-            part.CanCollide = false
-        end
-    end
-end
-
-function bindNoclipCharacter(char)
-    if State.NoclipCharConnection then
-        State.NoclipCharConnection:Disconnect()
-        State.NoclipCharConnection = nil
-    end
-
-    if not char then
-        return
-    end
-
-    setCharacterNoclip(char)
-    State.NoclipCharConnection = char.DescendantAdded:Connect(function(desc)
-        if desc:IsA('BasePart') then
-            desc.CanCollide = false
-        end
-    end)
-end
-
-function setNoclip(enabled)
-    if State.NoclipConnection then
-        State.NoclipConnection:Disconnect()
-        State.NoclipConnection = nil
-    end
-
-    if State.NoclipCharConnection then
-        State.NoclipCharConnection:Disconnect()
-        State.NoclipCharConnection = nil
-    end
-
-    applyPlantNoclip(enabled)
-    updatePlantEffectMaintain()
-
-    if not enabled then
-        return
-    end
-
-    bindNoclipCharacter(getCharacter())
-    State.NoclipConnection = LocalPlayer.CharacterAdded:Connect(bindNoclipCharacter)
 end
 
 function getPlotIdNumber(plot)
@@ -2568,18 +1974,18 @@ function loadConfigHarvestPlants()
     return names
 end
 
--- Returns nil when nothing is selected (meaning "harvest every plant type"),
--- or a lookup set of the selected plant type names otherwise.
+-- Returns nil only when the dropdown isn't ready yet (don't block harvest
+-- during startup). Otherwise returns the exact checked set - an empty table
+-- means "nothing checked" and correctly means harvest nothing.
 function getSelectedHarvestPlantsSet()
     local selected = Options and Options.HarvestPlantTypes and Options.HarvestPlantTypes.Value
     if typeof(selected) ~= 'table' then
         return nil
     end
 
-    local set = nil
+    local set = {}
     for label, isSelected in selected do
         if isSelected == true then
-            set = set or {}
             set[label] = true
         end
     end
@@ -2651,8 +2057,10 @@ function refreshHarvestPlantsDropdown()
         return
     end
 
-    if not State.ConfigHarvestPlants then
+    local everConfigured = State.ConfigHarvestPlants ~= nil
+    if not everConfigured then
         loadConfigHarvestPlants()
+        everConfigured = State.ConfigHarvestPlants ~= nil
     end
 
     local preferred = {}
@@ -2660,14 +2068,12 @@ function refreshHarvestPlantsDropdown()
         preferred[name] = true
     end
 
-    if not next(preferred) then
-        local current = Options.HarvestPlantTypes.Value
-        if typeof(current) == 'table' then
-            for label, isSelected in current do
-                if isSelected == true then
-                    preferred[label] = true
-                end
-            end
+    if not everConfigured then
+        -- Never configured before (fresh install): default to every known
+        -- plant type so Auto Harvest works normally out of the box. Once the
+        -- user unchecks everything, that empty state is respected as-is.
+        for _, name in getGardenPlantTypes() do
+            preferred[name] = true
         end
     end
 
@@ -4675,7 +4081,10 @@ function setAutoHarvestLoop(enabled)
                 harvestFruits(maxKg)
             end
 
-            task.wait(0)
+            -- harvestFruits does a full garden/plant/fruit scan; running it
+            -- every single frame (the old task.wait(0)) was the #1 FPS drain.
+            -- Once a second is still effectively instant for fruit ripening.
+            task.wait(1)
         end
         State.HarvestThread = nil
     end)
@@ -5774,17 +5183,6 @@ hookFruitsTabAutoScan(Tabs.Fruits)
 local OptimizerBox = Tabs.Settings:AddLeftGroupbox('Optimizer')
 local MenuBox = Tabs.Settings:AddRightGroupbox('Menu')
 
-GearBox:AddToggle('Noclip', {
-    Text = 'Noclip',
-    Default = false,
-    Tooltip = 'Walk through walls and makes your plot plants invisible + non-collidable',
-    Callback = function(value)
-        task.defer(function()
-            setNoclip(value)
-        end)
-    end,
-})
-
 GearBox:AddDropdown('TargetPlant', {
     Text = 'Target Plant',
     Values = { 'None' },
@@ -5851,7 +5249,7 @@ FarmBox:AddDropdown('HarvestPlantTypes', {
     Values = { 'Open tab to load plant types' },
     Multi = true,
     Default = {},
-    Tooltip = 'Only auto-harvest these plant types. Leave empty to harvest every plant type.',
+    Tooltip = 'Only checked plant types get auto-harvested. Defaults to every type; uncheck all to harvest nothing.',
     Callback = function()
         if State.ConfigLoading then
             return
@@ -6009,7 +5407,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Client FPS boost: hides every plant/fruit (yours and everyone else\'s), simplifies the world, custom sky/lighting/terrain. Farming/harvest still works normally.',
+    Tooltip = 'Client FPS boost: hides every plant/fruit (yours and everyone else\'s) while keeping plots/land visible. Simplifies world materials/water. No sky or lighting changes. Farming/harvest still works normally.',
     Callback = function(value)
         if State.ConfigLoading then
             return
@@ -6033,8 +5431,6 @@ function shutdownScript()
     State.WeatherMonitorStop = true
     State.MailAutoClaimStop = true
 
-    pcall(stopPlantEffectMaintain)
-    pcall(setNoclip, false)
     cancelOptimizerPendingApply()
     pcall(setOptimizer, false)
     pcall(setAutoHarvestLoop, false)
@@ -6367,12 +5763,15 @@ task.defer(function()
     syncTargetPlantFromSavedConfig()
     captureConfigTargetPlant()
     syncHarvestPlantsFromSavedConfig()
-    captureConfigHarvestPlants()
     if Options.MenuKeybind then
         Library.ToggleKeybind = Options.MenuKeybind
     end
     if Toggles.AntiAfk and Toggles.AntiAfk.Value then
         setAntiAfk(true)
+    end
+
+    if Toggles.Optimizer and Toggles.Optimizer.Value then
+        scheduleOptimizerApply()
     end
 
     waitForGardenReady(45)
@@ -6412,27 +5811,10 @@ task.defer(function()
         setAutoHarvestLoop(true)
     end
 
-    if Toggles.Noclip and Toggles.Noclip.Value then
-        task.spawn(function()
-            setNoclip(true)
-        end)
-    end
-
     task.wait(0.1)
     pcall(refreshMailInventory)
     updateWeatherLabels()
     queueTeleportScript()
-
-    if Toggles.Optimizer and Toggles.Optimizer.Value then
-        scheduleOptimizerApply()
-    end
-end)
-
-LocalPlayer.CharacterAdded:Connect(function()
-    if Toggles.Noclip and Toggles.Noclip.Value then
-        task.wait(0.1)
-        setNoclip(true)
-    end
 end)
 
 LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
@@ -6443,11 +5825,6 @@ LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
         syncHarvestPlantsFromSavedConfig()
         refreshHarvestPlantsDropdown()
     end)
-    if Toggles.Noclip and Toggles.Noclip.Value then
-        task.defer(function()
-            setNoclip(true)
-        end)
-    end
 end)
 
 Library:OnUnload(function()
