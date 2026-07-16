@@ -3458,9 +3458,13 @@ function normalizeWeightKg(weight)
         return nil
     end
 
-    -- FruitVisualizer:CalculateFruitWeight already returns kg. Do NOT divide
-    -- large values — mega fruits are routinely thousands of kg, and /1000
-    -- was letting them pass Max Harvest KG.
+    -- Game stores many weights in grams. Values like 249480 → 249.48kg.
+    -- Also treat 1000..5000 as grams (1kg..5kg) so mid-size fruits aren't
+    -- misread as thousands of kg.
+    if weight >= 1000 then
+        weight = weight / 1000
+    end
+
     return weight
 end
 
@@ -4684,19 +4688,16 @@ end
 
 function estimateFruitWeightKg(corePartName, sizeMulti)
     sizeMulti = tonumber(sizeMulti)
-    if not sizeMulti or sizeMulti <= 0 then
+    if not sizeMulti then
         return nil
     end
 
     local base = getFruitBaseWeightGrams(corePartName)
-    if not base or base <= 0 then
+    if not base then
         return nil
     end
 
-    -- GrowData BaseWeight is usually kg; values >> 50 are grams leftovers.
-    local baseKg = base > 50 and (base / 1000) or base
-    -- Fruit mass scales with volume (~size^3), same as sell value.
-    return normalizeWeightKg(baseKg * (sizeMulti ^ 3))
+    return normalizeWeightKg(base * sizeMulti)
 end
 
 --[[
@@ -4715,32 +4716,16 @@ function getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
     local age = fruitModel and fruitModel:GetAttribute('Age')
         or (typeof(fruitData) == 'table' and fruitData.Age)
         or nil
-    local now = os.clock()
-
-    -- TTL cache: Age ticks often while growing; recalculating every harvest
-    -- tick hammers FruitVisualizer and spikes ping/CPU.
-    local function readCache(cached)
-        if not cached then
-            return nil
-        end
-        if cached.At and (now - cached.At) < 1.5 then
-            return cached.Weight
-        end
-        if cached.Age == age then
-            return cached.Weight
-        end
-        return nil
-    end
 
     if fruitModel then
-        local hit = readCache(State.HarvestWeightCache[fruitModel])
-        if hit ~= nil then
-            return hit
+        local cached = State.HarvestWeightCache[fruitModel]
+        if cached and cached.Age == age then
+            return cached.Weight
         end
     elseif cacheKey then
-        local hit = readCache(State.HarvestWeightCache[cacheKey])
-        if hit ~= nil then
-            return hit
+        local cached = State.HarvestWeightCache[cacheKey]
+        if cached and cached.Age == age then
+            return cached.Weight
         end
     end
 
@@ -4783,7 +4768,7 @@ function getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
         weight = plantMem.weight
     end
 
-    -- No 3D model (optimizer wiped plants): estimate from SizeMulti^3 + plant name.
+    -- No 3D model (optimizer wiped plants): estimate from SizeMulti + plant name.
     if not weight then
         local sizeMulti = (fruitModel and fruitModel:GetAttribute('SizeMulti'))
             or (typeof(fruitData) == 'table' and (fruitData.SizeMultiplier or fruitData.SizeMulti))
@@ -4796,16 +4781,25 @@ function getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
         local estimated = estimateFruitWeightKg(core, sizeMulti)
         if estimated then
             weight = estimated
+            -- estimate already kg — store and return
+            if fruitModel then
+                State.HarvestWeightCache[fruitModel] = { Age = age, Weight = estimated }
+            elseif cacheKey then
+                State.HarvestWeightCache[cacheKey] = { Age = age, Weight = estimated }
+            end
+            if mem then
+                mem.weight = estimated
+            end
+            return estimated
         end
     end
 
     local result = normalizeWeightKg(weight)
-    local entry = { Age = age, Weight = result, At = now }
 
     if fruitModel then
-        State.HarvestWeightCache[fruitModel] = entry
+        State.HarvestWeightCache[fruitModel] = { Age = age, Weight = result }
     elseif cacheKey then
-        State.HarvestWeightCache[cacheKey] = entry
+        State.HarvestWeightCache[cacheKey] = { Age = age, Weight = result }
     end
 
     if result and mem then
@@ -4921,8 +4915,8 @@ function shouldHarvestFruit(weightKg, maxKg)
     end
 
     weightKg = tonumber(weightKg)
-    -- Unknown weight: skip. Harvesting unknowns was picking up heavy fruits
-    -- (and spam-firing CollectFruit every frame).
+    -- Never harvest when weight is unknown — that was collecting fruits
+    -- above Max Harvest KG (esp. with optimizer / missing models).
     if not weightKg or weightKg <= 0 then
         return false
     end
@@ -5256,15 +5250,6 @@ function collectFruit(plantId, fruitId)
         return false
     end
 
-    local key = plantId .. '_' .. fruitId
-    local now = os.clock()
-    local last = State.HarvestAttemptAt[key]
-    -- Light per-fruit debounce only — same fruit, not global harvest rate.
-    if last and (now - last) < 0.15 then
-        return false
-    end
-    State.HarvestAttemptAt[key] = now
-
     local ok = pcall(function()
         Networking.Garden.CollectFruit:Fire(plantId, fruitId)
     end)
@@ -5305,6 +5290,7 @@ function harvestFruits(maxKg)
         pcall(syncPlantMemoryFromGarden)
 
         local allowedSet = getSelectedHarvestPlantsSet()
+        local optimizerOn = State.OptimizerEnabled == true
         local plantsFolder = getPlotPlantsFolder()
 
         for plantId, plant in garden do
@@ -5325,46 +5311,42 @@ function harvestFruits(maxKg)
                     end
 
                     local ripe = isSyncFruitRipe(fruit) or isFruitRipe(fruit, nil)
-                    if not ripe then
-                        continue
+                    if not ripe and optimizerOn then
+                        ripe = true
                     end
 
-                    local fruitModel = plantsFolder and findFruitModel(plantsFolder, plantId, fruitId) or nil
-                    local weight = getFruitWeightKg(fruitModel, fruit, plantId, fruitId)
-                    if not weight then
-                        local mem = getCachedFruitMemory(plantId, fruitId)
-                        weight = mem and mem.weight or nil
-                    end
-                    if not weight then
-                        weight = estimateFruitWeightKg(
-                            plant.PlantName or plant.SeedName,
-                            fruit.SizeMultiplier or fruit.SizeMulti
-                        )
-                    end
-                    if shouldHarvestFruit(weight, maxKg) then
-                        collectFruit(plantId, fruitId)
+                    if ripe then
+                        local fruitModel = plantsFolder and findFruitModel(plantsFolder, plantId, fruitId) or nil
+                        local weight = getFruitWeightKg(fruitModel, fruit, plantId, fruitId)
+                        if not weight then
+                            weight = estimateFruitWeightKg(
+                                plant.PlantName or plant.SeedName,
+                                fruit.SizeMultiplier or fruit.SizeMulti
+                            )
+                        end
+                        if shouldHarvestFruit(weight, maxKg) then
+                            collectFruit(plantId, fruitId)
+                        end
                     end
                 end
             else
                 local ripe = isSyncFruitRipe(plant) or isFruitRipe(plant, nil)
-                if not ripe then
-                    continue
+                if not ripe and optimizerOn then
+                    ripe = true
                 end
 
-                local plantModel = plantsFolder and findFruitModel(plantsFolder, plantId, '') or nil
-                local weight = getFruitWeightKg(plantModel, plant, plantId, '')
-                if not weight then
-                    local plantMem = State.PlantMemory[tostring(plantId)]
-                    weight = plantMem and plantMem.weight or nil
-                end
-                if not weight then
-                    weight = estimateFruitWeightKg(
-                        plant.PlantName or plant.SeedName,
-                        plant.SizeMultiplier or plant.SizeMulti
-                    )
-                end
-                if shouldHarvestFruit(weight, maxKg) then
-                    collectFruit(plantId, '')
+                if ripe then
+                    local plantModel = plantsFolder and findFruitModel(plantsFolder, plantId, '') or nil
+                    local weight = getFruitWeightKg(plantModel, plant, plantId, '')
+                    if not weight then
+                        weight = estimateFruitWeightKg(
+                            plant.PlantName or plant.SeedName,
+                            plant.SizeMultiplier or plant.SizeMulti
+                        )
+                    end
+                    if shouldHarvestFruit(weight, maxKg) then
+                        collectFruit(plantId, '')
+                    end
                 end
             end
         end
@@ -6830,7 +6812,7 @@ FarmBox:AddInput('MaxHarvestKg', {
     Default = '50',
     Numeric = true,
     Finished = false,
-    Tooltip = 'Only auto-harvests fruits at or below this KG. Heavier fruits are left. Unknown weight is skipped.',
+    Tooltip = 'Auto harvest/sell below this KG. Fruits tab shows fruits at or above this KG.',
 })
 
 if Options.MaxHarvestKg then
@@ -7382,8 +7364,7 @@ function watchContainerForInventoryValue(container)
             task.defer(function()
                 if State.EventPredictorHudEnabled and not Library.Unloaded then
                     pcall(updateEventPredictorInvHeader)
-                    -- Don't scan every inventory slot on each backpack change —
-                    -- the HUD loop refreshes overlays on a slower cadence.
+                    pcall(updateFruitValueOverlays)
                 end
             end)
         end
@@ -8174,7 +8155,7 @@ function updateEventPredictorHud()
     end
 
     updateEventPredictorInvHeader()
-    -- Overlays refresh on the HUD loop cadence — don't scan slots here.
+    pcall(updateFruitValueOverlays)
 end
 
 function setEventPredictorHud(enabled)
@@ -8215,43 +8196,13 @@ function setEventPredictorHud(enabled)
     end
 
     State.EventPredictorThread = task.spawn(function()
-        local overlayTick = 0
         while State.EventPredictorHudEnabled and not Library.Unloaded do
-            local ok, err = pcall(function()
-                if not State.EventPredictorGui or not State.EventPredictorGui.Parent then
-                    buildEventPredictorGui()
-                end
-
-                local countdowns = predictMoonCountdowns()
-                if State.EventPredictorTileLabels then
-                    for _, moon in ipairs(EVENT_PREDICTOR_MOONS) do
-                        local label = State.EventPredictorTileLabels[moon.key]
-                        if label then
-                            local seconds = countdowns[moon.key]
-                            if seconds == 0 then
-                                label.Text = 'Active'
-                            elseif typeof(seconds) == 'number' then
-                                label.Text = formatEventCountdown(seconds)
-                            else
-                                label.Text = '...'
-                            end
-                        end
-                    end
-                end
-
-                updateEventPredictorInvHeader()
-
-                -- Slot overlays are expensive — refresh much less often than timers.
-                overlayTick = overlayTick + 1
-                if overlayTick >= 4 then
-                    overlayTick = 0
-                    pcall(updateFruitValueOverlays)
-                end
-            end)
+            local ok, err = pcall(updateEventPredictorHud)
             if not ok then
                 warn('[GG2] Event predictor update failed:', err)
             end
-            task.wait(1)
+            -- Inv value also refreshes immediately on backpack/FruitCount changes.
+            task.wait(0.35)
         end
     end)
 end
@@ -8719,7 +8670,7 @@ task.spawn(function()
             SprinklerLabel:SetText('Sprinkler: None')
         end
 
-        task.wait(0.5)
+        task.wait(0.15)
     end
 end)
 
