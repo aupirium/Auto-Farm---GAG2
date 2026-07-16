@@ -992,19 +992,29 @@ function isCharacterPart(part)
     return false
 end
 
-local OPTIMIZER_HIDE_CLASSES = {
+--[[
+    These are all purely cosmetic - nothing in harvestFruits/isFruitRipe/
+    getFruitWeightKg ever reads them (harvesting fires a remote by
+    plantId/fruitId attribute, it never touches the visual effect children),
+    so it's safe to fully :Destroy() them instead of just disabling them.
+    This matters specifically for ParticleEmitter: it has an Emit(count)
+    method that fires a burst of particles regardless of Enabled, so a
+    ripening fruit calling that could still tank FPS even while "hidden" -
+    an instance that's actually gone can't be told to Emit() anything.
+]]
+local OPTIMIZER_DESTROY_CLASSES = {
+    ParticleEmitter = true,
     Beam = true,
     Trail = true,
     Fire = true,
     Smoke = true,
     Sparkles = true,
-}
-
-local OPTIMIZER_LIGHT_CLASSES = {
+    Highlight = true,
     PointLight = true,
     SpotLight = true,
     SurfaceLight = true,
-    Highlight = true,
+    Decal = true,
+    Texture = true,
 }
 
 --[[
@@ -1096,45 +1106,13 @@ function optimizerHideInstance(inst)
 
         State.OptimizerPartCache[inst] = cache
     elseif className == 'SpecialMesh' and isPlantInstance(inst) then
-        local meshOk, meshId = pcall(function()
-            return inst.MeshId
-        end)
-        if meshOk then
-            State.OptimizerPartCache[inst] = { MeshId = meshId }
-            pcall(function()
-                inst.MeshId = ''
-            end)
-        end
-    elseif className == 'Decal' or className == 'Texture' then
-        State.OptimizerPartCache[inst] = { Transparency = inst.Transparency }
-        inst.Transparency = 1
-        watchOptimizerEnforcement(inst, 'Transparency', 1)
-    elseif className == 'ParticleEmitter' then
-        -- Already-emitted particles keep animating even after Enabled=false,
-        -- which is what causes stray puffs (e.g. Dragon's Breath smoke) to
-        -- flash briefly when a new one grows. Clear() removes them instantly.
-        -- Ripening/growth also flips Enabled back to true on this SAME
-        -- instance later on (not a new one), so a one-shot hide isn't enough
-        -- - the enforcement watcher below re-stomps it the instant that
-        -- happens, which is what was causing the FPS-to-3 particle spam.
-        State.OptimizerPartCache[inst] = { Enabled = inst.Enabled, Rate = inst.Rate }
-        inst.Enabled = false
-        inst.Rate = 0
         pcall(function()
-            inst:Clear()
+            inst:Destroy()
         end)
-        watchOptimizerEnforcement(inst, 'Enabled', false, function()
-            inst.Rate = 0
-            inst:Clear()
+    elseif OPTIMIZER_DESTROY_CLASSES[className] then
+        pcall(function()
+            inst:Destroy()
         end)
-    elseif OPTIMIZER_HIDE_CLASSES[className] then
-        State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
-        inst.Enabled = false
-        watchOptimizerEnforcement(inst, 'Enabled', false)
-    elseif OPTIMIZER_LIGHT_CLASSES[className] then
-        State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
-        inst.Enabled = false
-        watchOptimizerEnforcement(inst, 'Enabled', false)
     elseif className == 'ProximityPrompt' and isPlantInstance(inst) then
         State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
         inst.Enabled = false
@@ -5598,7 +5576,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Client FPS boost: hides every plant/fruit (yours and everyone else\'s), including their meshes and particles, while keeping plots/land visible. Re-hides effects the game turns back on (e.g. a fruit ripening) so nothing flashes back. Simplifies world materials/water. No sky or lighting changes. Farming/harvest still works normally.',
+    Tooltip = 'Client FPS boost: hides every plant/fruit (yours and everyone else\'s) and deletes their particles/meshes/glow effects outright (not just disabled) so a fruit ripening can\'t flash them back on, while keeping plots/land visible. Simplifies world materials/water. No sky or lighting changes. Farming/harvest still works normally.',
     Callback = function(value)
         if State.ConfigLoading then
             return
