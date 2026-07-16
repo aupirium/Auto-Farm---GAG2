@@ -7741,28 +7741,15 @@ function positionFruitValueOverStar(slot, label)
 
     local star = findSlotFavoriteStar(slot)
     local starZ = star and star.ZIndex or (slot.ZIndex or 1)
-    label.ZIndex = math.max((slot.ZIndex or 1) + 25, starZ + 10)
-    label.TextXAlignment = Enum.TextXAlignment.Right
-    label.TextYAlignment = Enum.TextYAlignment.Bottom
-    label.TextSize = 11
-    label.Size = UDim2.fromOffset(62, 14)
-
-    -- Anchor the BOTTOM of the text to the top of the star area so the
-    -- value draws upward over the star (not downward under it).
-    label.AnchorPoint = Vector2.new(1, 1)
-
-    if star and star:IsA('GuiObject') then
-        local starTop = 0
-        pcall(function()
-            starTop = (star.AbsolutePosition.Y - slot.AbsolutePosition.Y) + 2
-        end)
-        if starTop < 4 then
-            starTop = 12
-        end
-        label.Position = UDim2.new(1, -1, 0, starTop)
-    else
-        label.Position = UDim2.new(1, -1, 0, 12)
-    end
+    -- Top-most layer so it draws over the star/icon, without moving Y up.
+    label.ZIndex = math.max((slot.ZIndex or 1) + 50, starZ + 20)
+    label.TextXAlignment = Enum.TextXAlignment.Center
+    label.TextYAlignment = Enum.TextYAlignment.Center
+    label.TextSize = 12
+    label.Size = UDim2.new(1, -4, 0, 14)
+    label.AnchorPoint = Vector2.new(0.5, 0)
+    -- Centered at the top of the slot (same band as the star), not raised above it.
+    label.Position = UDim2.new(0.5, 0, 0, 1)
 end
 
 function ensureFruitValueLabel(slot)
