@@ -6027,7 +6027,19 @@ function isOnRobloxDisconnectMenu()
     local ok, message = pcall(function()
         return GuiService:GetErrorMessage()
     end)
-    return ok and type(message) == 'string' and message ~= ''
+    if ok and type(message) == 'string' and message ~= '' then
+        return true
+    end
+
+    -- Some executors clear ErrorMessage while the Leave UI is still up.
+    local okPrompt, prompt = pcall(function()
+        return GuiService:GetErrorCode()
+    end)
+    if okPrompt and prompt ~= nil and tostring(prompt) ~= '' and tostring(prompt) ~= '0' then
+        return true
+    end
+
+    return false
 end
 
 function isInLiveGameSession()
@@ -6037,7 +6049,66 @@ function isInLiveGameSession()
     if isOnRobloxDisconnectMenu() then
         return false
     end
-    return LocalPlayer.Character ~= nil or LocalPlayer.CharacterAdded ~= nil
+
+    -- CharacterAdded is always a Signal (truthy) — never use it as a liveness check.
+    local character = LocalPlayer.Character
+    if not character then
+        return false
+    end
+
+    return character:FindFirstChild('HumanoidRootPart') ~= nil
+        or character:FindFirstChildOfClass('Humanoid') ~= nil
+end
+
+function isWeatherStillActive(weatherKey)
+    if not weatherKey or weatherKey == '' then
+        return false
+    end
+
+    local moonName = select(1, getActiveNightMoon())
+    if moonName and (weatherKey == moonName or weatherKey == (NIGHT_MOON_LABELS[moonName] or moonName)) then
+        return true
+    end
+
+    for gameName, label in pairs(NIGHT_MOON_LABELS) do
+        if weatherKey == label or weatherKey == gameName then
+            local active = select(1, getActiveNightMoon())
+            return active == gameName
+        end
+    end
+
+    for eventName in getActiveEventWeathers() do
+        if eventName == weatherKey then
+            return true
+        end
+    end
+
+    -- Display-name match for event weathers (Snowfall, etc.).
+    if WeatherValues:GetAttribute(weatherKey .. '_Playing') == true then
+        return true
+    end
+
+    return false
+end
+
+function endWeatherHideEarlyIfClear()
+    if not State.WeatherHiding then
+        return false
+    end
+
+    local fromWeather = State.HidingFromWeather
+    if not fromWeather then
+        return false
+    end
+
+    -- If the blocked weather is gone, stop waiting on a stale HideUntil.
+    if isWeatherStillActive(fromWeather) then
+        return false
+    end
+
+    State.HideUntil = getWeatherClock()
+    saveWeatherState()
+    return true
 end
 
 --[[
@@ -6052,6 +6123,9 @@ function waitThenRejoinHome()
 
     task.spawn(function()
         while State.WeatherHiding and not isWeatherHideTimerElapsed() do
+            if endWeatherHideEarlyIfClear() then
+                break
+            end
             updateWeatherLabels()
             task.wait(1)
         end
@@ -6063,15 +6137,10 @@ function waitThenRejoinHome()
             return
         end
 
-        -- Only burst-rejoin from the disconnect/error screen.
-        if isOnRobloxDisconnectMenu() or not isInLiveGameSession() then
-            State.WeatherRejoinStarted = false
-            tryRejoinHome({ fromDisconnect = true })
-            return
-        end
-
-        -- Already sitting in a live server after the event — don't teleport spam.
-        clearWeatherState({ keepWalkBack = true })
+        -- Always attempt rejoin once the wait is done. Previously we cleared
+        -- state without teleporting when isInLiveGameSession() was wrongly true.
+        State.WeatherRejoinStarted = false
+        tryRejoinHome({ fromDisconnect = true })
     end)
 end
 
@@ -6189,12 +6258,11 @@ function startWeatherRejoinWorker()
         return
     end
 
+    endWeatherHideEarlyIfClear()
+
     if isWeatherHideTimerElapsed() then
-        if isOnRobloxDisconnectMenu() then
-            tryRejoinHome({ fromDisconnect = true })
-        else
-            clearWeatherState({ keepWalkBack = true })
-        end
+        State.WeatherRejoinStarted = false
+        tryRejoinHome({ fromDisconnect = true })
         return
     end
 
@@ -6344,7 +6412,14 @@ function tryRejoinHome(options)
         return
     end
 
-    if game.PlaceId == placeId and (not jobId or game.JobId == jobId) then
+    -- On the disconnect/Leave screen, JobId often still matches home.
+    -- That must NOT skip the teleport — we still need TeleportToPlaceInstance.
+    local alreadyPlayingHome = isInLiveGameSession()
+        and not isOnRobloxDisconnectMenu()
+        and game.PlaceId == placeId
+        and (not jobId or game.JobId == jobId)
+
+    if alreadyPlayingHome then
         State.WeatherHiding = false
         State.WeatherRejoinStarted = false
         clearRejoinTarget()
@@ -6442,11 +6517,28 @@ function forceLeaveServer(kickMessage)
 end
 
 function retryLeaveIfStillHome()
-    if not State.WeatherHiding or not isStillOnWeatherHomeServer() then
+    if not State.WeatherHiding then
         return
     end
 
-    if isWeatherHideTimerElapsed() then
+    -- Already kicked / on Leave screen: never kick again (that "redoes" the timer).
+    if isOnRobloxDisconnectMenu() or not isInLiveGameSession() then
+        if endWeatherHideEarlyIfClear() or isWeatherHideTimerElapsed() then
+            State.WeatherRejoinStarted = false
+            tryRejoinHome({ fromDisconnect = true })
+        else
+            waitThenRejoinHome()
+        end
+        return
+    end
+
+    if not isStillOnWeatherHomeServer() then
+        waitThenRejoinHome()
+        return
+    end
+
+    if endWeatherHideEarlyIfClear() or isWeatherHideTimerElapsed() then
+        -- Weather ended while we somehow never left — just clear, no re-kick.
         clearWeatherState({ keepWalkBack = true })
         return
     end
@@ -6460,14 +6552,14 @@ function retryLeaveIfStillHome()
     local kickMessage = string.format(
         '[AutoRejoin] %s detected - kicked. Auto-return in %ds.',
         State.HidingFromWeather or 'Weather',
-        math.max(remaining, 30)
+        math.max(math.floor(remaining), 1)
     )
 
     if Library and Library.Notify then
         Library:Notify(string.format(
             'Kicking for %s - auto rejoin in %ds',
             State.HidingFromWeather or 'Weather',
-            math.max(remaining, 30)
+            math.max(math.floor(remaining), 1)
         ))
     end
 
@@ -6537,15 +6629,21 @@ function setWeatherDodge(enabled)
             updateWeatherLabels()
 
             if State.WeatherHiding then
-                if isStillOnWeatherHomeServer() then
-                    retryLeaveIfStillHome()
-                elseif isWeatherHideTimerElapsed() then
-                    if isOnRobloxDisconnectMenu() then
+                endWeatherHideEarlyIfClear()
+
+                if isOnRobloxDisconnectMenu() or not isInLiveGameSession() then
+                    -- On Leave screen: wait, then rejoin. Never re-kick.
+                    if isWeatherHideTimerElapsed() then
+                        State.WeatherRejoinStarted = false
                         tryRejoinHome({ fromDisconnect = true })
                     else
-                        -- Already in a live session — stop treating this as weather hide.
-                        clearWeatherState({ keepWalkBack = true })
+                        waitThenRejoinHome()
                     end
+                elseif isStillOnWeatherHomeServer() then
+                    retryLeaveIfStillHome()
+                elseif isWeatherHideTimerElapsed() then
+                    State.WeatherRejoinStarted = false
+                    tryRejoinHome({ fromDisconnect = true })
                 else
                     waitThenRejoinHome()
                 end
@@ -8234,9 +8332,8 @@ setupWeatherErrorReconnect()
 setupAuctionNetworking()
 
 if State.WeatherHiding then
-    if isWeatherHideTimerElapsed() then
-        if isOnRobloxDisconnectMenu() then
-            -- Only burst-rejoin from the disconnect screen.
+    if endWeatherHideEarlyIfClear() or isWeatherHideTimerElapsed() then
+        if isOnRobloxDisconnectMenu() or not isInLiveGameSession() then
             task.defer(function()
                 tryRejoinHome({ fromDisconnect = true })
             end)
@@ -8245,7 +8342,8 @@ if State.WeatherHiding then
             clearWeatherState({ keepWalkBack = true })
         end
     else
-        if isStillOnWeatherHomeServer() then
+        -- Never re-kick from the disconnect menu — that resets the countdown text.
+        if isStillOnWeatherHomeServer() and isInLiveGameSession() and not isOnRobloxDisconnectMenu() then
             task.defer(retryLeaveIfStillHome)
         end
         startWeatherHideWait()
