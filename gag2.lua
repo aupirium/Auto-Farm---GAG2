@@ -912,6 +912,8 @@ local State = {
     EventPredictorCycleLen = 0,
     EventPredictorInvCache = nil,
     EventPredictorInvCacheAt = 0,
+    FruitValueOverlayEnabled = false,
+    FruitValueOverlayLabels = {},
     ConfigLoading = false,
     AntiAfkConnection = nil,
     AutoSellThread = nil,
@@ -4971,11 +4973,11 @@ function formatFruitLabel(fruit)
     end
 
     return string.format(
-        '%s | %s | %s | $%s',
+        '$%s | %s | %s | %s',
+        abbreviateNumber(fruit.value),
         fruit.plantName,
         fruit.mutation,
-        weightText,
-        abbreviateNumber(fruit.value)
+        weightText
     )
 end
 
@@ -7232,6 +7234,241 @@ function getInventoryFruitValue()
     return total, count
 end
 
+function clearFruitValueOverlays()
+    for slot, label in pairs(State.FruitValueOverlayLabels or {}) do
+        pcall(function()
+            if label and label.Parent then
+                label:Destroy()
+            end
+        end)
+        State.FruitValueOverlayLabels[slot] = nil
+    end
+    State.FruitValueOverlayLabels = {}
+end
+
+function findSlotLinkedFruit(slot)
+    if not slot then
+        return nil
+    end
+
+    for _, name in { 'Tool', 'Item', 'Fruit', 'Object', 'Ref' } do
+        local ref = slot:FindFirstChild(name)
+        if ref then
+            if ref:IsA('ObjectValue') and ref.Value and isFruitTool(ref.Value) then
+                return ref.Value
+            end
+            if isFruitTool(ref) then
+                return ref
+            end
+        end
+    end
+
+    local toolAttr = slot:GetAttribute('Tool') or slot:GetAttribute('Item') or slot:GetAttribute('FruitId')
+    if typeof(toolAttr) == 'string' and toolAttr ~= '' then
+        for _, fruit in getHarvestedFruitTools() do
+            local id = getFruitToolId(fruit)
+            if id == toolAttr or fruit.Name == toolAttr then
+                return fruit
+            end
+        end
+    end
+
+    local toolNameLabel = slot:FindFirstChild('ToolName', true)
+    local weightHint = nil
+    if toolNameLabel and toolNameLabel:IsA('TextLabel') then
+        local text = tostring(toolNameLabel.Text or '')
+        -- Weight label is often a sibling; also parse from full tool names.
+        weightHint = text:match('([%d%.]+)kg')
+    end
+
+    local weightLabel = slot:FindFirstChild('ToolWeight', true)
+        or slot:FindFirstChild('Weight', true)
+        or slot:FindFirstChild('BottomText', true)
+    if weightLabel and weightLabel:IsA('TextLabel') then
+        weightHint = tostring(weightLabel.Text or ''):match('([%d%.]+)kg') or weightHint
+    end
+
+    -- Match backpack fruits by visible name + weight when the slot has no direct ref.
+    local nameText = toolNameLabel and tostring(toolNameLabel.Text or '') or ''
+    if nameText == '' then
+        return nil
+    end
+
+    local best, bestScore = nil, -1
+    for _, fruit in getHarvestedFruitTools() do
+        local fruitName = fruit:GetAttribute('FruitName') or fruit:GetAttribute('Fruit') or ''
+        if typeof(fruitName) ~= 'string' then
+            fruitName = tostring(fruit.Name):match('^([^%[]+)') or fruit.Name
+        end
+        fruitName = tostring(fruitName):gsub('%s+$', '')
+
+        local score = 0
+        if nameText:find(fruitName, 1, true) or fruit.Name:find(nameText, 1, true) then
+            score = score + 2
+        end
+        if weightHint then
+            local fw = getToolWeightKg(fruit)
+            if fw and math.abs(fw - (tonumber(weightHint) or -1)) < 0.05 then
+                score = score + 5
+            end
+        end
+        if score > bestScore then
+            bestScore = score
+            best = fruit
+        end
+    end
+
+    if bestScore >= 2 then
+        return best
+    end
+    return nil
+end
+
+function ensureFruitValueLabel(slot)
+    if not slot or not slot:IsA('GuiObject') then
+        return nil
+    end
+
+    local existing = slot:FindFirstChild('GG2_FruitValue')
+    if existing and existing:IsA('TextLabel') then
+        State.FruitValueOverlayLabels[slot] = existing
+        return existing
+    end
+
+    -- Prefer updating the game's own top value label when present.
+    for _, name in { 'Value', 'FruitValue', 'Price', 'ToolValue', 'SellValue', 'TopText', 'Worth' } do
+        local label = slot:FindFirstChild(name, true)
+        if label and label:IsA('TextLabel') then
+            State.FruitValueOverlayLabels[slot] = label
+            return label
+        end
+    end
+
+    -- Reuse an existing top-left $ label from the game UI when we can find one.
+    for _, desc in slot:GetDescendants() do
+        if desc:IsA('TextLabel') then
+            local text = tostring(desc.Text or '')
+            if text:find('%$') and desc.AbsolutePosition.Y <= slot.AbsolutePosition.Y + 22 then
+                State.FruitValueOverlayLabels[slot] = desc
+                return desc
+            end
+        end
+    end
+
+    local label = Instance.new('TextLabel')
+    label.Name = 'GG2_FruitValue'
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(1, -6, 0, 16)
+    label.Position = UDim2.new(0, 3, 0, 1)
+    label.ZIndex = (slot.ZIndex or 1) + 5
+    label.Font = Enum.Font.GothamBold
+    label.TextSize = 14
+    label.TextColor3 = Color3.fromRGB(0, 255, 0)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.TextYAlignment = Enum.TextYAlignment.Top
+    label.TextStrokeTransparency = 0
+    label.TextStrokeColor3 = Color3.new(0, 0, 0)
+    label.Text = ''
+    label.Visible = false
+    label.Parent = slot
+
+    local stroke = Instance.new('UIStroke')
+    stroke.Thickness = 2
+    stroke.Color = Color3.new(0, 0, 0)
+    stroke.Parent = label
+
+    State.FruitValueOverlayLabels[slot] = label
+    return label
+end
+
+function collectInventorySlotFrames()
+    local slots = {}
+    local playerGui = LocalPlayer:FindFirstChild('PlayerGui')
+    local backpackGui = playerGui and playerGui:FindFirstChild('BackpackGui')
+    if not backpackGui then
+        return slots
+    end
+
+    local function gather(root)
+        if not root then
+            return
+        end
+        for _, inst in root:GetDescendants() do
+            if (inst:IsA('Frame') or inst:IsA('ImageButton') or inst:IsA('TextButton'))
+                and (inst:FindFirstChild('ToolName') or inst:FindFirstChild('ToolCount') or inst:FindFirstChild('Icon'))
+            then
+                table.insert(slots, inst)
+            end
+        end
+    end
+
+    local backpack = backpackGui:FindFirstChild('Backpack')
+    if backpack then
+        gather(backpack:FindFirstChild('Inventory'))
+        gather(backpack:FindFirstChild('Hotbar'))
+        gather(backpack:FindFirstChild('HotBar'))
+    end
+
+    -- Fallback: any UIGridFrame under BackpackGui that looks like item slots.
+    if #slots == 0 then
+        gather(backpackGui)
+    end
+
+    return slots
+end
+
+function updateFruitValueOverlays()
+    if not State.FruitValueOverlayEnabled then
+        return
+    end
+
+    local seen = {}
+    for _, slot in collectInventorySlotFrames() do
+        seen[slot] = true
+        local fruit = findSlotLinkedFruit(slot)
+        local label = ensureFruitValueLabel(slot)
+        if not label then
+            continue
+        end
+
+        if fruit then
+            local value = getToolFruitValue(fruit)
+            if value > 0 then
+                label.Text = formatInvCurrency(value)
+                label.TextColor3 = Color3.fromRGB(0, 255, 0)
+                label.Visible = true
+            else
+                label.Text = ''
+                label.Visible = label.Name ~= 'GG2_FruitValue'
+            end
+        elseif label.Name == 'GG2_FruitValue' then
+            label.Text = ''
+            label.Visible = false
+        end
+    end
+
+    for slot, label in pairs(State.FruitValueOverlayLabels) do
+        if not seen[slot] or not slot.Parent then
+            if label and label.Name == 'GG2_FruitValue' then
+                pcall(function()
+                    label:Destroy()
+                end)
+            end
+            State.FruitValueOverlayLabels[slot] = nil
+        end
+    end
+end
+
+function setFruitValueOverlays(enabled)
+    enabled = enabled == true
+    State.FruitValueOverlayEnabled = enabled
+    if not enabled then
+        clearFruitValueOverlays()
+        return
+    end
+    updateFruitValueOverlays()
+end
+
 function applyOutlinedText(label)
     label.TextColor3 = Color3.new(1, 1, 1)
     label.Font = Enum.Font.GothamBold
@@ -7513,6 +7750,8 @@ function updateEventPredictorHud()
             valueText
         )
     end
+
+    pcall(updateFruitValueOverlays)
 end
 
 function setEventPredictorHud(enabled)
@@ -7532,6 +7771,7 @@ function setEventPredictorHud(enabled)
         end
         State.EventPredictorTileLabels = nil
         State.EventPredictorInvLabels = nil
+        setFruitValueOverlays(false)
         return
     end
 
@@ -7542,6 +7782,7 @@ function setEventPredictorHud(enabled)
     State.EventPredictorHudEnabled = true
     ensureEventPredictorPhases()
     buildEventPredictorGui()
+    setFruitValueOverlays(true)
     updateEventPredictorHud()
 
     if State.EventPredictorThread then
@@ -7562,7 +7803,7 @@ end
 OptimizerBox:AddToggle('EventPredictorHud', {
     Text = 'Event Predictor HUD',
     Default = true,
-    Tooltip = 'Bottom-right Gold/Blood/Rainbow/Mega moon timers + inventory fruit value (matches game cycle RNG)',
+    Tooltip = 'Bottom-right moon timers + inventory fruit value overlay (header + green $ on fruit slots)',
     Callback = function(value)
         if State.ConfigLoading then
             return
