@@ -4371,7 +4371,18 @@ function hookFruitsTabAutoScan(fruitsTab)
 end
 
 function collectFruit(plantId, fruitId)
-    Networking.Garden.CollectFruit:Fire(plantId, fruitId or '')
+    -- Packet def: CollectFruit = v1("CollectFruit", v1.String, v1.String)
+    -- Both args MUST be strings or the fire silently fails.
+    plantId = tostring(plantId or '')
+    fruitId = tostring(fruitId or '')
+    if plantId == '' then
+        return false
+    end
+
+    local ok = pcall(function()
+        Networking.Garden.CollectFruit:Fire(plantId, fruitId)
+    end)
+    return ok
 end
 
 function isPlantTypeHarvestAllowed(allowedSet, garden, plantId)
@@ -4379,16 +4390,51 @@ function isPlantTypeHarvestAllowed(allowedSet, garden, plantId)
         return true
     end
 
+    -- Empty selection = harvest nothing (intentional).
+    if next(allowedSet) == nil then
+        return false
+    end
+
     local plant = garden and garden[plantId]
-    local plantName = plant and plant.PlantName
-    return type(plantName) == 'string' and allowedSet[plantName] == true
+    if not plant then
+        return false
+    end
+
+    local plantName = plant.PlantName
+    local seedName = plant.SeedName
+    if type(plantName) == 'string' and allowedSet[plantName] == true then
+        return true
+    end
+    if type(seedName) == 'string' and allowedSet[seedName] == true then
+        return true
+    end
+    return false
+end
+
+function isSyncFruitRipe(fruitData)
+    if typeof(fruitData) ~= 'table' then
+        return false
+    end
+
+    if fruitData.IsRipe == true or fruitData.Ripe == true or fruitData.Grown == true then
+        return true
+    end
+
+    local age = fruitData.Age
+    local maxAge = fruitData.MaxAge
+    if typeof(age) == 'number' and typeof(maxAge) == 'number' then
+        return age >= maxAge
+    end
+
+    return false
 end
 
 --[[
-    GardenSync-first harvest. When the optimizer deletes plant models, ripe
-    state comes from sync data. If sync has no Age/IsRipe fields, we still
-    attempt CollectFruit (server rejects unripe) with a per-fruit throttle
-    so we don't spam remotes every frame.
+    GardenSync-first harvest using the real game remote:
+      Networking.Garden.CollectFruit:Fire(plantId, fruitId)
+    Same call site as HarvestPromptController / FruitMagnetController.
+    Works with optimizer plant deletion because ripe Age/MaxAge live in
+    GardenSync, not in workspace models.
 ]]
 function harvestFruits(maxKg)
     maxKg = tonumber(maxKg) or 999
@@ -4398,73 +4444,54 @@ function harvestFruits(maxKg)
     end
 
     local allowedSet = getSelectedHarvestPlantsSet()
-    local seen = {}
     local now = os.clock()
     local optimizerOn = State.OptimizerEnabled == true
-    local plot = getPlot()
-    local plantsFolder = plot and plot:FindFirstChild('Plants')
-    local modelIndex = {}
-
-    if plantsFolder then
-        for _, plantModel in plantsFolder:GetChildren() do
-            local fruitsFolder = plantModel:FindFirstChild('Fruits')
-            if fruitsFolder then
-                for _, fruitModel in fruitsFolder:GetChildren() do
-                    local plantId = fruitModel:GetAttribute('PlantId')
-                    local fruitId = fruitModel:GetAttribute('FruitId')
-                    if plantId and fruitId then
-                        modelIndex[plantId .. '_' .. fruitId] = fruitModel
-                    end
-                end
-            else
-                local plantId = plantModel:GetAttribute('PlantId')
-                if plantId then
-                    modelIndex[plantId .. '_'] = plantModel
-                end
-            end
-        end
-    end
-
-    local function tryCollect(plantId, fruitId, fruitData, fruitModel)
-        local key = plantId .. '_' .. (fruitId or '')
-        if seen[key] then
-            return
-        end
-        seen[key] = true
-
-        local ripe = isFruitRipe(fruitData, fruitModel)
-        if not ripe and optimizerOn and fruitData then
-            -- No usable ripe fields in sync while models are deleted: try
-            -- anyway and let the server decide. Throttle to avoid remote spam.
-            local last = State.HarvestAttemptAt[key] or 0
-            if now - last < 0.75 then
-                return
-            end
-            State.HarvestAttemptAt[key] = now
-            ripe = true
-        end
-
-        if not ripe then
-            return
-        end
-
-        local weight = getFruitWeightKg(fruitModel, fruitData)
-        if shouldHarvestFruit(weight, maxKg) then
-            collectFruit(plantId, fruitId or '')
-        end
-    end
 
     for plantId, plant in garden do
         if not isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
             continue
         end
 
-        if plant.Fruits then
+        if typeof(plant) == 'table' and typeof(plant.Fruits) == 'table' then
             for fruitId, fruit in plant.Fruits do
-                tryCollect(plantId, fruitId, fruit, modelIndex[plantId .. '_' .. fruitId])
+                local key = tostring(plantId) .. '_' .. tostring(fruitId)
+                local ripe = isSyncFruitRipe(fruit) or isFruitRipe(fruit, nil)
+
+                if not ripe and optimizerOn then
+                    local last = State.HarvestAttemptAt[key] or 0
+                    if now - last < 0.35 then
+                        continue
+                    end
+                    State.HarvestAttemptAt[key] = now
+                    ripe = true
+                end
+
+                if ripe then
+                    local weight = getFruitWeightKg(nil, fruit)
+                    if shouldHarvestFruit(weight, maxKg) then
+                        collectFruit(plantId, fruitId)
+                    end
+                end
             end
-        else
-            tryCollect(plantId, '', plant, modelIndex[plantId .. '_'])
+        elseif typeof(plant) == 'table' then
+            local key = tostring(plantId) .. '_'
+            local ripe = isSyncFruitRipe(plant) or isFruitRipe(plant, nil)
+
+            if not ripe and optimizerOn then
+                local last = State.HarvestAttemptAt[key] or 0
+                if now - last < 0.35 then
+                    continue
+                end
+                State.HarvestAttemptAt[key] = now
+                ripe = true
+            end
+
+            if ripe then
+                local weight = getFruitWeightKg(nil, plant)
+                if shouldHarvestFruit(weight, maxKg) then
+                    collectFruit(plantId, '')
+                end
+            end
         end
     end
 end
