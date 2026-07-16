@@ -912,6 +912,7 @@ local State = {
     EventPredictorCycleLen = 0,
     EventPredictorInvCache = nil,
     EventPredictorInvCacheAt = 0,
+    EventPredictorInvConnections = {},
     FruitValueOverlayEnabled = false,
     FruitValueOverlayLabels = {},
     ConfigLoading = false,
@@ -7209,9 +7210,17 @@ function getToolFruitValue(tool)
     return 0
 end
 
-function getInventoryFruitValue()
+function invalidateInventoryValueCache()
+    State.EventPredictorInvCache = nil
+    State.EventPredictorInvCacheAt = 0
+end
+
+function getInventoryFruitValue(forceRefresh)
     local now = os.clock()
-    if State.EventPredictorInvCache and (now - (State.EventPredictorInvCacheAt or 0)) < 1 then
+    if not forceRefresh
+        and State.EventPredictorInvCache
+        and (now - (State.EventPredictorInvCacheAt or 0)) < 0.2
+    then
         return State.EventPredictorInvCache.total, State.EventPredictorInvCache.count
     end
 
@@ -7232,6 +7241,161 @@ function getInventoryFruitValue()
     State.EventPredictorInvCache = { total = total, count = count }
     State.EventPredictorInvCacheAt = now
     return total, count
+end
+
+function disconnectInventoryValueWatchers()
+    for _, conn in State.EventPredictorInvConnections or {} do
+        pcall(function()
+            conn:Disconnect()
+        end)
+    end
+    State.EventPredictorInvConnections = {}
+end
+
+function watchContainerForInventoryValue(container)
+    if not container then
+        return
+    end
+
+    local function onChanged()
+        invalidateInventoryValueCache()
+        if State.EventPredictorHudEnabled then
+            task.defer(function()
+                if State.EventPredictorHudEnabled and not Library.Unloaded then
+                    pcall(updateEventPredictorInvHeader)
+                    pcall(updateFruitValueOverlays)
+                end
+            end)
+        end
+    end
+
+    table.insert(State.EventPredictorInvConnections, container.ChildAdded:Connect(function(child)
+        onChanged()
+        if isFruitTool(child) then
+            pcall(function()
+                table.insert(
+                    State.EventPredictorInvConnections,
+                    child:GetAttributeChangedSignal('SizeMultiplier'):Connect(onChanged)
+                )
+            end)
+            pcall(function()
+                table.insert(
+                    State.EventPredictorInvConnections,
+                    child:GetAttributeChangedSignal('Mutation'):Connect(onChanged)
+                )
+            end)
+            pcall(function()
+                table.insert(
+                    State.EventPredictorInvConnections,
+                    child:GetAttributeChangedSignal('IsFavorite'):Connect(onChanged)
+                )
+            end)
+        end
+    end))
+    table.insert(State.EventPredictorInvConnections, container.ChildRemoved:Connect(onChanged))
+
+    for _, child in container:GetChildren() do
+        if isFruitTool(child) then
+            pcall(function()
+                table.insert(
+                    State.EventPredictorInvConnections,
+                    child:GetAttributeChangedSignal('SizeMultiplier'):Connect(onChanged)
+                )
+            end)
+            pcall(function()
+                table.insert(
+                    State.EventPredictorInvConnections,
+                    child:GetAttributeChangedSignal('Mutation'):Connect(onChanged)
+                )
+            end)
+        end
+    end
+end
+
+function connectInventoryValueWatchers()
+    disconnectInventoryValueWatchers()
+
+    local function onAttr()
+        invalidateInventoryValueCache()
+        if State.EventPredictorHudEnabled then
+            task.defer(function()
+                if State.EventPredictorHudEnabled and not Library.Unloaded then
+                    pcall(updateEventPredictorInvHeader)
+                end
+            end)
+        end
+    end
+
+    table.insert(
+        State.EventPredictorInvConnections,
+        LocalPlayer:GetAttributeChangedSignal('FruitCount'):Connect(onAttr)
+    )
+    table.insert(
+        State.EventPredictorInvConnections,
+        LocalPlayer:GetAttributeChangedSignal('MaxFruitCapacity'):Connect(onAttr)
+    )
+
+    watchContainerForInventoryValue(LocalPlayer:FindFirstChild('Backpack'))
+    watchContainerForInventoryValue(getCharacter())
+
+    table.insert(
+        State.EventPredictorInvConnections,
+        LocalPlayer.CharacterAdded:Connect(function(character)
+            task.defer(function()
+                if not State.EventPredictorHudEnabled or Library.Unloaded then
+                    return
+                end
+                connectInventoryValueWatchers()
+                invalidateInventoryValueCache()
+                pcall(updateEventPredictorInvHeader)
+                pcall(updateFruitValueOverlays)
+            end)
+        end)
+    )
+
+    local backpack = LocalPlayer:FindFirstChild('Backpack')
+    if not backpack then
+        table.insert(
+            State.EventPredictorInvConnections,
+            LocalPlayer.ChildAdded:Connect(function(child)
+                if child.Name == 'Backpack' then
+                    watchContainerForInventoryValue(child)
+                    invalidateInventoryValueCache()
+                    pcall(updateEventPredictorInvHeader)
+                end
+            end)
+        )
+    end
+end
+
+function updateEventPredictorInvHeader()
+    if not State.EventPredictorHudEnabled then
+        return
+    end
+
+    if not State.EventPredictorGui or not State.EventPredictorGui.Parent then
+        buildEventPredictorGui()
+    end
+
+    local value, count = getInventoryFruitValue(true)
+    local maxCap = tonumber(LocalPlayer:GetAttribute('MaxFruitCapacity'))
+        or getInventoryCapacity()
+        or 100
+    local fruitCount = tonumber(LocalPlayer:GetAttribute('FruitCount')) or count or 0
+    local countText = string.format('%d/%d Fruits', fruitCount, maxCap)
+    local valueText = formatInvCurrency(value)
+
+    if State.EventPredictorInvLabels and State.EventPredictorInvLabels.Header then
+        local header = State.EventPredictorInvLabels.Header
+        local nextText = string.format(
+            '%s | <font color="#00FF00">%s</font>',
+            countText,
+            valueText
+        )
+        if header.Text ~= nextText then
+            header.Text = nextText
+        end
+    end
 end
 
 function clearFruitValueOverlays()
@@ -7725,32 +7889,7 @@ function updateEventPredictorHud()
         end
     end
 
-    local value, count = getInventoryFruitValue()
-    local maxCap = tonumber(LocalPlayer:GetAttribute('MaxFruitCapacity'))
-        or getInventoryCapacity()
-        or 100
-    local fruitCount = tonumber(LocalPlayer:GetAttribute('FruitCount')) or count or 0
-    local countText = string.format('%d/%d Fruits', fruitCount, maxCap)
-    local valueText = formatInvCurrency(value)
-
-    -- Prefer the live inventory header text when it already includes worth,
-    -- so we stay pixel-matched with the game's own total.
-    local gameCount, gameValue = readGameInventoryHeaderValue()
-    if typeof(gameValue) == 'string' and gameValue ~= '' then
-        valueText = gameValue
-    end
-    if typeof(gameCount) == 'string' and gameCount ~= '' then
-        countText = gameCount
-    end
-
-    if State.EventPredictorInvLabels and State.EventPredictorInvLabels.Header then
-        State.EventPredictorInvLabels.Header.Text = string.format(
-            '%s | <font color="#00FF00">%s</font>',
-            countText,
-            valueText
-        )
-    end
-
+    updateEventPredictorInvHeader()
     pcall(updateFruitValueOverlays)
 end
 
@@ -7771,6 +7910,7 @@ function setEventPredictorHud(enabled)
         end
         State.EventPredictorTileLabels = nil
         State.EventPredictorInvLabels = nil
+        disconnectInventoryValueWatchers()
         setFruitValueOverlays(false)
         return
     end
@@ -7782,6 +7922,7 @@ function setEventPredictorHud(enabled)
     State.EventPredictorHudEnabled = true
     ensureEventPredictorPhases()
     buildEventPredictorGui()
+    connectInventoryValueWatchers()
     setFruitValueOverlays(true)
     updateEventPredictorHud()
 
@@ -7795,7 +7936,8 @@ function setEventPredictorHud(enabled)
             if not ok then
                 warn('[GG2] Event predictor update failed:', err)
             end
-            task.wait(1)
+            -- Inv value also refreshes immediately on backpack/FruitCount changes.
+            task.wait(0.35)
         end
     end)
 end
@@ -7827,6 +7969,7 @@ function shutdownScript()
     pcall(setOptimizer, false)
     pcall(setCameraBlackout, false)
     pcall(setEventPredictorHud, false)
+    pcall(disconnectInventoryValueWatchers)
     pcall(setAutoHarvestLoop, false)
     pcall(setAutoWateringLoop, false)
     pcall(setAutoBuyLoop, false)
