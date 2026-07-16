@@ -913,6 +913,9 @@ local State = {
     EventPredictorInvCache = nil,
     EventPredictorInvCacheAt = 0,
     EventPredictorInvConnections = {},
+    EventPredictorMoonCache = nil,
+    EventPredictorMoonCacheAt = 0,
+    EventPredictorOverlayAt = 0,
     FruitValueOverlayEnabled = false,
     FruitValueOverlayLabels = {},
     ConfigLoading = false,
@@ -7215,6 +7218,25 @@ function getEventCycleState()
 end
 
 function predictMoonCountdowns()
+    local now = os.clock()
+    if State.EventPredictorMoonCache and (now - (State.EventPredictorMoonCacheAt or 0)) < 5 then
+        local cached = State.EventPredictorMoonCache
+        local activeWeather = workspace:GetAttribute('ActiveWeather')
+        local live = {}
+        for key, seconds in pairs(cached) do
+            live[key] = seconds
+        end
+        for _, moon in ipairs(EVENT_PREDICTOR_MOONS) do
+            if activeWeather == moon.key then
+                live[moon.key] = 0
+            elseif typeof(live[moon.key]) == 'number' and live[moon.key] > 0 then
+                local elapsed = now - (State.EventPredictorMoonCacheAt or now)
+                live[moon.key] = math.max(0, live[moon.key] - elapsed)
+            end
+        end
+        return live
+    end
+
     local results = {}
     local moonKeys = {}
     for _, moon in ipairs(EVENT_PREDICTOR_MOONS) do
@@ -7230,6 +7252,8 @@ function predictMoonCountdowns()
 
     local state = getEventCycleState()
     if not state then
+        State.EventPredictorMoonCache = results
+        State.EventPredictorMoonCacheAt = now
         return results
     end
 
@@ -7244,8 +7268,6 @@ function predictMoonCountdowns()
         end
     end
 
-    -- Must only count the 4 tracked moons. Counting Day/Sunset/normal Moon
-    -- as "found" stopped the scan early and left Blood/Rainbow/Mega as "...".
     local safety = 0
     while found < needed and safety < 5000 do
         safety = safety + 1
@@ -7265,6 +7287,8 @@ function predictMoonCountdowns()
         phaseIndex = phaseIndex + 1
     end
 
+    State.EventPredictorMoonCache = results
+    State.EventPredictorMoonCacheAt = now
     return results
 end
 
@@ -7357,11 +7381,11 @@ function watchContainerForInventoryValue(container)
 
     local function onChanged()
         invalidateInventoryValueCache()
+        -- Do NOT scan inventory overlays here — that tanks FPS on every fruit add.
         if State.EventPredictorHudEnabled then
             task.defer(function()
                 if State.EventPredictorHudEnabled and not Library.Unloaded then
                     pcall(updateEventPredictorInvHeader)
-                    pcall(updateFruitValueOverlays)
                 end
             end)
         end
@@ -7446,7 +7470,6 @@ function connectInventoryValueWatchers()
                 connectInventoryValueWatchers()
                 invalidateInventoryValueCache()
                 pcall(updateEventPredictorInvHeader)
-                pcall(updateFruitValueOverlays)
             end)
         end)
     )
@@ -7820,10 +7843,37 @@ function collectInventorySlotFrames()
     return slots
 end
 
+function isInventoryGuiOpen()
+    local playerGui = LocalPlayer:FindFirstChild('PlayerGui')
+    local backpackGui = playerGui and playerGui:FindFirstChild('BackpackGui')
+    if not backpackGui then
+        return false
+    end
+
+    local backpack = backpackGui:FindFirstChild('Backpack')
+    local inventory = backpack and backpack:FindFirstChild('Inventory')
+    if inventory and inventory:IsA('GuiObject') then
+        return inventory.Visible == true
+    end
+
+    return backpackGui.Enabled == true
+end
+
 function updateFruitValueOverlays()
     if not State.FruitValueOverlayEnabled then
         return
     end
+
+    -- Heavy UI walk — only while inventory is open, and at most every 2s.
+    if not isInventoryGuiOpen() then
+        return
+    end
+
+    local now = os.clock()
+    if (now - (State.EventPredictorOverlayAt or 0)) < 2 then
+        return
+    end
+    State.EventPredictorOverlayAt = now
 
     local seen = {}
     local usedFruits = {}
@@ -7864,12 +7914,6 @@ function updateFruitValueOverlays()
         else
             label.Text = ''
             label.Visible = false
-            for _, desc in slot:GetDescendants() do
-                if desc:IsA('TextLabel') and desc:GetAttribute('GG2_WasVisible') ~= nil then
-                    desc.Visible = desc:GetAttribute('GG2_WasVisible') == true
-                    desc:SetAttribute('GG2_WasVisible', nil)
-                end
-            end
         end
     end
 
@@ -8152,7 +8196,10 @@ function updateEventPredictorHud()
     end
 
     updateEventPredictorInvHeader()
-    pcall(updateFruitValueOverlays)
+    -- Slot overlays are expensive; only when inventory is open (throttled inside).
+    if State.FruitValueOverlayEnabled and isInventoryGuiOpen() then
+        pcall(updateFruitValueOverlays)
+    end
 end
 
 function setEventPredictorHud(enabled)
@@ -8185,7 +8232,8 @@ function setEventPredictorHud(enabled)
     ensureEventPredictorPhases()
     buildEventPredictorGui()
     connectInventoryValueWatchers()
-    setFruitValueOverlays(true)
+    -- Slot $ overlays off by default — they caused ~3 FPS. Header/moons stay on.
+    setFruitValueOverlays(Toggles.FruitSlotValues and Toggles.FruitSlotValues.Value == true)
     updateEventPredictorHud()
 
     if State.EventPredictorThread then
@@ -8198,8 +8246,7 @@ function setEventPredictorHud(enabled)
             if not ok then
                 warn('[GG2] Event predictor update failed:', err)
             end
-            -- Inv value also refreshes immediately on backpack/FruitCount changes.
-            task.wait(0.35)
+            task.wait(1)
         end
     end)
 end
@@ -8207,13 +8254,28 @@ end
 OptimizerBox:AddToggle('EventPredictorHud', {
     Text = 'Event Predictor HUD',
     Default = true,
-    Tooltip = 'Bottom-right moon timers + inventory fruit value overlay (header + green $ on fruit slots)',
+    Tooltip = 'Bottom-right moon timers + total inv value (lightweight)',
     Callback = function(value)
         if State.ConfigLoading then
             return
         end
 
         setEventPredictorHud(value)
+    end,
+})
+
+OptimizerBox:AddToggle('FruitSlotValues', {
+    Text = 'Fruit Slot $ Values',
+    Default = false,
+    Tooltip = 'Green $ on each inventory fruit (can lower FPS — only runs while inventory is open)',
+    Callback = function(value)
+        if State.ConfigLoading then
+            return
+        end
+
+        if State.EventPredictorHudEnabled then
+            setFruitValueOverlays(value == true)
+        end
     end,
 })
 
