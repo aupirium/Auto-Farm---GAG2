@@ -45,6 +45,7 @@ local GG2_AUTOEXEC_PATHS = {
 local GG2_COMMIT_FILE = 'GG2/commit.txt'
 local GG2_AUTOEXEC_FILE = 'GG2/rejoin.lua'
 local GG2_TARGET_PLANT_FILE = 'GG2/target_plant.txt'
+local GG2_HARVEST_PLANTS_FILE = 'GG2/harvest_plants.txt'
 local GG2_CONFIG_FOLDER = 'GrowGarden2AutoFarm'
 local LEGACY_SCRIPT_PATHS = {
     'GG2/grow_garden_autofarm.lua',
@@ -459,6 +460,7 @@ end
 function saveConfigBeforeTeleport()
     pcall(function()
         captureConfigTargetPlant()
+        captureConfigHarvestPlants()
 
         if not SaveManager or not isfile then
             return
@@ -816,6 +818,7 @@ local State = {
     WateringBusy = false,
     GearWalkBusy = false,
     ConfigTargetPlant = nil,
+    ConfigHarvestPlants = nil,
     LastGearWalkAttempt = 0,
     SprinklerPlacePending = false,
     WeatherHiding = false,
@@ -864,24 +867,13 @@ local State = {
     OptimizerEnabled = false,
     OptimizerOriginal = nil,
     OptimizerApplyToken = 0,
-    OptimizerScanThread = nil,
     OptimizerWorldScanThread = nil,
-    OptimizerBoostConnection = nil,
-    OptimizerWorldFlushConnection = nil,
     OptimizerWorldDescendantConnection = nil,
-    OptimizerWorldQueue = nil,
-    OptimizerMaintainThread = nil,
-    OptimizerSoundDescendantConnection = nil,
-    OptimizerCameraShakeConnection = nil,
-    OptimizerParticleConnection = nil,
-    OptimizerCharacterConnection = nil,
     OptimizerPendingApply = nil,
+    OptimizerPartCache = {},
     ConfigLoading = false,
     OptimizerPlantIncomingQueue = nil,
     PlantEmitterSet = {},
-    OptimizerPartCache = {},
-    OptimizerVisualCache = {},
-    OptimizerSoundCache = {},
     AntiAfkConnection = nil,
     AutoSellThread = nil,
     LastHarvest = 0,
@@ -897,7 +889,6 @@ local State = {
     NoclipCharConnection = nil,
     GardenFruits = {},
     FruitLabelMap = {},
-    OptimizerPlantRecordCache = {},
     LoadingDismissThread = nil,
     RemoteSyncStatus = nil,
 }
@@ -974,7 +965,6 @@ function startLoadingScreenAutoDismiss()
     end)
 end
 
-local OPTIMIZER_FRAME_BUDGET = 0.012
 local OPTIMIZER_SKY_ASSET = 'rbxassetid://136622198885324'
 local OPTIMIZER_SKY_NAME = 'GG2OptimizerSky'
 
@@ -1403,33 +1393,86 @@ function isCharacterPart(part)
     return false
 end
 
-function optimizerCleanPart(part)
-    if not State.OptimizerEnabled or isLocalPlayerDescendant(part) or isCharacterPart(part) then
+local OPTIMIZER_HIDE_CLASSES = {
+    ParticleEmitter = true,
+    Beam = true,
+    Trail = true,
+    Fire = true,
+    Smoke = true,
+    Sparkles = true,
+}
+
+local OPTIMIZER_LIGHT_CLASSES = {
+    PointLight = true,
+    SpotLight = true,
+    SurfaceLight = true,
+}
+
+--[[
+    Unified, single-pass optimizer hider.
+    Every instance is touched at most once (guarded by OptimizerPartCache), so
+    re-scans and the live DescendantAdded watcher stay effectively free.
+    Plants/fruit geometry inside Gardens gets fully hidden (invisible + non
+    collidable) for every plot, including other players', while the rest of
+    the world just gets simplified (no textures/decals/shadows) so it stays
+    visible but cheap to render.
+]]
+function optimizerHideInstance(inst)
+    if State.OptimizerPartCache[inst] then
         return
     end
 
-    if part:IsA('BasePart') then
-        part.Material = Enum.Material.SmoothPlastic
-        for _, child in part:GetChildren() do
-            if child:IsA('Texture') or child:IsA('Decal') then
-                pcall(function()
-                    child:Destroy()
-                end)
-            end
+    if isLocalPlayerDescendant(inst) or isCharacterPart(inst) then
+        return
+    end
+
+    local className = inst.ClassName
+
+    if inst:IsA('BasePart') then
+        local inGarden = isGardenDescendant(inst)
+        local cache = {
+            Material = inst.Material,
+            CastShadow = inst.CastShadow,
+        }
+
+        inst.Material = Enum.Material.SmoothPlastic
+        inst.CastShadow = false
+
+        if inGarden then
+            cache.Transparency = inst.Transparency
+            cache.CanCollide = inst.CanCollide
+            cache.LocalTransparencyModifier = inst.LocalTransparencyModifier
+            inst.Transparency = 1
+            inst.LocalTransparencyModifier = 1
+            inst.CanCollide = false
         end
+
+        State.OptimizerPartCache[inst] = cache
+    elseif className == 'Decal' or className == 'Texture' then
+        State.OptimizerPartCache[inst] = { Transparency = inst.Transparency }
+        inst.Transparency = 1
+    elseif OPTIMIZER_HIDE_CLASSES[className] then
+        State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
+        inst.Enabled = false
+    elseif OPTIMIZER_LIGHT_CLASSES[className] then
+        State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
+        inst.Enabled = false
+    elseif className == 'ProximityPrompt' and isGardenDescendant(inst) then
+        State.OptimizerPartCache[inst] = { Enabled = inst.Enabled }
+        inst.Enabled = false
     end
 end
 
-function scanOptimizerWorldClean(applyToken)
+function scanOptimizerWorld(applyToken)
     local descendants = workspace:GetDescendants()
     for i = 1, #descendants do
         if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
             return false
         end
 
-        optimizerCleanPart(descendants[i])
+        optimizerHideInstance(descendants[i])
 
-        if i % 800 == 0 then
+        if i % 400 == 0 then
             RunService.Heartbeat:Wait()
         end
     end
@@ -1477,163 +1520,9 @@ function applyOptimizerLighting()
     Lighting.ShadowColor = Color3.fromRGB(30, 30, 40)
 end
 
-local OPTIMIZER_GLOW_COLOR = Color3.fromRGB(110, 135, 170)
-local OPTIMIZER_CAMERA_SHAKE = 0.57
-local OPTIMIZER_PARTICLE_INTERVAL = 0.08
-local OPTIMIZER_PARTICLE_LIFETIME = 4.5
-
-function addOptimizerCharacterGlow(character)
-    if not State.OptimizerEnabled then
-        return
-    end
-
-    local rootPart = character:WaitForChild('HumanoidRootPart', 5)
-    if not rootPart then
-        return
-    end
-
-    local existing = rootPart:FindFirstChild('ZLocalGlow')
-    if existing then
-        existing:Destroy()
-    end
-
-    local glow = Instance.new('PointLight')
-    glow.Name = 'ZLocalGlow'
-    glow.Color = OPTIMIZER_GLOW_COLOR
-    glow.Brightness = 2.5
-    glow.Range = 16
-    glow.Shadows = false
-    glow.Enabled = true
-    glow.Parent = rootPart
-end
-
-function startOptimizerCharacterParticles(character)
-    if State.OptimizerParticleConnection then
-        State.OptimizerParticleConnection:Disconnect()
-        State.OptimizerParticleConnection = nil
-    end
-
-    if not State.OptimizerEnabled then
-        return
-    end
-
-    local rootPart = character:WaitForChild('HumanoidRootPart', 5)
-    if not rootPart then
-        return
-    end
-
-    local elapsed = 0
-    State.OptimizerParticleConnection = RunService.Heartbeat:Connect(function(delta)
-        if not State.OptimizerEnabled or not character.Parent or not rootPart.Parent then
-            if State.OptimizerParticleConnection then
-                State.OptimizerParticleConnection:Disconnect()
-                State.OptimizerParticleConnection = nil
-            end
-            return
-        end
-
-        local camera = workspace.CurrentCamera
-        if not camera then
-            return
-        end
-
-        if (camera.CFrame.Position - rootPart.Position).Magnitude > 40 then
-            return
-        end
-
-        elapsed += delta
-        if elapsed < OPTIMIZER_PARTICLE_INTERVAL then
-            return
-        end
-
-        elapsed = 0
-        local part = Instance.new('Part')
-        part.Shape = Enum.PartType.Ball
-        part.Size = Vector3.new(0.22, 0.22, 0.22)
-        part.Color = OPTIMIZER_GLOW_COLOR
-        part.Material = Enum.Material.Neon
-        part.CastShadow = false
-        part.CanCollide = false
-        part.CanTouch = false
-        part.CanQuery = false
-        part.Anchored = true
-        part.Position = rootPart.Position + Vector3.new(
-            math.random(-8, 8) / 10,
-            math.random(-12, 12) / 10,
-            math.random(-8, 8) / 10
-        )
-        part.Parent = workspace
-
-        local theta = math.rad(math.random(0, 360))
-        local phi = math.rad(math.random(0, 25))
-        local direction = Vector3.new(
-            math.sin(phi) * math.cos(theta),
-            math.cos(phi),
-            math.sin(phi) * math.sin(theta)
-        )
-        local endPos = part.Position + direction * 5 * OPTIMIZER_PARTICLE_LIFETIME
-
-        local tween = TweenService:Create(part, TweenInfo.new(OPTIMIZER_PARTICLE_LIFETIME, Enum.EasingStyle.Linear), {
-            Position = endPos,
-            Transparency = 0.8,
-        })
-        tween:Play()
-        Debris:AddItem(part, OPTIMIZER_PARTICLE_LIFETIME)
-    end)
-end
-
-function onOptimizerCharacterAdded(character)
-    if not State.OptimizerEnabled then
-        return
-    end
-
-    startOptimizerCharacterParticles(character)
-    addOptimizerCharacterGlow(character)
-end
-
-function startOptimizerExtras()
-    if State.OptimizerCameraShakeConnection then
-        State.OptimizerCameraShakeConnection:Disconnect()
-    end
-
-    State.OptimizerCameraShakeConnection = RunService.RenderStepped:Connect(function()
-        if not State.OptimizerEnabled then
-            return
-        end
-
-        local camera = workspace.CurrentCamera
-        if camera then
-            camera.CFrame = camera.CFrame
-                * CFrame.new(0, 0, 0, 1, 0, 0, 0, OPTIMIZER_CAMERA_SHAKE, 0, 0, 0, 1)
-        end
-    end)
-
-    if State.OptimizerCharacterConnection then
-        State.OptimizerCharacterConnection:Disconnect()
-    end
-
-    State.OptimizerCharacterConnection = LocalPlayer.CharacterAdded:Connect(onOptimizerCharacterAdded)
-    if LocalPlayer.Character then
-        onOptimizerCharacterAdded(LocalPlayer.Character)
-    end
-end
-
-function stopOptimizerExtras()
-    if State.OptimizerCameraShakeConnection then
-        State.OptimizerCameraShakeConnection:Disconnect()
-        State.OptimizerCameraShakeConnection = nil
-    end
-
-    if State.OptimizerParticleConnection then
-        State.OptimizerParticleConnection:Disconnect()
-        State.OptimizerParticleConnection = nil
-    end
-
-    if State.OptimizerCharacterConnection then
-        State.OptimizerCharacterConnection:Disconnect()
-        State.OptimizerCharacterConnection = nil
-    end
-
+-- One-time safety net in case an old build of this script left cosmetic
+-- leftovers (glow light / HUD) behind; the optimizer no longer creates these.
+function cleanupOptimizerLegacyCosmetics()
     local character = LocalPlayer.Character
     if character then
         local rootPart = character:FindFirstChild('HumanoidRootPart')
@@ -1697,21 +1586,20 @@ function startWorldOptimizerMaintenance(applyToken)
         State.OptimizerWorldDescendantConnection = nil
     end
 
-    State.OptimizerWorldScanThread = task.spawn(function()
-        local finished = scanOptimizerWorldClean(applyToken)
-        if not finished or applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+    cleanupOptimizerLegacyCosmetics()
+
+    -- Hook new instances (plant growth, new fruit, new plots joining) first so
+    -- nothing added mid-scan is missed, then run the one-time full sweep.
+    State.OptimizerWorldDescendantConnection = workspace.DescendantAdded:Connect(function(desc)
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
             return
         end
 
-        startOptimizerExtras()
+        optimizerHideInstance(desc)
+    end)
 
-        State.OptimizerWorldDescendantConnection = workspace.DescendantAdded:Connect(function(desc)
-            if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
-                return
-            end
-
-            optimizerCleanPart(desc)
-        end)
+    State.OptimizerWorldScanThread = task.spawn(function()
+        scanOptimizerWorld(applyToken)
 
         if applyToken == State.OptimizerApplyToken and State.OptimizerEnabled then
             State.OptimizerWorldScanThread = nil
@@ -1720,8 +1608,6 @@ function startWorldOptimizerMaintenance(applyToken)
 end
 
 function restoreWorldOptimizer()
-    stopOptimizerExtras()
-
     if State.OptimizerWorldDescendantConnection then
         State.OptimizerWorldDescendantConnection:Disconnect()
         State.OptimizerWorldDescendantConnection = nil
@@ -1780,14 +1666,9 @@ function restoreWorldOptimizer()
 end
 
 function restoreOptimizer()
-    if State.OptimizerScanThread then
-        pcall(task.cancel, State.OptimizerScanThread)
-        State.OptimizerScanThread = nil
-    end
+    restoreWorldOptimizer()
 
-    stopPlantEffectMaintain()
-
-    for inst, props in State.OptimizerPlantRecordCache do
+    for inst, props in State.OptimizerPartCache do
         if inst and inst.Parent then
             for prop, val in props do
                 pcall(function()
@@ -1797,11 +1678,9 @@ function restoreOptimizer()
         end
     end
 
-    restoreWorldOptimizer()
-
     State.OptimizerEnabled = false
     State.OptimizerOriginal = nil
-    State.OptimizerPlantRecordCache = {}
+    State.OptimizerPartCache = {}
 end
 
 function cancelOptimizerPendingApply()
@@ -2653,6 +2532,169 @@ function refreshTargetPlantDropdown()
     else
         Options.TargetPlant:SetValue('None')
     end
+end
+
+function saveHarvestPlantsFile(names)
+    if not writefile then
+        return
+    end
+
+    ensureGg2Folders()
+    pcall(function()
+        writefile(GG2_HARVEST_PLANTS_FILE, table.concat(names or {}, '\n'))
+    end)
+end
+
+function loadConfigHarvestPlants()
+    local names = nil
+
+    if isfile and readfile and isfile(GG2_HARVEST_PLANTS_FILE) then
+        local ok, raw = pcall(readfile, GG2_HARVEST_PLANTS_FILE)
+        if ok and type(raw) == 'string' then
+            names = {}
+            for line in raw:gmatch('[^\r\n]+') do
+                local trimmed = line:gsub('^%s+', ''):gsub('%s+$', '')
+                if trimmed ~= '' then
+                    table.insert(names, trimmed)
+                end
+            end
+        end
+    end
+
+    if names then
+        State.ConfigHarvestPlants = names
+    end
+
+    return names
+end
+
+-- Returns nil when nothing is selected (meaning "harvest every plant type"),
+-- or a lookup set of the selected plant type names otherwise.
+function getSelectedHarvestPlantsSet()
+    local selected = Options and Options.HarvestPlantTypes and Options.HarvestPlantTypes.Value
+    if typeof(selected) ~= 'table' then
+        return nil
+    end
+
+    local set = nil
+    for label, isSelected in selected do
+        if isSelected == true then
+            set = set or {}
+            set[label] = true
+        end
+    end
+
+    return set
+end
+
+function applyHarvestPlantsToDropdown(names)
+    if not Options or not Options.HarvestPlantTypes then
+        State.ConfigHarvestPlants = names
+        return
+    end
+
+    local values = {}
+    local seen = {}
+    for _, name in getGardenPlantTypes() do
+        if not seen[name] then
+            seen[name] = true
+            table.insert(values, name)
+        end
+    end
+
+    local selection = {}
+    for _, name in names or {} do
+        if not seen[name] then
+            seen[name] = true
+            table.insert(values, name)
+        end
+        selection[name] = true
+    end
+
+    Options.HarvestPlantTypes:SetValues(values)
+    Options.HarvestPlantTypes:SetValue(selection)
+    State.ConfigHarvestPlants = names
+end
+
+function syncHarvestPlantsFromSavedConfig()
+    local names = loadConfigHarvestPlants()
+    if names then
+        applyHarvestPlantsToDropdown(names)
+    end
+    return names
+end
+
+function captureConfigHarvestPlants()
+    if not Options or not Options.HarvestPlantTypes then
+        return
+    end
+
+    local selected = Options.HarvestPlantTypes.Value
+    if typeof(selected) ~= 'table' then
+        return
+    end
+
+    local names = {}
+    for label, isSelected in selected do
+        if isSelected == true then
+            table.insert(names, label)
+        end
+    end
+
+    table.sort(names)
+    State.ConfigHarvestPlants = names
+    saveHarvestPlantsFile(names)
+end
+
+function refreshHarvestPlantsDropdown()
+    if not Options or not Options.HarvestPlantTypes then
+        return
+    end
+
+    if not State.ConfigHarvestPlants then
+        loadConfigHarvestPlants()
+    end
+
+    local preferred = {}
+    for _, name in State.ConfigHarvestPlants or {} do
+        preferred[name] = true
+    end
+
+    if not next(preferred) then
+        local current = Options.HarvestPlantTypes.Value
+        if typeof(current) == 'table' then
+            for label, isSelected in current do
+                if isSelected == true then
+                    preferred[label] = true
+                end
+            end
+        end
+    end
+
+    local values = {}
+    local seen = {}
+    for _, name in getGardenPlantTypes() do
+        if not seen[name] then
+            seen[name] = true
+            table.insert(values, name)
+        end
+    end
+
+    local selection = {}
+    local names = {}
+    for name in pairs(preferred) do
+        if not seen[name] then
+            seen[name] = true
+            table.insert(values, name)
+        end
+        selection[name] = true
+        table.insert(names, name)
+    end
+
+    table.sort(names)
+    Options.HarvestPlantTypes:SetValues(values)
+    Options.HarvestPlantTypes:SetValue(selection)
+    State.ConfigHarvestPlants = names
 end
 
 function ensureAtGearTarget()
@@ -4430,6 +4472,16 @@ function collectFruit(plantId, fruitId)
     Networking.Garden.CollectFruit:Fire(plantId, fruitId or '')
 end
 
+function isPlantTypeHarvestAllowed(allowedSet, garden, plantId)
+    if not allowedSet then
+        return true
+    end
+
+    local plant = garden and garden[plantId]
+    local plantName = plant and plant.PlantName
+    return type(plantName) == 'string' and allowedSet[plantName] == true
+end
+
 function harvestFruits(maxKg)
     local plot = getPlot()
     local plantsFolder = plot and plot:FindFirstChild('Plants')
@@ -4439,6 +4491,7 @@ function harvestFruits(maxKg)
 
     local maxKg = tonumber(maxKg) or 999
     local garden = GardenSync:GetGarden(LocalPlayer.UserId)
+    local allowedSet = getSelectedHarvestPlantsSet()
     local seen = {}
 
     for _, plantModel in plantsFolder:GetChildren() do
@@ -4449,7 +4502,7 @@ function harvestFruits(maxKg)
                     local plantId = fruitModel:GetAttribute('PlantId')
                     local fruitId = fruitModel:GetAttribute('FruitId')
 
-                    if plantId and fruitId then
+                    if plantId and fruitId and isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
                         local key = plantId .. '_' .. fruitId
                         if not seen[key] then
                             seen[key] = true
@@ -4464,7 +4517,7 @@ function harvestFruits(maxKg)
             end
         else
             local plantId = plantModel:GetAttribute('PlantId')
-            if plantId and isFruitRipe(nil, plantModel) then
+            if plantId and isFruitRipe(nil, plantModel) and isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
                 local key = plantId .. '_'
                 if not seen[key] then
                     seen[key] = true
@@ -4479,6 +4532,10 @@ function harvestFruits(maxKg)
     end
 
     for plantId, plant in garden do
+        if not isPlantTypeHarvestAllowed(allowedSet, garden, plantId) then
+            continue
+        end
+
         if plant.Fruits then
             for fruitId, fruit in plant.Fruits do
                 local key = plantId .. '_' .. fruitId
@@ -4877,6 +4934,8 @@ function doStartupWalk()
         waitForGardenReady(30)
         syncTargetPlantFromSavedConfig()
         refreshTargetPlantDropdown()
+        syncHarvestPlantsFromSavedConfig()
+        refreshHarvestPlantsDropdown()
         loadWeatherState()
 
         local basePos = getGearTargetPosition()
@@ -5787,6 +5846,29 @@ FarmBox:AddToggle('AutoHarvest', {
     end,
 })
 
+FarmBox:AddDropdown('HarvestPlantTypes', {
+    Text = 'Harvest Plant Types',
+    Values = { 'Open tab to load plant types' },
+    Multi = true,
+    Default = {},
+    Tooltip = 'Only auto-harvest these plant types. Leave empty to harvest every plant type.',
+    Callback = function()
+        if State.ConfigLoading then
+            return
+        end
+
+        captureConfigHarvestPlants()
+    end,
+})
+
+FarmBox:AddButton({
+    Text = 'Refresh Plant Types',
+    Func = function()
+        refreshHarvestPlantsDropdown()
+        Library:Notify('Plant type list refreshed')
+    end,
+})
+
 FarmBox:AddInput('MaxHarvestKg', {
     Text = 'Max Harvest KG',
     Default = '50',
@@ -5927,7 +6009,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'Client FPS boost: smooth plastic world, custom sky/lighting, terrain, glow trail.',
+    Tooltip = 'Client FPS boost: hides every plant/fruit (yours and everyone else\'s), simplifies the world, custom sky/lighting/terrain. Farming/harvest still works normally.',
     Callback = function(value)
         if State.ConfigLoading then
             return
@@ -6194,6 +6276,7 @@ do
     local rawSave = SaveManager.Save
     function SaveManager:Save(name)
         captureConfigTargetPlant()
+        captureConfigHarvestPlants()
         return rawSave(self, name)
     end
 
@@ -6204,6 +6287,8 @@ do
             task.wait(0.05)
             syncTargetPlantFromSavedConfig()
             refreshTargetPlantDropdown()
+            syncHarvestPlantsFromSavedConfig()
+            refreshHarvestPlantsDropdown()
         end)
         return ok, err
     end
@@ -6281,6 +6366,8 @@ task.defer(function()
     State.ConfigLoading = false
     syncTargetPlantFromSavedConfig()
     captureConfigTargetPlant()
+    syncHarvestPlantsFromSavedConfig()
+    captureConfigHarvestPlants()
     if Options.MenuKeybind then
         Library.ToggleKeybind = Options.MenuKeybind
     end
@@ -6290,6 +6377,7 @@ task.defer(function()
 
     waitForGardenReady(45)
     refreshTargetPlantDropdown()
+    refreshHarvestPlantsDropdown()
     doStartupWalk()
 
     if Toggles.AutoWateringCan and Toggles.AutoWateringCan.Value then
@@ -6352,6 +6440,8 @@ LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
         waitForGardenReady(20)
         syncTargetPlantFromSavedConfig()
         refreshTargetPlantDropdown()
+        syncHarvestPlantsFromSavedConfig()
+        refreshHarvestPlantsDropdown()
     end)
     if Toggles.Noclip and Toggles.Noclip.Value then
         task.defer(function()
