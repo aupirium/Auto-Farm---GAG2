@@ -1003,11 +1003,11 @@ function isCharacterPart(part)
 end
 
 --[[
-    High-FPS optimizer:
+    High-FPS optimizer (the ~400-500 FPS path):
     - Other players: wipe their whole garden + characters
-    - Your plants: delete the heavy plant meshes, but KEEP fruit models
-      (made invisible) so weight/harvest paths that touch instances still work
-    - Night sky / graphics / FPS unlock stay the same
+    - Your plants: fully Destroy plant models (empty dirt beds)
+    - Gear uses remembered plant positions from the snapshot (no fruit models needed)
+    - Harvest/Max KG uses GardenSync + remembered SizeMulti/weight (CollectFruit remote)
 ]]
 local OPTIMIZER_DESTROY_CLASSES = {
     ParticleEmitter = true,
@@ -1022,12 +1022,6 @@ local OPTIMIZER_DESTROY_CLASSES = {
     SurfaceLight = true,
     Decal = true,
     Texture = true,
-}
-
--- Keep these under your plant model; everything else is visual junk.
-local OPTIMIZER_PLANT_KEEP_NAMES = {
-    Fruits = true,
-    Base = true,
 }
 
 local OPTIMIZER_SKY_ASSET = 'rbxassetid://136622198885324'
@@ -1384,170 +1378,16 @@ function snapshotPlantModel(plantModel)
 end
 
 --[[
-    Don't wipe a plant until PlantId exists and we've snapshotted it.
-    Then strip plant visuals but KEEP fruits (invisible) for harvest/weight.
+    Wait for PlantId, snapshot into PlantMemory, then fully Destroy the plant.
+    Keeping invisible fruits was leaving thousands of MeshParts and killed FPS
+    (~3 instead of ~500). Harvest uses GardenSync + memory, not 3D models.
 ]]
-function hideOptimizerPart(part)
-    if not part or not part:IsA('BasePart') then
-        return
-    end
-
-    pcall(function()
-        part.Transparency = 1
-        part.LocalTransparencyModifier = 1
-        part.CastShadow = false
-        part.CanCollide = false
-        part.Anchored = true
-        if part.Material ~= Enum.Material.SmoothPlastic then
-            part.Material = Enum.Material.SmoothPlastic
-        end
-    end)
-end
-
-function isUnderOwnFruitsFolder(inst)
-    local current = inst
-    while current and current ~= workspace do
-        if current.Name == 'Fruits' then
-            local plant = current.Parent
-            if plant and plant.Parent and plant.Parent.Name == 'Plants' then
-                local plot = plant.Parent.Parent
-                local ownPlot = getPlot()
-                if ownPlot and plot == ownPlot then
-                    return true, plant, current
-                end
-            end
-        end
-        current = current.Parent
-    end
-    return false
-end
-
-function hideFruitModel(fruitModel)
-    if not fruitModel or not fruitModel.Parent then
-        return
-    end
-
-    local function scrub(desc)
-        if not desc or not desc.Parent then
-            return
-        end
-
-        if desc:IsA('ProximityPrompt') then
-            return
-        end
-
-        if OPTIMIZER_DESTROY_CLASSES[desc.ClassName] then
-            pcall(function()
-                desc:Destroy()
-            end)
-            return
-        end
-
-        if desc:IsA('BillboardGui') then
-            local keepGui = desc.Name == 'HarvestPromptLabel'
-                or desc:FindFirstChildWhichIsA('ProximityPrompt', true) ~= nil
-            if not keepGui then
-                pcall(function()
-                    desc:Destroy()
-                end)
-            end
-            return
-        end
-
-        -- Drop heavy fruit meshes; keep Base/HarvestPart as invisible anchors.
-        if desc.Parent == fruitModel
-            and (desc:IsA('MeshPart') or desc:IsA('Model') or desc:IsA('Folder'))
-            and desc.Name ~= 'Base'
-            and desc.Name ~= 'HarvestPart'
-            and desc.Name ~= 'Anthers' then
-            -- Anthers are many parts - delete for FPS.
-            pcall(function()
-                desc:Destroy()
-            end)
-            return
-        end
-
-        if desc.Name == 'Anthers' then
-            pcall(function()
-                desc:Destroy()
-            end)
-            return
-        end
-
-        if desc:IsA('BasePart') then
-            hideOptimizerPart(desc)
-        end
-    end
-
-    if State.OptimizerPartCache[fruitModel] == 'fruitHidden' then
-        for _, desc in fruitModel:GetDescendants() do
-            scrub(desc)
-        end
-        return
-    end
-
-    State.OptimizerPartCache[fruitModel] = 'fruitHidden'
-
-    -- Direct children first so mesh folders get removed quickly.
-    for _, child in fruitModel:GetChildren() do
-        scrub(child)
-    end
-    for _, desc in fruitModel:GetDescendants() do
-        scrub(desc)
-    end
-
-    if fruitModel:IsA('BasePart') then
-        hideOptimizerPart(fruitModel)
-    end
-end
-
-function stripOwnPlantVisuals(model)
+function optimizerDestroyOwnPlant(model)
     if not model or not model.Parent or model.Parent.Name ~= 'Plants' then
         return
     end
 
-    pcall(snapshotPlantModel, model)
-
-    for _, child in model:GetChildren() do
-        if child.Name == 'Fruits' then
-            for _, fruit in child:GetChildren() do
-                hideFruitModel(fruit)
-            end
-        elseif child.Name == 'Base' and child:IsA('BasePart') then
-            -- Keep one invisible anchor so plant position still exists.
-            hideOptimizerPart(child)
-            State.OptimizerPartCache[child] = 'plantBase'
-        else
-            -- Heavy plant meshes / debug / spawn markers.
-            pcall(function()
-                child:Destroy()
-            end)
-        end
-    end
-
-    State.OptimizerPartCache[model] = 'plantStripped'
-end
-
-function optimizerStripOwnPlant(model)
-    if not model or not model.Parent or model.Parent.Name ~= 'Plants' then
-        return
-    end
-
-    if State.OptimizerPartCache[model] == 'plantStripped' then
-        -- Plant already stripped; only clean new visual junk / new fruits.
-        for _, child in model:GetChildren() do
-            if child.Name == 'Fruits' then
-                for _, fruit in child:GetChildren() do
-                    hideFruitModel(fruit)
-                end
-            elseif child.Name == 'Base' and child:IsA('BasePart') then
-                hideOptimizerPart(child)
-            elseif not OPTIMIZER_PLANT_KEEP_NAMES[child.Name] then
-                pcall(function()
-                    child:Destroy()
-                end)
-            end
-        end
+    if State.OptimizerPartCache[model] then
         return
     end
 
@@ -1555,11 +1395,15 @@ function optimizerStripOwnPlant(model)
         if not model or not model.Parent or not State.OptimizerEnabled then
             return
         end
-        if State.OptimizerPartCache[model] == 'plantStripped' then
-            optimizerStripOwnPlant(model)
+        if State.OptimizerPartCache[model] then
             return
         end
-        stripOwnPlantVisuals(model)
+
+        State.OptimizerPartCache[model] = true
+        pcall(snapshotPlantModel, model)
+        pcall(function()
+            model:Destroy()
+        end)
     end
 
     if model:GetAttribute('PlantId') then
@@ -1652,7 +1496,8 @@ function syncPlantMemoryFromGarden()
                 fmem.age = fruit.Age or fmem.age
                 fmem.maxAge = fruit.MaxAge or fmem.maxAge
                 fmem.mutation = fruit.Mutation or fmem.mutation
-                fmem.sizeMulti = fruit.SizeMultiplier or fmem.sizeMulti
+                fmem.sizeMulti = fruit.SizeMultiplier or fruit.SizeMulti or fmem.sizeMulti
+                fmem.corePartName = fruit.CorePartName or fmem.corePartName or mem.corePartName or mem.plantName
                 if fruit.Weight or fruit.WeightKg or fruit.FruitWeight then
                     fmem.weight = normalizeWeightKg(fruit.Weight or fruit.WeightKg or fruit.FruitWeight) or fmem.weight
                 end
@@ -1704,8 +1549,8 @@ function getCachedFruitMemory(plantId, fruitId)
 end
 
 --[[
-    Strip own plant meshes (empty-looking beds) but keep fruit models invisible
-    so auto harvest / weight / fruits tab still have real instances.
+    Empty dirt beds = fully Destroy plant models (this is what hit ~500 FPS).
+    Snapshot first so gear/fruits/harvest still work via GardenSync + memory.
 ]]
 function clearOwnPlantModels()
     snapshotOwnPlants()
@@ -1717,7 +1562,7 @@ function clearOwnPlantModels()
     end
 
     for _, child in plantsFolder:GetChildren() do
-        optimizerStripOwnPlant(child)
+        optimizerDestroyOwnPlant(child)
     end
 end
 
@@ -1787,42 +1632,14 @@ function optimizerHideInstance(inst)
         return
     end
 
-    -- Own plants: strip meshes, keep fruits invisible.
+    -- Own plants: snapshot then fully Destroy (empty beds = high FPS).
     if isPlantInstance(inst) then
-        local underFruits, plantModel, fruitsFolder = isUnderOwnFruitsFolder(inst)
-        if underFruits and fruitsFolder then
-            local fruit = inst
-            while fruit and fruit.Parent and fruit.Parent ~= fruitsFolder do
-                fruit = fruit.Parent
-            end
-            if fruit and fruit.Parent == fruitsFolder then
-                hideFruitModel(fruit)
-            elseif OPTIMIZER_DESTROY_CLASSES[inst.ClassName] then
-                pcall(function()
-                    inst:Destroy()
-                end)
-            elseif inst:IsA('BasePart') then
-                hideOptimizerPart(inst)
-            end
-            return
-        end
-
         local model = inst
         while model and model.Parent and model.Parent.Name ~= 'Plants' do
             model = model.Parent
         end
         if model and model.Parent and model.Parent.Name == 'Plants' then
-            -- New visual junk re-added under an already-stripped plant.
-            if State.OptimizerPartCache[model] == 'plantStripped'
-                and inst ~= model
-                and inst.Parent == model
-                and not OPTIMIZER_PLANT_KEEP_NAMES[inst.Name] then
-                pcall(function()
-                    inst:Destroy()
-                end)
-                return
-            end
-            optimizerStripOwnPlant(model)
+            optimizerDestroyOwnPlant(model)
         end
         return
     end
@@ -4720,10 +4537,21 @@ end
     updates the fruit, so it's a perfect cache-invalidation key.
 ]]
 function getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
-    local age
+    plantId = plantId ~= nil and tostring(plantId) or nil
+    fruitId = fruitId ~= nil and tostring(fruitId) or ''
+
+    local cacheKey = plantId and (plantId .. '_' .. fruitId) or nil
+    local age = fruitModel and fruitModel:GetAttribute('Age')
+        or (typeof(fruitData) == 'table' and fruitData.Age)
+        or nil
+
     if fruitModel then
-        age = fruitModel:GetAttribute('Age')
         local cached = State.HarvestWeightCache[fruitModel]
+        if cached and cached.Age == age then
+            return cached.Weight
+        end
+    elseif cacheKey then
+        local cached = State.HarvestWeightCache[cacheKey]
         if cached and cached.Age == age then
             return cached.Weight
         end
@@ -4731,6 +4559,7 @@ function getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
 
     local weight
     local mem = plantId and getCachedFruitMemory(plantId, fruitId) or nil
+    local plantMem = plantId and State.PlantMemory[plantId] or nil
 
     if fruitModel then
         local ok, calculated = pcall(function()
@@ -4753,23 +4582,9 @@ function getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
                 or fruitModel:GetAttribute('WeightKg')
                 or fruitModel:GetAttribute('FruitWeight')
         end
-
-        if not weight then
-            weight = estimateFruitWeightKg(
-                fruitModel:GetAttribute('CorePartName'),
-                fruitModel:GetAttribute('SizeMulti')
-            )
-            -- estimateFruitWeightKg already returns kg
-            if weight then
-                if fruitModel then
-                    State.HarvestWeightCache[fruitModel] = { Age = age, Weight = weight }
-                end
-                return weight
-            end
-        end
     end
 
-    if not weight and fruitData then
+    if not weight and typeof(fruitData) == 'table' then
         weight = fruitData.Weight or fruitData.FruitWeight or fruitData.Kg or fruitData.WeightKg
     end
 
@@ -4777,18 +4592,31 @@ function getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
         weight = mem.weight
     end
 
+    if not weight and plantMem and plantMem.weight and fruitId == '' then
+        weight = plantMem.weight
+    end
+
+    -- No 3D model (optimizer wiped plants): estimate from SizeMulti + plant name.
     if not weight then
-        local sizeMulti = (fruitData and (fruitData.SizeMultiplier or fruitData.SizeMulti))
+        local sizeMulti = (fruitModel and fruitModel:GetAttribute('SizeMulti'))
+            or (typeof(fruitData) == 'table' and (fruitData.SizeMultiplier or fruitData.SizeMulti))
             or (mem and mem.sizeMulti)
+            or (plantMem and plantMem.sizeMulti)
         local core = (fruitModel and fruitModel:GetAttribute('CorePartName'))
             or (mem and mem.corePartName)
-            or (fruitData and fruitData.CorePartName)
-        local plantMem = plantId and State.PlantMemory[tostring(plantId)] or nil
-        core = core or (plantMem and (plantMem.corePartName or plantMem.plantName))
+            or (typeof(fruitData) == 'table' and fruitData.CorePartName)
+            or (plantMem and (plantMem.corePartName or plantMem.plantName or plantMem.seedName))
         local estimated = estimateFruitWeightKg(core, sizeMulti)
         if estimated then
+            weight = estimated
+            -- estimate already kg — store and return
             if fruitModel then
                 State.HarvestWeightCache[fruitModel] = { Age = age, Weight = estimated }
+            elseif cacheKey then
+                State.HarvestWeightCache[cacheKey] = { Age = age, Weight = estimated }
+            end
+            if mem then
+                mem.weight = estimated
             end
             return estimated
         end
@@ -4798,6 +4626,12 @@ function getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
 
     if fruitModel then
         State.HarvestWeightCache[fruitModel] = { Age = age, Weight = result }
+    elseif cacheKey then
+        State.HarvestWeightCache[cacheKey] = { Age = age, Weight = result }
+    end
+
+    if result and mem then
+        mem.weight = result
     end
 
     return result
@@ -6753,7 +6587,7 @@ local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'High FPS mode: unlocks FPS, night sky, lowest graphics, deletes OTHER players gardens/NPCs/characters, strips YOUR plant meshes but keeps fruits invisible so auto harvest/gear/fruits still work. Other gardens only come back after rejoin.',
+    Tooltip = 'High FPS mode: deletes other gardens + YOUR plant models (empty beds ~400-500 FPS). Gear uses saved plant positions; harvest/Max KG uses GardenSync + memory. No invisible fruits (those killed FPS).',
     Callback = function(value)
         if State.ConfigLoading then
             return
