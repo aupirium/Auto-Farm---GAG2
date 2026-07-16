@@ -4677,6 +4677,40 @@ function isFruitRipe(fruitData, fruitModel)
     return false
 end
 
+local FruitGrowDataByCore
+function getFruitBaseWeightGrams(corePartName)
+    if type(corePartName) ~= 'string' or corePartName == '' then
+        return nil
+    end
+
+    if not FruitGrowDataByCore then
+        FruitGrowDataByCore = {}
+        pcall(function()
+            local fruitsModule = require(ReplicatedStorage.PlantGenerationModules.Fruits)
+            for name, entry in fruitsModule do
+                if typeof(entry) == 'table' then
+                    local base = entry.GrowData and entry.GrowData.BaseWeight
+                    if base then
+                        FruitGrowDataByCore[name] = base
+                    end
+                end
+            end
+        end)
+    end
+
+    return FruitGrowDataByCore[corePartName]
+end
+
+function estimateFruitWeightKg(corePartName, sizeMulti)
+    local base = getFruitBaseWeightGrams(corePartName)
+    sizeMulti = tonumber(sizeMulti)
+    if not base or not sizeMulti then
+        return nil
+    end
+
+    return normalizeWeightKg(base * sizeMulti)
+end
+
 --[[
     A ripe fruit that fails the maxKg filter (e.g. you're only keeping big
     ones) sits there getting re-checked every frame by the harvest loop -
@@ -4696,6 +4730,7 @@ function getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
     end
 
     local weight
+    local mem = plantId and getCachedFruitMemory(plantId, fruitId) or nil
 
     if fruitModel then
         local ok, calculated = pcall(function()
@@ -4718,16 +4753,44 @@ function getFruitWeightKg(fruitModel, fruitData, plantId, fruitId)
                 or fruitModel:GetAttribute('WeightKg')
                 or fruitModel:GetAttribute('FruitWeight')
         end
+
+        if not weight then
+            weight = estimateFruitWeightKg(
+                fruitModel:GetAttribute('CorePartName'),
+                fruitModel:GetAttribute('SizeMulti')
+            )
+            -- estimateFruitWeightKg already returns kg
+            if weight then
+                if fruitModel then
+                    State.HarvestWeightCache[fruitModel] = { Age = age, Weight = weight }
+                end
+                return weight
+            end
+        end
     end
 
     if not weight and fruitData then
         weight = fruitData.Weight or fruitData.FruitWeight or fruitData.Kg or fruitData.WeightKg
     end
 
-    if not weight and plantId then
-        local mem = getCachedFruitMemory(plantId, fruitId)
-        if mem and mem.weight then
-            weight = mem.weight
+    if not weight and mem and mem.weight then
+        weight = mem.weight
+    end
+
+    if not weight then
+        local sizeMulti = (fruitData and (fruitData.SizeMultiplier or fruitData.SizeMulti))
+            or (mem and mem.sizeMulti)
+        local core = (fruitModel and fruitModel:GetAttribute('CorePartName'))
+            or (mem and mem.corePartName)
+            or (fruitData and fruitData.CorePartName)
+        local plantMem = plantId and State.PlantMemory[tostring(plantId)] or nil
+        core = core or (plantMem and (plantMem.corePartName or plantMem.plantName))
+        local estimated = estimateFruitWeightKg(core, sizeMulti)
+        if estimated then
+            if fruitModel then
+                State.HarvestWeightCache[fruitModel] = { Age = age, Weight = estimated }
+            end
+            return estimated
         end
     end
 
@@ -4845,10 +4908,10 @@ function shouldHarvestFruit(weightKg, maxKg)
         return false
     end
 
-    -- No weight available (optimizer deleted plant models) - still harvest
-    -- ripe fruits; Max KG only filters when we actually know the weight.
+    -- Unknown weight: do NOT harvest. Harvesting blindly would pick up
+    -- fruits above Max Harvest KG (the ones you're trying to keep).
     if not weightKg then
-        return true
+        return false
     end
 
     return weightKg <= maxKg
@@ -5221,6 +5284,7 @@ function harvestFruits(maxKg)
 
         local allowedSet = getSelectedHarvestPlantsSet()
         local optimizerOn = State.OptimizerEnabled == true
+        local plantsFolder = getPlotPlantsFolder()
 
         for plantId, plant in garden do
             if typeof(plant) ~= 'table' then
@@ -5245,7 +5309,8 @@ function harvestFruits(maxKg)
                     end
 
                     if ripe then
-                        local weight = getFruitWeightKg(nil, fruit, plantId, fruitId)
+                        local fruitModel = plantsFolder and findFruitModel(plantsFolder, plantId, fruitId) or nil
+                        local weight = getFruitWeightKg(fruitModel, fruit, plantId, fruitId)
                         if shouldHarvestFruit(weight, maxKg) then
                             collectFruit(plantId, fruitId)
                         end
@@ -5258,7 +5323,8 @@ function harvestFruits(maxKg)
                 end
 
                 if ripe then
-                    local weight = getFruitWeightKg(nil, plant, plantId, '')
+                    local plantModel = plantsFolder and findFruitModel(plantsFolder, plantId, '') or nil
+                    local weight = getFruitWeightKg(plantModel, plant, plantId, '')
                     if shouldHarvestFruit(weight, maxKg) then
                         collectFruit(plantId, '')
                     end
