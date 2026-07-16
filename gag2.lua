@@ -866,6 +866,7 @@ local State = {
     OptimizerApplyToken = 0,
     OptimizerWorldScanThread = nil,
     OptimizerWorldDescendantConnection = nil,
+    OptimizerGardensChildConnection = nil,
     OptimizerPendingApply = nil,
     OptimizerPartCache = {},
     OptimizerEnforceConnections = {},
@@ -1121,6 +1122,46 @@ function optimizerHideInstance(inst)
     end
 end
 
+--[[
+    workspace:GetDescendants() returns instances in whatever internal order
+    Roblox happens to store them, NOT prioritized by what matters most for
+    FPS. On a busy public server the full sweep (hundreds of thousands of
+    world decals/parts) can take a while to complete, and if Gardens happens
+    to be enumerated late, OTHER players' plants - the single biggest FPS
+    cost, since they're the ones actively growing/emitting particles - can
+    stay fully visible for a long time, or forever if the scan can't keep up
+    with a low frame rate. This runs first and goes straight for every
+    plot's Plants folder (yours AND everyone else's) so nothing needs to
+    wait its turn behind irrelevant world geometry.
+]]
+function primeOptimizerGardens(applyToken)
+    if not Gardens then
+        return
+    end
+
+    local processed = 0
+    for _, plot in Gardens:GetChildren() do
+        if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+            return
+        end
+
+        local plantsFolder = plot:FindFirstChild('Plants')
+        if plantsFolder then
+            for _, desc in plantsFolder:GetDescendants() do
+                optimizerHideInstance(desc)
+
+                processed += 1
+                if processed % 500 == 0 then
+                    RunService.Heartbeat:Wait()
+                    if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+                        return
+                    end
+                end
+            end
+        end
+    end
+end
+
 function scanOptimizerWorld(applyToken)
     local descendants = workspace:GetDescendants()
     for i = 1, #descendants do
@@ -1195,6 +1236,11 @@ function startWorldOptimizerMaintenance(applyToken)
         State.OptimizerWorldDescendantConnection = nil
     end
 
+    if State.OptimizerGardensChildConnection then
+        State.OptimizerGardensChildConnection:Disconnect()
+        State.OptimizerGardensChildConnection = nil
+    end
+
     cleanupOptimizerLegacyCosmetics()
 
     -- Hook new instances (plant growth, new fruit, new plots joining) first so
@@ -1207,7 +1253,32 @@ function startWorldOptimizerMaintenance(applyToken)
         optimizerHideInstance(desc)
     end)
 
+    -- A whole new plot (another player joining/streaming in) needs its
+    -- Plants folder hidden the instant it appears, not whenever the slow
+    -- full-world scan eventually gets around to it.
+    if Gardens then
+        State.OptimizerGardensChildConnection = Gardens.ChildAdded:Connect(function(plot)
+            if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+                return
+            end
+
+            task.defer(function()
+                if applyToken ~= State.OptimizerApplyToken or not State.OptimizerEnabled then
+                    return
+                end
+
+                local plantsFolder = plot:FindFirstChild('Plants') or plot:WaitForChild('Plants', 5)
+                if plantsFolder then
+                    for _, desc in plantsFolder:GetDescendants() do
+                        optimizerHideInstance(desc)
+                    end
+                end
+            end)
+        end)
+    end
+
     State.OptimizerWorldScanThread = task.spawn(function()
+        primeOptimizerGardens(applyToken)
         scanOptimizerWorld(applyToken)
 
         if applyToken == State.OptimizerApplyToken and State.OptimizerEnabled then
@@ -1220,6 +1291,11 @@ function restoreWorldOptimizer()
     if State.OptimizerWorldDescendantConnection then
         State.OptimizerWorldDescendantConnection:Disconnect()
         State.OptimizerWorldDescendantConnection = nil
+    end
+
+    if State.OptimizerGardensChildConnection then
+        State.OptimizerGardensChildConnection:Disconnect()
+        State.OptimizerGardensChildConnection = nil
     end
 
     if State.OptimizerWorldScanThread then
