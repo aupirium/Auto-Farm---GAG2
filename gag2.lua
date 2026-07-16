@@ -4081,10 +4081,7 @@ function setAutoHarvestLoop(enabled)
                 harvestFruits(maxKg)
             end
 
-            -- harvestFruits does a full garden/plant/fruit scan; running it
-            -- every single frame (the old task.wait(0)) was the #1 FPS drain.
-            -- Once a second is still effectively instant for fruit ripening.
-            task.wait(1)
+            task.wait(0)
         end
         State.HarvestThread = nil
     end)
