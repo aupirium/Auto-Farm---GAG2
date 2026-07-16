@@ -2420,7 +2420,13 @@ function getPlotIdNumber(plot)
 end
 
 function findTool(attribute, value)
-    for _, container in { LocalPlayer:FindFirstChild('Backpack'), getCharacter() } do
+    local containers = {
+        LocalPlayer:FindFirstChild('Backpack'),
+        getCharacter(),
+        LocalPlayer:FindFirstChild('StarterGear'),
+    }
+
+    for _, container in containers do
         if container then
             for _, child in container:GetChildren() do
                 if child:IsA('Tool') and child:GetAttribute(attribute) == value then
@@ -2429,7 +2435,34 @@ function findTool(attribute, value)
             end
         end
     end
+
+    -- Fallback: match by tool name / common gear attrs (game sometimes
+    -- renames attributes or only sets Name).
+    for _, container in containers do
+        if container then
+            for _, child in container:GetChildren() do
+                if child:IsA('Tool') then
+                    if child.Name == value then
+                        return child
+                    end
+                    local gearName = child:GetAttribute('GearName')
+                        or child:GetAttribute('ItemName')
+                        or child:GetAttribute('ToolName')
+                    if gearName == value then
+                        return child
+                    end
+                end
+            end
+        end
+    end
+
     return nil
+end
+
+function findSuperWateringCanTool()
+    return findTool('WateringCan', SUPER_CAN)
+        or findTool('Wateringcan', SUPER_CAN)
+        or findTool('Can', SUPER_CAN)
 end
 
 function equipTool(tool)
@@ -3024,7 +3057,7 @@ function refreshHarvestPlantsDropdown()
     State.ConfigHarvestPlants = names
 end
 
-function ensureAtGearTarget()
+function ensureAtGearTarget(standoff)
     local targetPos = getGearTargetPosition()
     if not targetPos then
         return false
@@ -3044,36 +3077,50 @@ function ensureAtGearTarget()
         return false
     end
 
-    local standoff = 12
+    standoff = tonumber(standoff) or 12
     local walkTarget = getOutsideWalkTarget(targetPos, standoff) or targetPos
     local flatDist = (Vector3.new(root.Position.X, 0, root.Position.Z) - Vector3.new(walkTarget.X, 0, walkTarget.Z)).Magnitude
-    if flatDist <= 12 then
+    if flatDist <= math.max(6, standoff) then
         return true
     end
 
     State.GearWalkBusy = true
     State.LastGearWalkAttempt = os.clock()
-    walkNearPosition(targetPos, standoff)
+    local ok = pcall(walkNearPosition, targetPos, standoff)
     State.GearWalkBusy = false
-    return true
+    return ok ~= false
 end
 
 function getPlacementPosition(savedPos)
+    if not savedPos then
+        return nil
+    end
+
     local params = RaycastParams.new()
     params.FilterType = Enum.RaycastFilterType.Include
     params.FilterDescendantsInstances = { Gardens }
 
-    local origin = Vector3.new(savedPos.X, savedPos.Y + 50, savedPos.Z)
-    local result = workspace:Raycast(origin, Vector3.new(0, -200, 0), params)
+    local origin = Vector3.new(savedPos.X, savedPos.Y + 80, savedPos.Z)
+    local result = workspace:Raycast(origin, Vector3.new(0, -250, 0), params)
+    local plot = getPlot()
 
-    if result and CollectionService:HasTag(result.Instance, 'PlantArea') then
-        return result.Position
+    if result then
+        if CollectionService:HasTag(result.Instance, 'PlantArea') then
+            return result.Position
+        end
+        -- Optimizer can strip tags/parts; any hit on our plot is fine.
+        if plot and result.Instance:IsDescendantOf(plot) then
+            return result.Position
+        end
     end
 
-    local plot = getPlot()
     if plot then
-        local plotY = plot:GetPivot().Position.Y
-        return Vector3.new(savedPos.X, plotY + 2.35, savedPos.Z)
+        local ok, pivot = pcall(function()
+            return plot:GetPivot().Position
+        end)
+        if ok and pivot then
+            return Vector3.new(savedPos.X, pivot.Y + 2.35, savedPos.Z)
+        end
     end
 
     return Vector3.new(savedPos.X, savedPos.Y, savedPos.Z)
@@ -3154,34 +3201,74 @@ function getWateringInterval()
 end
 
 function useSuperWateringCan()
+    if State.WateringBusy then
+        return false
+    end
+
     local targetPos = getGearTargetPosition()
-    if not targetPos or State.WateringBusy then
-        return false
-    end
-
-    if not ensureAtGearTarget() then
-        return false
-    end
-
-    local tool = findTool('WateringCan', SUPER_CAN)
-    if not tool then
+    if not targetPos then
         return false
     end
 
     State.WateringBusy = true
-    State.LastWatering = os.clock()
 
-    local humanoid = getHumanoid()
-    if humanoid and tool.Parent ~= getCharacter() then
-        humanoid:EquipTool(tool)
-        task.wait(0.05)
-    end
+    local ok, used = pcall(function()
+        -- Stand closer than sprinkler; server often rejects far UseWateringCan.
+        if not ensureAtGearTarget(4) then
+            -- Still try from here if walk is busy/blocked.
+            local char = getCharacter()
+            local root = char and char:FindFirstChild('HumanoidRootPart')
+            if root then
+                local flat = (Vector3.new(root.Position.X, 0, root.Position.Z)
+                    - Vector3.new(targetPos.X, 0, targetPos.Z)).Magnitude
+                if flat > 45 then
+                    pcall(function()
+                        root.CFrame = CFrame.new(targetPos + Vector3.new(0, 4, 0))
+                    end)
+                    task.wait(0.05)
+                end
+            end
+        end
 
-    local position = getPlacementPosition(targetPos)
-    Networking.WateringCan.UseWateringCan:Fire(position - Vector3.new(0, 0.3, 0), SUPER_CAN, tool)
+        local tool = findSuperWateringCanTool()
+        if not tool then
+            return false
+        end
+
+        if not equipTool(tool) then
+            local humanoid = getHumanoid()
+            if humanoid then
+                pcall(function()
+                    humanoid:EquipTool(tool)
+                end)
+                task.wait(0.1)
+            end
+        end
+
+        -- Re-resolve after equip (some games clone/move the tool).
+        tool = findSuperWateringCanTool() or tool
+        if not tool or not tool.Parent then
+            return false
+        end
+
+        local position = getPlacementPosition(targetPos)
+        if not position then
+            return false
+        end
+
+        local firePos = position - Vector3.new(0, 0.3, 0)
+        local fired = pcall(function()
+            Networking.WateringCan.UseWateringCan:Fire(firePos, SUPER_CAN, tool)
+        end)
+
+        if fired then
+            State.LastWatering = os.clock()
+        end
+        return fired
+    end)
 
     State.WateringBusy = false
-    return true
+    return ok and used == true
 end
 
 function setAutoWateringLoop(enabled)
@@ -3197,10 +3284,12 @@ function setAutoWateringLoop(enabled)
     end
 
     State.WateringStop = false
+    State.WateringBusy = false
+    State.GearWalkBusy = false
     State.WateringConnection = task.spawn(function()
         while not State.WateringStop and not Library.Unloaded do
             if Toggles.AutoWateringCan and Toggles.AutoWateringCan.Value then
-                useSuperWateringCan()
+                pcall(useSuperWateringCan)
             end
             task.wait(getWateringInterval())
         end
