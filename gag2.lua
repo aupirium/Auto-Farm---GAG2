@@ -1,14 +1,5 @@
 local GENV = getgenv()
 
-if GENV.GG2_AutoFarmShutdown then
-    pcall(GENV.GG2_AutoFarmShutdown)
-    task.wait(0.05)
-end
-
-if GENV.GG2_FromAutoExec then
-    GENV.GG2_AutoFarmRunning = nil
-end
-
 if identifyexecutor then
     local ok, executorName = pcall(function()
         return select(1, identifyexecutor())
@@ -18,11 +9,20 @@ if identifyexecutor then
     end
 end
 
-if GENV.GG2_AutoFarmRunning then
+-- Same JobId = already running on this server. Blocks the "10000x execute"
+-- loop when Volt autoexec + queue_on_teleport both fire, or when multiple
+-- bootstrap files (rejoin.lua / GG2.lua) land in the autoexec folder.
+if GENV.GG2_AutoFarmRunning and GENV.GG2_AutoFarmJobId == game.JobId then
     return
 end
 
+if GENV.GG2_AutoFarmShutdown then
+    pcall(GENV.GG2_AutoFarmShutdown)
+    task.wait(0.05)
+end
+
 GENV.GG2_AutoFarmRunning = true
+GENV.GG2_AutoFarmJobId = game.JobId
 
 repeat task.wait() until game:IsLoaded()
 
@@ -158,12 +158,14 @@ if not GENV.GG2_SkipRemoteUpdate and not GENV.GG2_FromAutoExec and type(writefil
                 task.wait(0.05)
             end
             GENV.GG2_AutoFarmRunning = false
+            GENV.GG2_AutoFarmJobId = nil
             local func = loadstring(remote, AUTO_FARM_SCRIPT)
             if func then
                 func()
                 return
             end
             GENV.GG2_AutoFarmRunning = true
+            GENV.GG2_AutoFarmJobId = game.JobId
         end
     end
 end
@@ -459,6 +461,14 @@ end
 
 function saveConfigBeforeTeleport()
     pcall(function()
+        -- Never overwrite the saved config with defaults. The rejoin-spam bug
+        -- was doing exactly that: teleports fired before LoadAutoloadConfig
+        -- finished, so SaveManager:Save wrote empty/default toggles over the
+        -- real autoload file and "reset" the config.
+        if State.ConfigLoading or not State.ConfigLoadedOk then
+            return
+        end
+
         captureConfigTargetPlant()
         captureConfigHarvestPlants()
 
@@ -876,6 +886,7 @@ local State = {
     CameraBlackoutOriginalType = nil,
     CameraBlackoutCharacterConnection = nil,
     ConfigLoading = false,
+    ConfigLoadedOk = false,
     AntiAfkConnection = nil,
     AutoSellThread = nil,
     LastHarvest = 0,
@@ -4484,10 +4495,59 @@ function ensureWeatherHideUntilValid()
         return
     end
 
+    -- Only clear truly broken state (Hiding with no timer). A real elapsed
+    -- timer is left alone so resumeWeatherDodgeFromSavedState / tryRejoinHome
+    -- can finish the dodge when this boot came from auto-exec.
     if hideUntil <= 0 then
-        State.HideUntil = now + 120
-        saveWeatherState()
+        clearWeatherState({ keepWalkBack = State.PendingWalkBack or State.PendingWalkToSaved })
     end
+end
+
+--[[
+    Manual execute should never teleport just because a leftover weather file
+    says we were mid-dodge. Only resume leave/rejoin when this boot came from
+    queue_on_teleport (GG2_FromAutoExec), or when a blocked weather is
+    actually active right now.
+]]
+function resumeWeatherDodgeFromSavedState()
+    if not State.WeatherHiding then
+        return
+    end
+
+    local fromAutoExec = GENV.GG2_FromAutoExec == true
+    local blockedActive = false
+    pcall(function()
+        local blocked = getBlockedWeathers()
+        blockedActive = findBlockedWeather(blocked) ~= nil
+    end)
+
+    if isWeatherHideTimerElapsed() then
+        if fromAutoExec then
+            task.defer(tryRejoinHome)
+            if not isStillOnWeatherHomeServer() then
+                startWeatherRejoinWorker()
+            end
+        else
+            -- Manual execute after the dodge timer already ended - just
+            -- settle on this server, don't teleport.
+            clearWeatherState({ keepWalkBack = true })
+        end
+        return
+    end
+
+    if not fromAutoExec and not blockedActive then
+        -- Manual execute with a leftover "hiding" flag but no bad weather
+        -- currently playing - drop the stale dodge instead of leaving.
+        clearWeatherState({ keepWalkBack = true })
+        return
+    end
+
+    if isStillOnWeatherHomeServer() then
+        task.defer(function()
+            retryLeaveIfStillHome()
+        end)
+    end
+    startWeatherHideWait()
 end
 
 function saveWeatherState()
@@ -4671,9 +4731,15 @@ if not Players.LocalPlayer then
     Players.PlayerAdded:Wait()
 end
 
-getgenv().GG2_AutoFarmRunning = nil
-getgenv().GG2_FromAutoExec = true
-getgenv().GG2_SkipRemoteUpdate = true
+-- Already running on this exact server = skip. Prevents Volt autoexec +
+-- queue_on_teleport (or duplicate bootstrap files) from stacking executions.
+local genv = getgenv()
+if genv.GG2_AutoFarmRunning and genv.GG2_AutoFarmJobId == game.JobId then
+    return
+end
+
+genv.GG2_FromAutoExec = true
+genv.GG2_SkipRemoteUpdate = true
 
 local isfile = isfile or function(file)
     local suc, res = pcall(function()
@@ -4689,9 +4755,12 @@ local function runSource(source, label)
         return false
     end
 
-    getgenv().GG2_AutoFarmRunning = nil
-    getgenv().GG2_FromAutoExec = true
-    getgenv().GG2_SkipRemoteUpdate = true
+    if genv.GG2_AutoFarmRunning and genv.GG2_AutoFarmJobId == game.JobId then
+        return true
+    end
+
+    genv.GG2_FromAutoExec = true
+    genv.GG2_SkipRemoteUpdate = true
 
     local func, err = loadFn(source, label or 'gg2')
     if not func then
@@ -4741,20 +4810,30 @@ function persistAutoExecBootstrap()
     end
 
     ensureGg2Folders()
-    local scriptBody = getAutoExecQueueScript()
-    local paths = {
-        GG2_AUTOEXEC_FILE,
-        'rejoin.lua',
-        'autoexec/rejoin.lua',
-        'Autoexec/rejoin.lua',
-        'autoexec/GG2.lua',
-        'Autoexec/GG2.lua',
-    }
+    -- ONLY write the one bootstrap file under GG2/. Never spam autoexec/
+    -- (Volt runs every file there on join - writing rejoin.lua + GG2.lua
+    -- into it is what caused the "executes 10000x" loop).
+    pcall(function()
+        writefile(GG2_AUTOEXEC_FILE, getAutoExecQueueScript())
+    end)
 
-    for _, path in paths do
-        pcall(function()
-            writefile(path, scriptBody)
-        end)
+    -- One-time cleanup of leftover spam from older builds that wrote into
+    -- the executor autoexec folder (caused infinite re-exec on every join).
+    if delfile and not GENV.GG2_CleanedAutoExecSpam then
+        GENV.GG2_CleanedAutoExecSpam = true
+        for _, path in {
+            'rejoin.lua',
+            'autoexec/rejoin.lua',
+            'Autoexec/rejoin.lua',
+            'autoexec/GG2.lua',
+            'Autoexec/GG2.lua',
+        } do
+            pcall(function()
+                if isfile(path) then
+                    delfile(path)
+                end
+            end)
+        end
     end
 
     return true
@@ -5760,6 +5839,7 @@ function shutdownScript()
     end)
 
     GENV.GG2_AutoFarmRunning = false
+    GENV.GG2_AutoFarmJobId = nil
     GENV.GG2_Library = nil
 end
 
@@ -6002,21 +6082,7 @@ setupWeatherErrorReconnect()
 setupAuctionNetworking()
 
 if State.WeatherHiding then
-    if isWeatherHideTimerElapsed() then
-        if isStillOnWeatherHomeServer() then
-            task.defer(tryRejoinHome)
-        else
-            task.defer(tryRejoinHome)
-            startWeatherRejoinWorker()
-        end
-    else
-        if isStillOnWeatherHomeServer() then
-            task.defer(function()
-                retryLeaveIfStillHome()
-            end)
-        end
-        startWeatherHideWait()
-    end
+    resumeWeatherDodgeFromSavedState()
 elseif State.ReturnPlaceId and game.PlaceId == State.ReturnPlaceId then
     if not State.PendingWalkToSaved
         and not State.PendingWalkBack
@@ -6033,7 +6099,7 @@ persistLoaderScript()
 if getQueueOnTeleport() and writefile then
     task.defer(function()
         if Library and Library.Notify then
-            Library:Notify('Auto-exec queued. For menu rejoin: add GG2/rejoin.lua to Volt autoexec folder')
+            Library:Notify('Auto-exec ready (queue_on_teleport). Optional: copy GG2/rejoin.lua into Volt autoexec once')
         end
     end)
 end
@@ -6063,10 +6129,19 @@ end
 
 task.defer(function()
     State.ConfigLoading = true
-    SaveManager:LoadAutoloadConfig()
+    State.ConfigLoadedOk = false
+    local loadOk = pcall(function()
+        SaveManager:LoadAutoloadConfig()
+    end)
     State.ConfigLoading = false
+    State.ConfigLoadedOk = loadOk == true
     syncTargetPlantFromSavedConfig()
-    captureConfigTargetPlant()
+    -- Don't capture/overwrite plant files until the UI has been synced from
+    -- the loaded config - capturing right after a failed/partial load is how
+    -- empty defaults got written over real settings during the rejoin loop.
+    if State.ConfigLoadedOk then
+        captureConfigTargetPlant()
+    end
     syncHarvestPlantsFromSavedConfig()
     if Options.MenuKeybind then
         Library.ToggleKeybind = Options.MenuKeybind
@@ -6110,8 +6185,10 @@ task.defer(function()
         setWeatherDodge(true)
     elseif State.WeatherHiding and not isWeatherHideTimerElapsed() then
         setWeatherDodge(true)
-    elseif State.WeatherHiding and isWeatherHideTimerElapsed() then
+    elseif State.WeatherHiding and isWeatherHideTimerElapsed() and GENV.GG2_FromAutoExec then
         task.defer(tryRejoinHome)
+    elseif State.WeatherHiding and isWeatherHideTimerElapsed() then
+        clearWeatherState({ keepWalkBack = true })
     end
 
     task.wait(1.5)
@@ -6123,7 +6200,10 @@ task.defer(function()
     task.wait(0.1)
     pcall(refreshMailInventory)
     updateWeatherLabels()
-    queueTeleportScript()
+
+    -- Clear after boot so a later manual re-execute isn't treated as a
+    -- mid-dodge auto-exec resume.
+    GENV.GG2_FromAutoExec = nil
 end)
 
 LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
