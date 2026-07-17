@@ -5734,9 +5734,13 @@ function doStartupWalk()
         task.wait(0.5)
 
         waitForGardenReady(30)
+        syncTargetPlantFromSavedConfig()
+        refreshTargetPlantDropdown()
+        syncHarvestPlantsFromSavedConfig()
+        refreshHarvestPlantsDropdown()
         loadWeatherState()
 
-        local basePos = nil
+        local basePos = getGearTargetPosition()
         if not basePos and State.PendingWalkBack and State.ReturnPosX and State.ReturnPosY and State.ReturnPosZ then
             basePos = Vector3.new(State.ReturnPosX, State.ReturnPosY, State.ReturnPosZ)
         end
@@ -6688,61 +6692,94 @@ local Tabs = {
     Settings = Window:AddTab('Settings'),
 }
 
-local WeatherBox = Tabs.Main:AddLeftGroupbox('Weather Dodge')
+local BuyBox = Tabs.Main:AddLeftGroupbox('Auto Buy')
+local AuctionBox = Tabs.Main:AddRightGroupbox('Auto Auction')
 
 local MailClaimBox = Tabs.Mail:AddLeftGroupbox('Auto Claim')
 local MailSendBox = Tabs.Mail:AddRightGroupbox('Send Gift')
 
-local OptimizerBox = Tabs.Settings:AddLeftGroupbox('Optimizer')
+local HudBox = Tabs.Settings:AddLeftGroupbox('HUD')
 local MenuBox = Tabs.Settings:AddRightGroupbox('Menu')
 
-WeatherBox:AddToggle('WeatherDodge', {
-    Text = 'Enable Weather Dodge',
+BuyBox:AddToggle('AutoBuy', {
+    Text = 'Enable Auto Buy',
     Default = false,
-    Tooltip = 'Kicks you when a selected event starts, waits for it to end, then rejoins your server once.',
+    Tooltip = 'Instantly buys selected items when they are in stock and you can afford them',
     Callback = function(value)
-        setWeatherDodge(value)
+        setAutoBuyLoop(value)
     end,
 })
 
-WeatherBox:AddDropdown('BlockedWeathers', {
-    Text = 'Bad Events',
-    Values = BLOCKABLE_WEATHERS,
+BuyBox:AddDropdown('AutoBuyGears', {
+    Text = 'Gears',
+    Values = BUY_GEARS,
     Multi = true,
     Default = {},
-    Tooltip = 'Events + night moons (Gold, Blood, Mega). Rainbow covers Rainbow event and Rainbow Moon.',
 })
 
-WeatherStatusLabel = WeatherBox:AddLabel('Weather: Disabled', true)
-CurrentWeatherLabel = WeatherBox:AddLabel('Active Event: None', true)
-
-OptimizerBox:AddToggle('Optimizer', {
-    Text = 'Enable Optimizer',
-    Default = false,
-    Tooltip = 'High FPS mode: deletes other gardens + YOUR plant models (empty beds ~400-500 FPS).',
-    Callback = function(value)
-        if State.ConfigLoading then
-            return
-        end
-
-        if value then
-            scheduleOptimizerApply()
-        else
-            setOptimizer(false)
-        end
-    end,
+BuyBox:AddDropdown('AutoBuySeeds', {
+    Text = 'Seeds',
+    Values = BUY_SEEDS,
+    Multi = true,
+    Default = {},
 })
 
-OptimizerBox:AddToggle('CameraBlackout', {
-    Text = 'Camera Blackout (Max FPS)',
-    Default = false,
-    Tooltip = 'Extreme mode: yanks the camera far below the map and blanks mesh IDs so nothing renders. Screen goes blank — UI still works. Turn off to restore your view.',
-    Callback = function(value)
-        if State.ConfigLoading then
-            return
-        end
+BuyBox:AddDropdown('AutoBuyProps', {
+    Text = 'Props',
+    Values = BUY_PROPS,
+    Multi = true,
+    Default = {},
+})
 
-        setCameraBlackout(value)
+AuctionBox:AddDropdown('AuctionBuySeeds', {
+    Text = 'Select Seed',
+    Values = #AUCTION_SEEDS > 0 and AUCTION_SEEDS or { 'No seeds found' },
+    Multi = true,
+    Default = {},
+    Tooltip = 'Auction lots to auto-buy when they appear',
+})
+
+AuctionBox:AddDropdown('AuctionBuyGears', {
+    Text = 'Select Gear',
+    Values = #AUCTION_GEARS > 0 and AUCTION_GEARS or { 'No gears found' },
+    Multi = true,
+    Default = {},
+})
+
+AuctionBox:AddDropdown('AuctionBuySeedPacks', {
+    Text = 'Select Seed Pack',
+    Values = #AUCTION_SEED_PACKS > 0 and AUCTION_SEED_PACKS or { 'No seed packs found' },
+    Multi = true,
+    Default = {},
+})
+
+AuctionBox:AddDropdown('AuctionBuyEggs', {
+    Text = 'Select Egg',
+    Values = #AUCTION_EGGS > 0 and AUCTION_EGGS or { 'No eggs found' },
+    Multi = true,
+    Default = {},
+})
+
+AuctionBox:AddDropdown('AuctionPriceMode', {
+    Text = 'Auction Price Mode',
+    Values = { 'Below', 'Above', 'At' },
+    Default = 'Below',
+    Tooltip = 'Below = buy when price is at or under your limit. Above = at or over. At = exact price.',
+})
+
+AuctionBox:AddInput('AuctionPrice', {
+    Text = 'Auction Price',
+    Default = '0',
+    Numeric = true,
+    Tooltip = "Sheckles price filter. Leave at 0 to ignore price. With no items selected, buys any sheckle lot matching this filter.",
+})
+
+AuctionBox:AddToggle('AutoBuyAuction', {
+    Text = 'Auto Buy Auction',
+    Default = false,
+    Tooltip = 'Buys auction lots with sheckles. Use price limit alone, or pick specific items in the dropdowns.',
+    Callback = function(value)
+        setAutoAuctionLoop(value)
     end,
 })
 
@@ -7979,7 +8016,7 @@ function setEventPredictorHud(enabled)
     end)
 end
 
-OptimizerBox:AddToggle('EventPredictorHud', {
+HudBox:AddToggle('EventPredictorHud', {
     Text = 'Event Predictor HUD',
     Default = true,
     Tooltip = 'Bottom-right moon timers + inventory fruit value overlay (header + green $ on fruit slots)',
@@ -7998,16 +8035,12 @@ function shutdownScript()
     end
 
     Library.Unloaded = true
-    State.WeatherMonitorStop = true
     State.MailAutoClaimStop = true
 
-    cancelOptimizerPendingApply()
-    pcall(setOptimizer, false)
-    pcall(setCameraBlackout, false)
     pcall(setEventPredictorHud, false)
     pcall(disconnectInventoryValueWatchers)
-    pcall(setWeatherDodge, false)
-    pcall(stopWeatherErrorReconnect)
+    pcall(setAutoBuyLoop, false)
+    pcall(setAutoAuctionLoop, false)
     pcall(stopMailAutoClaim)
     pcall(setAntiAfk, false)
     pcall(stopAutoExecute)
@@ -8235,47 +8268,9 @@ ThemeManager:SetFolder('GrowGarden2AutoFarm')
 SaveManager:SetFolder('GrowGarden2AutoFarm')
 SaveManager:BuildConfigSection(Tabs.Settings)
 
-do
-    local rawSave = SaveManager.Save
-    function SaveManager:Save(name)
-        return rawSave(self, name)
-    end
-
-    local rawLoad = SaveManager.Load
-    function SaveManager:Load(name)
-        return rawLoad(self, name)
-    end
-end
-
 ThemeManager:ApplyToTab(Tabs.Settings)
 
-loadWeatherState()
-setupWeatherErrorReconnect()
-
-if State.WeatherHiding then
-    if endWeatherHideEarlyIfClear() or isWeatherHideTimerElapsed() then
-        if isOnRobloxDisconnectMenu() or not isInLiveGameSession() then
-            task.defer(function()
-                tryRejoinHome({ fromDisconnect = true })
-            end)
-        else
-            -- Script re-executed while already in a live game: clear stale hide flag.
-            clearWeatherState({ keepWalkBack = true })
-        end
-    else
-        -- Never re-kick from the disconnect menu — that resets the countdown text.
-        if isStillOnWeatherHomeServer() and isInLiveGameSession() and not isOnRobloxDisconnectMenu() then
-            task.defer(retryLeaveIfStillHome)
-        end
-        startWeatherHideWait()
-    end
-elseif State.ReturnPlaceId and game.PlaceId == State.ReturnPlaceId then
-    if not State.PendingWalkToSaved
-        and not State.PendingWalkBack
-        and not GENV.GG2_FromAutoExec then
-        clearRejoinTarget()
-    end
-end
+setupAuctionNetworking()
 
 setupAutoExecute()
 startLoadingScreenAutoDismiss()
@@ -8324,52 +8319,27 @@ task.defer(function()
         setAntiAfk(true)
     end
 
-    if Toggles.Optimizer and Toggles.Optimizer.Value then
-        scheduleOptimizerApply()
-    end
-
-    if Toggles.CameraBlackout and Toggles.CameraBlackout.Value then
-        setCameraBlackout(true)
-    end
-
     if not Toggles.EventPredictorHud or Toggles.EventPredictorHud.Value ~= false then
         setEventPredictorHud(true)
     end
 
-    waitForGardenReady(45)
-    doStartupWalk()
-
-    if Toggles.WeatherDodge and Toggles.WeatherDodge.Value then
-        setWeatherDodge(true)
-    elseif State.WeatherHiding and not isWeatherHideTimerElapsed() then
-        setWeatherDodge(true)
-    elseif State.WeatherHiding and isWeatherHideTimerElapsed() then
-        if isOnRobloxDisconnectMenu() then
-            task.defer(function()
-                tryRejoinHome({ fromDisconnect = true })
-            end)
-        else
-            clearWeatherState({ keepWalkBack = true })
-        end
+    if Toggles.AutoBuy and Toggles.AutoBuy.Value then
+        setAutoBuyLoop(true)
+    end
+    if Toggles.AutoBuyAuction and Toggles.AutoBuyAuction.Value then
+        setAutoAuctionLoop(true)
     end
 
-    task.wait(1.5)
+    task.defer(refreshAuctionItemListsFromCatalog)
+    task.defer(requestAuctionSnapshot)
 
     task.wait(0.1)
     pcall(refreshMailInventory)
-    updateWeatherLabels()
     queueTeleportScript()
 end)
 
 Library:OnUnload(function()
     shutdownScript()
-end)
-
-task.spawn(function()
-    while not Library.Unloaded do
-        updateWeatherLabels()
-        task.wait(0.15)
-    end
 end)
 
 Library:Notify('Grow a Garden 2 loaded!')
