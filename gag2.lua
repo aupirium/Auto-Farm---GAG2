@@ -6731,6 +6731,15 @@ BuyBox:AddDropdown('AutoBuyProps', {
     Default = {},
 })
 
+BuyBox:AddToggle('AutoHatchEggs', {
+    Text = 'Auto Hatch Eggs',
+    Default = false,
+    Tooltip = 'Auto-hatches Black Dragon eggs in your garden and egg tools in your backpack',
+    Callback = function(value)
+        setAutoHatchLoop(value)
+    end,
+})
+
 AuctionBox:AddDropdown('AuctionBuySeeds', {
     Text = 'Select Seed',
     Values = #AUCTION_SEEDS > 0 and AUCTION_SEEDS or { 'No seeds found' },
@@ -8041,6 +8050,7 @@ function shutdownScript()
     pcall(disconnectInventoryValueWatchers)
     pcall(setAutoBuyLoop, false)
     pcall(setAutoAuctionLoop, false)
+    pcall(setAutoHatchLoop, false)
     pcall(stopMailAutoClaim)
     pcall(setAntiAfk, false)
     pcall(stopAutoExecute)
@@ -8328,6 +8338,9 @@ task.defer(function()
     end
     if Toggles.AutoBuyAuction and Toggles.AutoBuyAuction.Value then
         setAutoAuctionLoop(true)
+    end
+    if Toggles.AutoHatchEggs and Toggles.AutoHatchEggs.Value then
+        setAutoHatchLoop(true)
     end
 
     task.defer(refreshAuctionItemListsFromCatalog)
