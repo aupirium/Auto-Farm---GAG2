@@ -1,12 +1,26 @@
 local GENV = getgenv()
 
+local GG2_BOOT_KEY = tostring(game.JobId) .. '@' .. tostring(game.PlaceId)
+local GG2_BOOT_NOW = os.clock()
+local GG2_FROM_AUTOEXEC = GENV.GG2_FromAutoExec == true
+
+-- Stacked autoexec / queue_on_teleport: only one boot per join.
+if GG2_FROM_AUTOEXEC then
+    if GENV.GG2_AutoFarmRunning and GENV.GG2_BootKey == GG2_BOOT_KEY then
+        return
+    end
+
+    if GENV.GG2_BootKey == GG2_BOOT_KEY
+        and type(GENV.GG2_LastBootAt) == 'number'
+        and (GG2_BOOT_NOW - GENV.GG2_LastBootAt) < 12
+        and (GENV.GG2_Library or GENV.GG2_AutoFarmRunning) then
+        return
+    end
+end
+
 if GENV.GG2_AutoFarmShutdown then
     pcall(GENV.GG2_AutoFarmShutdown)
     task.wait(0.05)
-end
-
-if GENV.GG2_FromAutoExec then
-    GENV.GG2_AutoFarmRunning = nil
 end
 
 if identifyexecutor then
@@ -22,7 +36,10 @@ if GENV.GG2_AutoFarmRunning then
     return
 end
 
+GENV.GG2_BootKey = GG2_BOOT_KEY
+GENV.GG2_LastBootAt = GG2_BOOT_NOW
 GENV.GG2_AutoFarmRunning = true
+GENV.GG2_FromAutoExec = nil
 
 repeat task.wait() until game:IsLoaded()
 
@@ -564,6 +581,19 @@ local MutationData = require(ReplicatedStorage.SharedModules.MutationData)
 local AuctioneerModule = require(ReplicatedStorage.SharedModules.Auctioneer)
 local AuctioneerFlags = require(ReplicatedStorage.SharedModules.Flags.AuctioneerFlags)
 
+local PetData
+local PetSizes
+local PetTypes
+pcall(function()
+    PetData = require(ReplicatedStorage.SharedData.PetData)
+end)
+pcall(function()
+    PetSizes = require(ReplicatedStorage.SharedData.PetSizes)
+end)
+pcall(function()
+    PetTypes = require(ReplicatedStorage.SharedData.PetTypes)
+end)
+
 local GardenSync = require(PlayerScripts.Controllers.GardenSyncController)
 local FruitVisualizer = require(PlayerScripts.Controllers.FruitVisualizerController)
 
@@ -866,8 +896,11 @@ local State = {
     AutoBuyTracker = {},
     AutoAuctionThread = nil,
     AutoHatchThread = nil,
+    AutoDeletePetsThread = nil,
     EggHatchPending = false,
     EggHatchTimes = {},
+    PetDeleteTimes = {},
+    TeleportScriptQueued = false,
     AuctionLots = {},
     AuctionStock = {},
     AuctionPurchaseTimes = {},
@@ -4559,6 +4592,279 @@ function setAutoHatchLoop(enabled)
     end)
 end
 
+local PET_DELETE_LABELS = {}
+local PET_DELETE_LABEL_TO_KEY = {}
+
+function normalizePetSizeAttr(size)
+    if type(size) ~= 'string' or size == '' then
+        return nil
+    end
+
+    if PetSizes and PetSizes.Normalize then
+        local ok, normalized = pcall(PetSizes.Normalize, size)
+        if ok and type(normalized) == 'string' and normalized ~= '' then
+            return normalized
+        end
+    end
+
+    local lower = size:lower()
+    if lower == 'big' then
+        return 'Big'
+    end
+    if lower == 'huge' or lower == 'mega' then
+        return 'Huge'
+    end
+
+    return size
+end
+
+function normalizePetTypeAttr(petType)
+    if type(petType) ~= 'string' or petType == '' then
+        return nil
+    end
+
+    if PetTypes and PetTypes.IsValid and PetTypes.IsValid(petType) then
+        return petType
+    end
+
+    if petType:lower() == 'rainbow' then
+        return 'Rainbow'
+    end
+
+    return petType
+end
+
+function getPetSpeciesKeys()
+    local keys = {}
+    if type(PetData) ~= 'table' then
+        return keys
+    end
+
+    for key, value in pairs(PetData) do
+        if type(key) == 'string' and type(value) == 'table' then
+            table.insert(keys, key)
+        end
+    end
+
+    table.sort(keys, function(a, b)
+        local da = (PetData.GetSpeciesDisplayName and PetData.GetSpeciesDisplayName(a)) or a
+        local db = (PetData.GetSpeciesDisplayName and PetData.GetSpeciesDisplayName(b)) or b
+        return da < db
+    end)
+
+    return keys
+end
+
+function formatPetVariantLabel(speciesKey, size, petType)
+    local parts = {}
+
+    if size then
+        local displaySize = size
+        if PetSizes and PetSizes.DisplaySize then
+            local ok, value = pcall(PetSizes.DisplaySize, size)
+            if ok and type(value) == 'string' and value ~= '' then
+                displaySize = value
+            end
+        elseif size == 'Huge' then
+            displaySize = 'Mega'
+        end
+        table.insert(parts, displaySize)
+    end
+
+    if petType then
+        table.insert(parts, petType)
+    end
+
+    local speciesName = speciesKey
+    if PetData and PetData.GetSpeciesDisplayName then
+        local ok, value = pcall(PetData.GetSpeciesDisplayName, speciesKey)
+        if ok and type(value) == 'string' and value ~= '' then
+            speciesName = value
+        end
+    end
+    table.insert(parts, speciesName)
+
+    return table.concat(parts, ' ')
+end
+
+function makePetVariantKey(speciesKey, size, petType)
+    return tostring(speciesKey or '') .. '|' .. tostring(size or '') .. '|' .. tostring(petType or '')
+end
+
+function buildPetDeleteCatalog()
+    for i = #PET_DELETE_LABELS, 1, -1 do
+        PET_DELETE_LABELS[i] = nil
+    end
+    for key in pairs(PET_DELETE_LABEL_TO_KEY) do
+        PET_DELETE_LABEL_TO_KEY[key] = nil
+    end
+
+    local sizeOptions = { false, 'Big', 'Huge' }
+    local typeOptions = { false, 'Rainbow' }
+
+    for _, speciesKey in ipairs(getPetSpeciesKeys()) do
+        for _, sizeOpt in ipairs(sizeOptions) do
+            local size = sizeOpt or nil
+            for _, typeOpt in ipairs(typeOptions) do
+                local petType = typeOpt or nil
+                local label = formatPetVariantLabel(speciesKey, size, petType)
+                local key = makePetVariantKey(speciesKey, size, petType)
+                if not PET_DELETE_LABEL_TO_KEY[label] then
+                    table.insert(PET_DELETE_LABELS, label)
+                    PET_DELETE_LABEL_TO_KEY[label] = key
+                end
+            end
+        end
+    end
+
+    return PET_DELETE_LABELS
+end
+
+buildPetDeleteCatalog()
+
+function getPetToolVariantKey(tool)
+    if not tool then
+        return nil
+    end
+
+    local species = tool:GetAttribute('Pet')
+    if type(species) ~= 'string' or species == '' then
+        return nil
+    end
+
+    local size = normalizePetSizeAttr(tool:GetAttribute('PetSize'))
+    local petType = normalizePetTypeAttr(tool:GetAttribute('PetType'))
+    return makePetVariantKey(species, size, petType)
+end
+
+function getPetToolVariantLabel(tool)
+    local species = tool and tool:GetAttribute('Pet')
+    if type(species) ~= 'string' or species == '' then
+        return nil
+    end
+
+    local size = normalizePetSizeAttr(tool:GetAttribute('PetSize'))
+    local petType = normalizePetTypeAttr(tool:GetAttribute('PetType'))
+    return formatPetVariantLabel(species, size, petType)
+end
+
+function iterOwnedPetTools()
+    local tools = {}
+    local seen = {}
+
+    local function collect(container)
+        if not container then
+            return
+        end
+
+        for _, child in container:GetChildren() do
+            if child:IsA('Tool') and child:GetAttribute('Pet') and child:GetAttribute('PetId') then
+                if not seen[child] then
+                    seen[child] = true
+                    table.insert(tools, child)
+                end
+            end
+        end
+    end
+
+    collect(LocalPlayer:FindFirstChild('Backpack'))
+    collect(LocalPlayer.Character)
+
+    return tools
+end
+
+function canTryPetDelete(petId, cooldown)
+    cooldown = cooldown or 2.5
+    if type(petId) ~= 'string' or petId == '' then
+        return false
+    end
+
+    local last = State.PetDeleteTimes[petId]
+    if last and (os.clock() - last) < cooldown then
+        return false
+    end
+
+    return true
+end
+
+function trySellPetTool(tool)
+    if not tool or not tool:IsA('Tool') then
+        return false
+    end
+
+    local petId = tool:GetAttribute('PetId')
+    if type(petId) ~= 'string' or petId == '' then
+        return false
+    end
+
+    if not canTryPetDelete(petId, 2.5) then
+        return false
+    end
+
+    State.PetDeleteTimes[petId] = os.clock()
+
+    local ok, result = pcall(function()
+        return Networking.NPCS.SellPet:Fire(petId)
+    end)
+
+    if ok and type(result) == 'table' and result.Success then
+        return true
+    end
+
+    return false
+end
+
+function runAutoDeletePets()
+    if not isActiveSession() then
+        return
+    end
+
+    local selected = getMultiSelect('AutoDeletePetsList')
+    if not next(selected) then
+        return
+    end
+
+    local selectedKeys = {}
+    for label in pairs(selected) do
+        local key = PET_DELETE_LABEL_TO_KEY[label]
+        if key then
+            selectedKeys[key] = true
+        else
+            -- Saved configs / manual labels still match by display text.
+            selectedKeys[label] = true
+        end
+    end
+
+    for _, tool in ipairs(iterOwnedPetTools()) do
+        local key = getPetToolVariantKey(tool)
+        local label = getPetToolVariantLabel(tool)
+        if (key and selectedKeys[key]) or (label and selected[label]) then
+            if trySellPetTool(tool) then
+                task.wait(0.15)
+            end
+        end
+    end
+end
+
+function setAutoDeletePetsLoop(enabled)
+    if State.AutoDeletePetsThread then
+        pcall(task.cancel, State.AutoDeletePetsThread)
+        State.AutoDeletePetsThread = nil
+    end
+
+    if not enabled then
+        return
+    end
+
+    State.AutoDeletePetsThread = task.spawn(function()
+        while isActiveSession() and Toggles.AutoDeletePets and Toggles.AutoDeletePets.Value do
+            runAutoDeletePets()
+            task.wait(0.75)
+        end
+        State.AutoDeletePetsThread = nil
+    end)
+end
+
 function recordEarnings(amount)
     if not amount or amount <= 0 then
         return
@@ -5773,9 +6079,22 @@ if not Players.LocalPlayer then
     Players.PlayerAdded:Wait()
 end
 
-getgenv().GG2_AutoFarmRunning = nil
-getgenv().GG2_FromAutoExec = true
-getgenv().GG2_SkipRemoteUpdate = true
+local genv = getgenv()
+local bootKey = tostring(game.JobId) .. '@' .. tostring(game.PlaceId)
+local now = os.clock()
+
+-- One boot per server join. Stacked autoexec / queue_on_teleport hits this and exits.
+if genv.GG2_BootKey == bootKey and (genv.GG2_AutoFarmRunning or genv.GG2_Library) then
+    return
+end
+if genv.GG2_BootKey == bootKey and type(genv.GG2_LastBootAt) == 'number' and (now - genv.GG2_LastBootAt) < 12 then
+    return
+end
+
+genv.GG2_BootKey = bootKey
+genv.GG2_LastBootAt = now
+genv.GG2_FromAutoExec = true
+genv.GG2_SkipRemoteUpdate = true
 
 local isfile = isfile or function(file)
     local suc, res = pcall(function()
@@ -5791,10 +6110,6 @@ local function runSource(source, label)
         return false
     end
 
-    getgenv().GG2_AutoFarmRunning = nil
-    getgenv().GG2_FromAutoExec = true
-    getgenv().GG2_SkipRemoteUpdate = true
-
     local func, err = loadFn(source, label or 'gg2')
     if not func then
         return false
@@ -5803,7 +6118,15 @@ local function runSource(source, label)
     return pcall(func)
 end
 
-for _, path in { 'GG2/gag2.lua', 'gag2.lua', 'GG2/loader.lua', 'loader.lua' } do
+for _, path in { 'GG2/gag2.lua', 'gag2.lua' } do
+    if isfile(path) then
+        if runSource(readfile(path), path) then
+            return
+        end
+    end
+end
+
+for _, path in { 'GG2/loader.lua', 'loader.lua' } do
     if isfile(path) then
         if runSource(readfile(path), path) then
             return
@@ -5844,28 +6167,39 @@ function persistAutoExecBootstrap()
 
     ensureGg2Folders()
     local scriptBody = getAutoExecQueueScript()
-    local paths = {
-        GG2_AUTOEXEC_FILE,
-        'rejoin.lua',
-        'autoexec/rejoin.lua',
-        'Autoexec/rejoin.lua',
-        'autoexec/GG2.lua',
-        'Autoexec/GG2.lua',
-    }
 
-    for _, path in paths do
-        pcall(function()
-            writefile(path, scriptBody)
-        end)
+    -- Only keep one bootstrap file. Old multi-path writes caused ~10 autoexecs on rejoin.
+    pcall(function()
+        writefile(GG2_AUTOEXEC_FILE, scriptBody)
+    end)
+
+    if delfile then
+        for _, path in {
+            'rejoin.lua',
+            'autoexec/rejoin.lua',
+            'Autoexec/rejoin.lua',
+            'autoexec/GG2.lua',
+            'Autoexec/GG2.lua',
+            'autoexec/GG2/rejoin.lua',
+            'Autoexec/GG2/rejoin.lua',
+        } do
+            if isfile and isfile(path) then
+                pcall(delfile, path)
+            end
+        end
     end
 
     return true
 end
 
-function queueTeleportScript()
+function queueTeleportScript(force)
     local queue = getQueueOnTeleport()
     if not queue then
         return false
+    end
+
+    if State.TeleportScriptQueued and not force then
+        return true
     end
 
     ensureCommitFile()
@@ -5873,9 +6207,15 @@ function queueTeleportScript()
     persistLoaderScript()
     persistAutoExecBootstrap()
 
-    return pcall(function()
+    local ok = pcall(function()
         queue(getAutoExecQueueScript())
     end)
+
+    if ok then
+        State.TeleportScriptQueued = true
+    end
+
+    return ok
 end
 
 function setupAutoExecute()
@@ -5889,7 +6229,8 @@ function setupAutoExecute()
         return false
     end
 
-    queueTeleportScript()
+    -- Queue once for the next teleport (not on every weather/autoload call).
+    queueTeleportScript(true)
 
     if State.AutoExecTeleportConnection then
         State.AutoExecTeleportConnection:Disconnect()
@@ -5899,7 +6240,8 @@ function setupAutoExecute()
     State.AutoExecTeleportConnection = LocalPlayer.OnTeleport:Connect(function()
         saveAutoExecWalkState()
         saveConfigBeforeTeleport()
-        queueTeleportScript()
+        State.TeleportScriptQueued = false
+        queueTeleportScript(true)
     end)
 
     return true
@@ -6738,6 +7080,23 @@ BuyBox:AddToggle('AutoHatchEggs', {
     Callback = function(value)
         setAutoHatchLoop(value)
     end,
+})
+
+BuyBox:AddToggle('AutoDeletePets', {
+    Text = 'Auto Delete Pets',
+    Default = false,
+    Tooltip = 'Sells selected pet variants from your inventory (normal / Big / Mega / Rainbow combos)',
+    Callback = function(value)
+        setAutoDeletePetsLoop(value)
+    end,
+})
+
+BuyBox:AddDropdown('AutoDeletePetsList', {
+    Text = 'Pets To Delete',
+    Values = #PET_DELETE_LABELS > 0 and PET_DELETE_LABELS or { 'No pets found' },
+    Multi = true,
+    Default = {},
+    Tooltip = 'Every pet variant: normal, Rainbow, Big, Big Rainbow, Mega, Mega Rainbow',
 })
 
 AuctionBox:AddDropdown('AuctionBuySeeds', {
@@ -8051,6 +8410,7 @@ function shutdownScript()
     pcall(setAutoBuyLoop, false)
     pcall(setAutoAuctionLoop, false)
     pcall(setAutoHatchLoop, false)
+    pcall(setAutoDeletePetsLoop, false)
     pcall(stopMailAutoClaim)
     pcall(setAntiAfk, false)
     pcall(stopAutoExecute)
@@ -8290,7 +8650,7 @@ persistLoaderScript()
 if getQueueOnTeleport() and writefile then
     task.defer(function()
         if Library and Library.Notify then
-            Library:Notify('Auto-exec queued. For menu rejoin: add GG2/rejoin.lua to Volt autoexec folder')
+            Library:Notify('Auto-exec ready. Put only GG2/rejoin.lua in Volt autoexec (one file)')
         end
     end)
 end
@@ -8342,13 +8702,15 @@ task.defer(function()
     if Toggles.AutoHatchEggs and Toggles.AutoHatchEggs.Value then
         setAutoHatchLoop(true)
     end
+    if Toggles.AutoDeletePets and Toggles.AutoDeletePets.Value then
+        setAutoDeletePetsLoop(true)
+    end
 
     task.defer(refreshAuctionItemListsFromCatalog)
     task.defer(requestAuctionSnapshot)
 
     task.wait(0.1)
     pcall(refreshMailInventory)
-    queueTeleportScript()
 end)
 
 Library:OnUnload(function()
