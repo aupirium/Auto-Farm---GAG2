@@ -5787,18 +5787,29 @@ local WeatherStatusLabel
 local CurrentWeatherLabel
 
 function getQueueOnTeleport()
-    local genv = getgenv()
-    return queueonteleport
-        or queue_on_teleport
-        or queueteleport
-        or QueueOnTeleport
-        or (syn and syn.queue_on_teleport)
-        or (fluxus and fluxus.queue_on_teleport)
-        or genv.queueonteleport
-        or genv.queue_on_teleport
-        or genv.queueteleport
-        or genv.queueonteleport
-        or genv.QueueOnTeleport
+    return nil
+end
+
+function getAutoExecQueueScript()
+    return ''
+end
+
+function persistAutoExecBootstrap()
+    return false
+end
+
+function queueTeleportScript()
+    return false
+end
+
+function setupAutoExecute()
+    return false
+end
+
+function stopAutoExecute()
+end
+
+function saveAutoExecWalkState()
 end
 
 function getOutsideWalkTarget(basePos, standoff)
@@ -5968,12 +5979,6 @@ function clearWeatherState(options)
     end
 end
 
-function saveAutoExecWalkState()
-    State.PendingWalkToSaved = getGearTargetPosition() ~= nil
-        or (State.ReturnPosX ~= nil and State.ReturnPosY ~= nil and State.ReturnPosZ ~= nil)
-    saveWeatherState()
-end
-
 function saveWeatherReturnPosition()
     local root = getCharacter() and getCharacter():FindFirstChild('HumanoidRootPart')
     local pos = root and root.Position or getGearTargetPosition()
@@ -6071,187 +6076,6 @@ function doStartupWalk()
     end)
 end
 
-function getAutoExecQueueScript()
-    return [[
-repeat task.wait() until game:IsLoaded()
-local Players = game:GetService('Players')
-if not Players.LocalPlayer then
-    Players.PlayerAdded:Wait()
-end
-
-local genv = getgenv()
-local bootKey = tostring(game.JobId) .. '@' .. tostring(game.PlaceId)
-local now = os.clock()
-
--- One boot per server join. Stacked autoexec / queue_on_teleport hits this and exits.
-if genv.GG2_BootKey == bootKey and (genv.GG2_AutoFarmRunning or genv.GG2_Library) then
-    return
-end
-if genv.GG2_BootKey == bootKey and type(genv.GG2_LastBootAt) == 'number' and (now - genv.GG2_LastBootAt) < 12 then
-    return
-end
-
-genv.GG2_BootKey = bootKey
-genv.GG2_LastBootAt = now
-genv.GG2_FromAutoExec = true
-genv.GG2_SkipRemoteUpdate = true
-
-local isfile = isfile or function(file)
-    local suc, res = pcall(function()
-        return readfile(file)
-    end)
-    return suc and res ~= nil and res ~= ''
-end
-
-local loadFn = loadstring or load
-
-local function runSource(source, label)
-    if not loadFn or type(source) ~= 'string' or source == '' then
-        return false
-    end
-
-    local func, err = loadFn(source, label or 'gg2')
-    if not func then
-        return false
-    end
-
-    return pcall(func)
-end
-
-for _, path in { 'GG2/gag2.lua', 'gag2.lua' } do
-    if isfile(path) then
-        if runSource(readfile(path), path) then
-            return
-        end
-    end
-end
-
-for _, path in { 'GG2/loader.lua', 'loader.lua' } do
-    if isfile(path) then
-        if runSource(readfile(path), path) then
-            return
-        end
-    end
-end
-
-local commit = 'main'
-if isfile('GG2/commit.txt') then
-    commit = readfile('GG2/commit.txt'):gsub('%s+', '')
-end
-if commit == '' then
-    commit = 'main'
-end
-
-local loaderUrl = 'https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/' .. commit .. '/loader.lua'
-local ok, source = pcall(function()
-    return game:HttpGet(loaderUrl, true)
-end)
-if ok and type(source) == 'string' and source ~= '' and source ~= '404: Not Found' then
-    runSource(source, 'gg2-loader')
-    return
-end
-
-local okMain, sourceMain = pcall(function()
-    return game:HttpGet('https://raw.githubusercontent.com/aupirium/Auto-Farm---GAG2/main/loader.lua', true)
-end)
-if okMain and type(sourceMain) == 'string' and sourceMain ~= '' and sourceMain ~= '404: Not Found' then
-    runSource(sourceMain, 'gg2-loader-main')
-end
-]]
-end
-
-function persistAutoExecBootstrap()
-    if not writefile then
-        return false
-    end
-
-    ensureGg2Folders()
-    local scriptBody = getAutoExecQueueScript()
-
-    -- Only keep one bootstrap file. Old multi-path writes caused ~10 autoexecs on rejoin.
-    pcall(function()
-        writefile(GG2_AUTOEXEC_FILE, scriptBody)
-    end)
-
-    if delfile then
-        for _, path in {
-            'rejoin.lua',
-            'autoexec/rejoin.lua',
-            'Autoexec/rejoin.lua',
-            'autoexec/GG2.lua',
-            'Autoexec/GG2.lua',
-            'autoexec/GG2/rejoin.lua',
-            'Autoexec/GG2/rejoin.lua',
-        } do
-            if isfile and isfile(path) then
-                pcall(delfile, path)
-            end
-        end
-    end
-
-    return true
-end
-
-function queueTeleportScript(force)
-    local queue = getQueueOnTeleport()
-    if not queue then
-        return false
-    end
-
-    if State.TeleportScriptQueued and not force then
-        return true
-    end
-
-    ensureCommitFile()
-    persistAutoFarmScript()
-    persistLoaderScript()
-    persistAutoExecBootstrap()
-
-    local ok = pcall(function()
-        queue(getAutoExecQueueScript())
-    end)
-
-    if ok then
-        State.TeleportScriptQueued = true
-    end
-
-    return ok
-end
-
-function setupAutoExecute()
-    ensureGg2Folders()
-    ensureCommitFile()
-    persistAutoFarmScript()
-    persistLoaderScript()
-    persistAutoExecBootstrap()
-
-    if not getQueueOnTeleport() then
-        return false
-    end
-
-    -- Queue once for the next teleport (not on every weather/autoload call).
-    queueTeleportScript(true)
-
-    if State.AutoExecTeleportConnection then
-        State.AutoExecTeleportConnection:Disconnect()
-        State.AutoExecTeleportConnection = nil
-    end
-
-    State.AutoExecTeleportConnection = LocalPlayer.OnTeleport:Connect(function()
-        saveAutoExecWalkState()
-        saveConfigBeforeTeleport()
-        State.TeleportScriptQueued = false
-        queueTeleportScript(true)
-    end)
-
-    return true
-end
-
-function stopAutoExecute()
-    if State.AutoExecTeleportConnection then
-        State.AutoExecTeleportConnection:Disconnect()
-        State.AutoExecTeleportConnection = nil
-    end
 end
 
 function teleportToHomeServer(placeId, jobId, maxAttempts)
@@ -8413,7 +8237,6 @@ function shutdownScript()
     pcall(setAutoDeletePetsLoop, false)
     pcall(stopMailAutoClaim)
     pcall(setAntiAfk, false)
-    pcall(stopAutoExecute)
 
     if State.LoadingDismissThread then
         pcall(task.cancel, State.LoadingDismissThread)
@@ -8642,18 +8465,9 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 
 setupAuctionNetworking()
 
-setupAutoExecute()
 startLoadingScreenAutoDismiss()
 persistAutoFarmScript()
 persistLoaderScript()
-
-if getQueueOnTeleport() and writefile then
-    task.defer(function()
-        if Library and Library.Notify then
-            Library:Notify('Auto-exec ready. Put only GG2/rejoin.lua in Volt autoexec (one file)')
-        end
-    end)
-end
 
 task.spawn(function()
     local remoteOk, remoteStatus = tryUpdateFromRemote()
@@ -8663,20 +8477,6 @@ task.spawn(function()
         Library:Notify('Script updated from GitHub')
     end
 end)
-
-if not getQueueOnTeleport() then
-    task.defer(function()
-        if Library and Library.Notify then
-            Library:Notify('Auto-exec needs queue_on_teleport (Potassium supports this)')
-        end
-    end)
-elseif not isfile(GG2_SCRIPT_PATH) and not isfile(AUTO_FARM_SCRIPT) and not persistAutoFarmScript() then
-    task.defer(function()
-        if Library and Library.Notify then
-            Library:Notify('Run loader.lua first so auto-exec can save the script to workspace')
-        end
-    end)
-end
 
 task.defer(function()
     State.ConfigLoading = true
