@@ -1,5 +1,18 @@
 local GENV = getgenv()
 local queuedAutoExec = GENV.GG2_FromAutoExec == true
+local bootKey = tostring(game.JobId) .. '@' .. tostring(game.PlaceId)
+local bootNow = os.clock()
+
+if queuedAutoExec then
+    if GENV.GG2_BootKey == bootKey and (GENV.GG2_AutoFarmRunning or GENV.GG2_Library) then
+        return
+    end
+    if GENV.GG2_BootKey == bootKey
+        and type(GENV.GG2_LastBootAt) == 'number'
+        and (bootNow - GENV.GG2_LastBootAt) < 12 then
+        return
+    end
+end
 
 if identifyexecutor then
     local ok, executorName = pcall(function()
@@ -10,7 +23,7 @@ if identifyexecutor then
     end
 end
 
-if GENV.GG2_AutoFarmShutdown then
+if GENV.GG2_AutoFarmShutdown and not (queuedAutoExec and GENV.GG2_AutoFarmRunning and GENV.GG2_BootKey == bootKey) then
     pcall(GENV.GG2_AutoFarmShutdown)
     task.wait(0.05)
 end
@@ -18,9 +31,10 @@ end
 if not queuedAutoExec then
     GENV.GG2_SkipRemoteUpdate = nil
     GENV.GG2_FromAutoExec = nil
-else
-    GENV.GG2_AutoFarmRunning = nil
 end
+
+GENV.GG2_BootKey = bootKey
+GENV.GG2_LastBootAt = bootNow
 
 local REPO = 'aupirium/Auto-Farm---GAG2'
 local SCRIPT_FILE = 'gag2.lua'
