@@ -5734,13 +5734,9 @@ function doStartupWalk()
         task.wait(0.5)
 
         waitForGardenReady(30)
-        syncTargetPlantFromSavedConfig()
-        refreshTargetPlantDropdown()
-        syncHarvestPlantsFromSavedConfig()
-        refreshHarvestPlantsDropdown()
         loadWeatherState()
 
-        local basePos = getGearTargetPosition()
+        local basePos = nil
         if not basePos and State.PendingWalkBack and State.ReturnPosX and State.ReturnPosY and State.ReturnPosZ then
             basePos = Vector3.new(State.ReturnPosX, State.ReturnPosY, State.ReturnPosZ)
         end
@@ -6665,7 +6661,7 @@ function setWeatherDodge(enabled)
 end
 
 local Window = Library:CreateWindow({
-    Title = 'Grow a Garden 2 - Auto Farm',
+    Title = 'Grow a Garden 2',
     Center = true,
     AutoShow = true,
     Size = UDim2.fromOffset(620, 580),
@@ -6688,156 +6684,17 @@ end)
 
 local Tabs = {
     Main = Window:AddTab('Main'),
-    Fruits = Window:AddTab('Fruits'),
     Mail = Window:AddTab('Mail'),
     Settings = Window:AddTab('Settings'),
 }
 
-local GearBox = Tabs.Main:AddLeftGroupbox('Auto Gear')
-local StatsBox = Tabs.Main:AddLeftGroupbox('Stats')
 local WeatherBox = Tabs.Main:AddLeftGroupbox('Weather Dodge')
-local FarmBox = Tabs.Main:AddRightGroupbox('Auto Farm')
-local BuyBox = Tabs.Main:AddRightGroupbox('Auto Buy')
-local AuctionBox = Tabs.Main:AddRightGroupbox('Auto Auction')
 
 local MailClaimBox = Tabs.Mail:AddLeftGroupbox('Auto Claim')
 local MailSendBox = Tabs.Mail:AddRightGroupbox('Send Gift')
 
-local FruitsBox = Tabs.Fruits:AddLeftGroupbox('Fruits')
-FruitsStatusLabel = FruitsBox:AddLabel('Auto-refreshes when you open this tab', true)
-FruitsBox:AddDropdown('GardenFruitList', {
-    Text = 'Fruits',
-    Values = { 'Open tab to load fruits' },
-    Multi = true,
-    Default = {},
-    Tooltip = 'Unharvested fruits at or above Max Harvest KG',
-})
-FruitsBox:AddButton({
-    Text = 'Claim Selected',
-    Func = function()
-        task.spawn(claimSelectedGardenFruits)
-    end,
-})
-hookFruitsTabAutoScan(Tabs.Fruits)
-
 local OptimizerBox = Tabs.Settings:AddLeftGroupbox('Optimizer')
 local MenuBox = Tabs.Settings:AddRightGroupbox('Menu')
-
-GearBox:AddDropdown('TargetPlant', {
-    Text = 'Target Plant',
-    Values = { 'None' },
-    Default = 'None',
-    Tooltip = 'Centers sprinkler/watering on this plant type on your current plot',
-    Callback = function(value)
-        if type(value) == 'string' and value ~= '' and value ~= 'None' then
-            State.ConfigTargetPlant = value
-            saveTargetPlantFile(value)
-        else
-            State.ConfigTargetPlant = nil
-            saveTargetPlantFile('')
-        end
-    end,
-})
-
-GearBox:AddButton({
-    Text = 'Refresh Plant List',
-    Func = function()
-        refreshTargetPlantDropdown()
-        Library:Notify('Plant list refreshed')
-    end,
-})
-
-GearBox:AddToggle('AutoWalkToPlant', {
-    Text = 'Go To Target',
-    Default = true,
-    Tooltip = 'Instantly moves you to the plant cluster before using sprinkler or watering can',
-})
-
-GearBox:AddToggle('AutoSprinkler', {
-    Text = 'Auto Super Sprinkler',
-    Default = false,
-    Tooltip = 'Keeps 1 Super Sprinkler at the target plant center (radius ' .. tostring(sprinklerRadius) .. ')',
-})
-
-GearBox:AddToggle('AutoWateringCan', {
-    Text = 'Auto Super Watering Can',
-    Default = false,
-    Tooltip = 'Uses 1 Super Watering Can at the target plant center on the interval below',
-    Callback = function(value)
-        setAutoWateringLoop(value)
-    end,
-})
-
-GearBox:AddInput('WateringCanInterval', {
-    Text = 'Watering Can Interval (s)',
-    Default = '10',
-    Numeric = true,
-    Finished = false,
-    Tooltip = 'Seconds between each Super Watering Can use (1-300)',
-})
-
-FarmBox:AddToggle('AutoHarvest', {
-    Text = 'Auto Harvest',
-    Default = false,
-    Callback = function(value)
-        setAutoHarvestLoop(value)
-    end,
-})
-
-FarmBox:AddDropdown('HarvestPlantTypes', {
-    Text = 'Harvest Plant Types',
-    Values = { 'Open tab to load plant types' },
-    Multi = true,
-    Default = {},
-    Tooltip = 'Only checked plant types get auto-harvested. Defaults to every type; uncheck all to harvest nothing.',
-    Callback = function()
-        if State.ConfigLoading then
-            return
-        end
-
-        captureConfigHarvestPlants()
-    end,
-})
-
-FarmBox:AddButton({
-    Text = 'Refresh Plant Types',
-    Func = function()
-        refreshHarvestPlantsDropdown()
-        Library:Notify('Plant type list refreshed')
-    end,
-})
-
-FarmBox:AddInput('MaxHarvestKg', {
-    Text = 'Max Harvest KG',
-    Default = '50',
-    Numeric = true,
-    Finished = false,
-    Tooltip = 'Auto harvest/sell below this KG. Fruits tab shows fruits at or above this KG.',
-})
-
-if Options.MaxHarvestKg then
-    Options.MaxHarvestKg:OnChanged(function()
-        task.defer(refreshFruitsList)
-    end)
-end
-
-FarmBox:AddToggle('AutoSell', {
-    Text = 'Auto Sell',
-    Default = false,
-    Tooltip = 'Sells fruits below Max Harvest KG every 1s (uses SellAll, keeps heavy/favorite fruits)',
-    Callback = function(value)
-        setAutoSellLoop(value)
-    end,
-})
-
-FarmBox:AddToggle('AutoHatchEggs', {
-    Text = 'Auto Hatch Eggs',
-    Default = false,
-    Tooltip = 'Auto-hatches Black Dragon eggs in your garden and egg tools in your backpack',
-    Callback = function(value)
-        setAutoHatchLoop(value)
-    end,
-})
 
 WeatherBox:AddToggle('WeatherDodge', {
     Text = 'Enable Weather Dodge',
@@ -6859,95 +6716,10 @@ WeatherBox:AddDropdown('BlockedWeathers', {
 WeatherStatusLabel = WeatherBox:AddLabel('Weather: Disabled', true)
 CurrentWeatherLabel = WeatherBox:AddLabel('Active Event: None', true)
 
-BuyBox:AddToggle('AutoBuy', {
-    Text = 'Enable Auto Buy',
-    Default = false,
-    Tooltip = 'Instantly buys selected items when they are in stock and you can afford them',
-    Callback = function(value)
-        setAutoBuyLoop(value)
-    end,
-})
-
-BuyBox:AddDropdown('AutoBuyGears', {
-    Text = 'Gears',
-    Values = BUY_GEARS,
-    Multi = true,
-    Default = {},
-})
-
-BuyBox:AddDropdown('AutoBuySeeds', {
-    Text = 'Seeds',
-    Values = BUY_SEEDS,
-    Multi = true,
-    Default = {},
-})
-
-BuyBox:AddDropdown('AutoBuyProps', {
-    Text = 'Props',
-    Values = BUY_PROPS,
-    Multi = true,
-    Default = {},
-})
-
-AuctionBox:AddDropdown('AuctionBuySeeds', {
-    Text = 'Select Seed',
-    Values = #AUCTION_SEEDS > 0 and AUCTION_SEEDS or { 'No seeds found' },
-    Multi = true,
-    Default = {},
-    Tooltip = 'Auction lots to auto-buy when they appear',
-})
-
-AuctionBox:AddDropdown('AuctionBuyGears', {
-    Text = 'Select Gear',
-    Values = #AUCTION_GEARS > 0 and AUCTION_GEARS or { 'No gears found' },
-    Multi = true,
-    Default = {},
-})
-
-AuctionBox:AddDropdown('AuctionBuySeedPacks', {
-    Text = 'Select Seed Pack',
-    Values = #AUCTION_SEED_PACKS > 0 and AUCTION_SEED_PACKS or { 'No seed packs found' },
-    Multi = true,
-    Default = {},
-})
-
-AuctionBox:AddDropdown('AuctionBuyEggs', {
-    Text = 'Select Egg',
-    Values = #AUCTION_EGGS > 0 and AUCTION_EGGS or { 'No eggs found' },
-    Multi = true,
-    Default = {},
-})
-
-AuctionBox:AddDropdown('AuctionPriceMode', {
-    Text = 'Auction Price Mode',
-    Values = { 'Below', 'Above', 'At' },
-    Default = 'Below',
-    Tooltip = 'Below = buy when price is at or under your limit. Above = at or over. At = exact price.',
-})
-
-AuctionBox:AddInput('AuctionPrice', {
-    Text = 'Auction Price',
-    Default = '0',
-    Numeric = true,
-    Tooltip = "Sheckles price filter. Leave at 0 to ignore price. With no items selected, buys any sheckle lot matching this filter.",
-})
-
-AuctionBox:AddToggle('AutoBuyAuction', {
-    Text = 'Auto Buy Auction',
-    Default = false,
-    Tooltip = 'Buys auction lots with sheckles. Use price limit alone, or pick specific items in the dropdowns.',
-    Callback = function(value)
-        setAutoAuctionLoop(value)
-    end,
-})
-
-local EarningsLabel = StatsBox:AddLabel('Earnings/min: 0?', true)
-local SprinklerLabel = StatsBox:AddLabel('Sprinkler: None', true)
-
 OptimizerBox:AddToggle('Optimizer', {
     Text = 'Enable Optimizer',
     Default = false,
-    Tooltip = 'High FPS mode: deletes other gardens + YOUR plant models (empty beds ~400-500 FPS). Gear uses saved plant positions; harvest/Max KG uses GardenSync + memory. No invisible fruits (those killed FPS).',
+    Tooltip = 'High FPS mode: deletes other gardens + YOUR plant models (empty beds ~400-500 FPS).',
     Callback = function(value)
         if State.ConfigLoading then
             return
@@ -6964,7 +6736,7 @@ OptimizerBox:AddToggle('Optimizer', {
 OptimizerBox:AddToggle('CameraBlackout', {
     Text = 'Camera Blackout (Max FPS)',
     Default = false,
-    Tooltip = 'Extreme mode: yanks the camera 1,000,000,000,000 studs below the map and blanks every mesh ID so nothing renders at all. Screen goes blank - farming/UI still work, but you won\'t see the game. Turn off to restore your view.',
+    Tooltip = 'Extreme mode: yanks the camera far below the map and blanks mesh IDs so nothing renders. Screen goes blank — UI still works. Turn off to restore your view.',
     Callback = function(value)
         if State.ConfigLoading then
             return
@@ -8226,7 +7998,6 @@ function shutdownScript()
     end
 
     Library.Unloaded = true
-    State.WateringStop = true
     State.WeatherMonitorStop = true
     State.MailAutoClaimStop = true
 
@@ -8235,12 +8006,6 @@ function shutdownScript()
     pcall(setCameraBlackout, false)
     pcall(setEventPredictorHud, false)
     pcall(disconnectInventoryValueWatchers)
-    pcall(setAutoHarvestLoop, false)
-    pcall(setAutoWateringLoop, false)
-    pcall(setAutoBuyLoop, false)
-    pcall(setAutoAuctionLoop, false)
-    pcall(setAutoHatchLoop, false)
-    pcall(setAutoSellLoop, false)
     pcall(setWeatherDodge, false)
     pcall(stopWeatherErrorReconnect)
     pcall(stopMailAutoClaim)
@@ -8473,22 +8238,12 @@ SaveManager:BuildConfigSection(Tabs.Settings)
 do
     local rawSave = SaveManager.Save
     function SaveManager:Save(name)
-        captureConfigTargetPlant()
-        captureConfigHarvestPlants()
         return rawSave(self, name)
     end
 
     local rawLoad = SaveManager.Load
     function SaveManager:Load(name)
-        local ok, err = rawLoad(self, name)
-        task.defer(function()
-            task.wait(0.05)
-            syncTargetPlantFromSavedConfig()
-            refreshTargetPlantDropdown()
-            syncHarvestPlantsFromSavedConfig()
-            refreshHarvestPlantsDropdown()
-        end)
-        return ok, err
+        return rawLoad(self, name)
     end
 end
 
@@ -8496,7 +8251,6 @@ ThemeManager:ApplyToTab(Tabs.Settings)
 
 loadWeatherState()
 setupWeatherErrorReconnect()
-setupAuctionNetworking()
 
 if State.WeatherHiding then
     if endWeatherHideEarlyIfClear() or isWeatherHideTimerElapsed() then
@@ -8563,9 +8317,6 @@ task.defer(function()
     State.ConfigLoading = true
     SaveManager:LoadAutoloadConfig()
     State.ConfigLoading = false
-    syncTargetPlantFromSavedConfig()
-    captureConfigTargetPlant()
-    syncHarvestPlantsFromSavedConfig()
     if Options.MenuKeybind then
         Library.ToggleKeybind = Options.MenuKeybind
     end
@@ -8586,33 +8337,8 @@ task.defer(function()
     end
 
     waitForGardenReady(45)
-    task.defer(function()
-        if Library.Unloaded then
-            return
-        end
-        pcall(refreshTargetPlantDropdown)
-        pcall(refreshHarvestPlantsDropdown)
-    end)
     doStartupWalk()
 
-    if Toggles.AutoWateringCan and Toggles.AutoWateringCan.Value then
-        setAutoWateringLoop(true)
-    end
-    if Toggles.AutoSell and Toggles.AutoSell.Value then
-        setAutoSellLoop(true)
-    end
-    if Toggles.AutoBuy and Toggles.AutoBuy.Value then
-        setAutoBuyLoop(true)
-    end
-    if Toggles.AutoBuyAuction and Toggles.AutoBuyAuction.Value then
-        setAutoAuctionLoop(true)
-    end
-    if Toggles.AutoHatchEggs and Toggles.AutoHatchEggs.Value then
-        setAutoHatchLoop(true)
-    end
-
-    task.defer(refreshAuctionItemListsFromCatalog)
-    task.defer(requestAuctionSnapshot)
     if Toggles.WeatherDodge and Toggles.WeatherDodge.Value then
         setWeatherDodge(true)
     elseif State.WeatherHiding and not isWeatherHideTimerElapsed() then
@@ -8629,24 +8355,10 @@ task.defer(function()
 
     task.wait(1.5)
 
-    if Toggles.AutoHarvest and Toggles.AutoHarvest.Value then
-        setAutoHarvestLoop(true)
-    end
-
     task.wait(0.1)
     pcall(refreshMailInventory)
     updateWeatherLabels()
     queueTeleportScript()
-end)
-
-LocalPlayer:GetAttributeChangedSignal('PlotId'):Connect(function()
-    task.defer(function()
-        waitForGardenReady(20)
-        syncTargetPlantFromSavedConfig()
-        refreshTargetPlantDropdown()
-        syncHarvestPlantsFromSavedConfig()
-        refreshHarvestPlantsDropdown()
-    end)
 end)
 
 Library:OnUnload(function()
@@ -8655,23 +8367,9 @@ end)
 
 task.spawn(function()
     while not Library.Unloaded do
-        if Toggles.AutoSprinkler and Toggles.AutoSprinkler.Value then
-            placeSuperSprinkler()
-        end
-
         updateWeatherLabels()
-
-        EarningsLabel:SetText('Earnings/min: ' .. abbreviate(getEarningsPerMinute()))
-
-        local active, _, _, remaining = getActiveSuperSprinkler()
-        if active then
-            SprinklerLabel:SetText(string.format('Sprinkler: Active (%ds left)', math.floor(remaining)))
-        else
-            SprinklerLabel:SetText('Sprinkler: None')
-        end
-
         task.wait(0.15)
     end
 end)
 
-Library:Notify('Grow a Garden 2 Auto Farm loaded! Pick a target plant in Gear.')
+Library:Notify('Grow a Garden 2 loaded!')
