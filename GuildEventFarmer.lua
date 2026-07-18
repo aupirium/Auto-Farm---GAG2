@@ -548,27 +548,63 @@ end
 
 -- How ft is read:
 -- 1) Trees (Corn, etc.): server sets plant:GetAttribute("Height") in feet
--- 2) Bamboo / crops without Height: model height via GetExtentsSize().Y (studs ≈ ft here)
-local function getPlantFeet(plant)
+-- 2) Bamboo / crops without Height: world bounding-box height (studs ≈ ft)
+local function measureMeshFeet(plant)
+	-- Prefer world AABB — GetExtentsSize can under-report stacked bamboo
+	local size
+	local ok = pcall(function()
+		local _, s = plant:GetBoundingBox()
+		size = s
+	end)
+	if ok and typeof(size) == "Vector3" and size.Y > 0 then
+		return math.floor(size.Y + 0.5)
+	end
+	ok = pcall(function()
+		size = plant:GetExtentsSize()
+	end)
+	if ok and typeof(size) == "Vector3" and size.Y > 0 then
+		return math.floor(size.Y + 0.5)
+	end
+	-- Fallback: span of part world positions
+	local minY, maxY = math.huge, -math.huge
+	local any = false
+	for _, d in ipairs(plant:GetDescendants()) do
+		if d:IsA("BasePart") then
+			any = true
+			local y = d.Position.Y
+			local half = d.Size.Y * 0.5
+			if y - half < minY then
+				minY = y - half
+			end
+			if y + half > maxY then
+				maxY = y + half
+			end
+		end
+	end
+	if any and maxY > minY then
+		return math.floor((maxY - minY) + 0.5)
+	end
+	return 0
+end
+
+local function getPlantFeet(plant, opts)
+	opts = opts or {}
 	if not plant then
 		return 0, "none"
 	end
 	local attr = plant:GetAttribute("Height")
-	if type(attr) == "number" then
+	if type(attr) == "number" and attr > 0 then
 		return attr, "attr"
 	end
+	local now = os.clock()
 	local cached = State.EspCache[plant.Name]
-	if cached and os.clock() - cached.at < 2 then
+	-- Keeper checks must not trust a stale short reading
+	local ttl = opts.fresh and 0 or 1.25
+	if cached and (now - cached.at) < ttl and not opts.fresh then
 		return cached.ft, "mesh"
 	end
-	local ok, size = pcall(function()
-		return plant:GetExtentsSize()
-	end)
-	local ft = 0
-	if ok and typeof(size) == "Vector3" then
-		ft = math.floor(size.Y + 0.5)
-	end
-	State.EspCache[plant.Name] = { ft = ft, at = os.clock() }
+	local ft = measureMeshFeet(plant)
+	State.EspCache[plant.Name] = { ft = ft, at = now }
 	return ft, "mesh"
 end
 
@@ -586,7 +622,7 @@ local function isKeeper(plant)
 	if State.Keepers[plant.Name] then
 		return true
 	end
-	local h = getPlantFeet(plant)
+	local h = getPlantFeet(plant, { fresh = true })
 	if type(h) == "number" and h >= Settings.TargetHeight then
 		return true
 	end
@@ -598,18 +634,56 @@ local function isKeeper(plant)
 end
 
 local function markKeeper(plant, height)
-	if not plant or State.Keepers[plant.Name] then
+	if not plant then
 		return
+	end
+	if State.Keepers[plant.Name] then
+		return
+	end
+	height = height or getPlantFeet(plant, { fresh = true })
+	if type(height) ~= "number" or height < Settings.TargetHeight then
+		-- Exempt-only keepers still get tracked, but don't inflate "tall" count
+		local seed = plant:GetAttribute("SeedName")
+		if not (seed and Settings.Exempted[seed]) then
+			return
+		end
 	end
 	State.Keepers[plant.Name] = true
 	State.Stats.keepers += 1
 	State.FoundKeeper = true
 	local seed = plant:GetAttribute("SeedName") or "?"
-	local msg = string.format("**%s** hit **%s ft** (target %s)\nPlant: `%s`", seed, tostring(height), tostring(Settings.TargetHeight), plant.Name)
+	local msg = string.format(
+		"**%s** hit **%s ft** (target %s)\nPlant: `%s`",
+		seed,
+		tostring(height),
+		tostring(Settings.TargetHeight),
+		plant.Name
+	)
 	setStatus(string.format("KEEPER: %s @ %s ft", seed, tostring(height)))
 	task.spawn(function()
 		sendWebhook("Keeper found", msg, 0xF0C24B)
 	end)
+end
+
+-- Detect + register keepers from current plot (fixes bamboo with no Height attr)
+local function scanAndMarkKeepers()
+	local folder = getPlantsFolder()
+	if not folder then
+		return 0
+	end
+	local n = 0
+	for _, plant in ipairs(folder:GetChildren()) do
+		if plant:IsA("Model") then
+			local h = getPlantFeet(plant, { fresh = true })
+			if type(h) == "number" and h >= Settings.TargetHeight then
+				if not State.Keepers[plant.Name] then
+					markKeeper(plant, h)
+					n += 1
+				end
+			end
+		end
+	end
+	return n
 end
 
 local function plantIsGrowing(plant)
@@ -803,6 +877,11 @@ local function shovelPlant(plant)
 	if not plant or not plant.Parent then
 		return false
 	end
+	local h = getPlantFeet(plant, { fresh = true })
+	if type(h) == "number" and h >= Settings.TargetHeight then
+		markKeeper(plant, h)
+		return false
+	end
 	if isKeeper(plant) then
 		return false
 	end
@@ -852,7 +931,8 @@ local function clearUnqualified(opts)
 	if not folder then
 		return 0
 	end
-	-- Equip shovel once for the whole clear pass
+	-- Re-measure before shoveling so tall bamboo isn't misread as short
+	scanAndMarkKeepers()
 	local shovel = findShovel()
 	if shovel and shovel.Parent ~= LocalPlayer.Character then
 		equipTool(shovel)
@@ -865,11 +945,12 @@ local function clearUnqualified(opts)
 		if plantIsGrowing(plant) then
 			continue
 		end
+		local h = getPlantFeet(plant, { fresh = true })
+		if type(h) == "number" and h >= Settings.TargetHeight then
+			markKeeper(plant, h)
+			continue
+		end
 		if isKeeper(plant) then
-			local h = getPlantFeet(plant)
-			if type(h) == "number" and h >= Settings.TargetHeight then
-				markKeeper(plant, h)
-			end
 			continue
 		end
 		if opts.speciesOnly and plant:GetAttribute("SeedName") ~= opts.speciesOnly then
@@ -878,17 +959,10 @@ local function clearUnqualified(opts)
 		if not opts.force and not shouldHuntPlant(plant) then
 			continue
 		end
-		local h = getPlantFeet(plant)
-		if type(h) == "number" and h >= Settings.TargetHeight then
-			markKeeper(plant, h)
-			continue
-		end
 		-- Trees use Height attr; bamboo uses measured ft via getPlantFeet
-		-- Skip tiny/unknown only when not force and DeleteAll off and no measurable height
 		if (not h or h <= 0) and not opts.force and not Settings.DeleteAllPlants then
 			local attrH = plant:GetAttribute("Height")
 			if type(attrH) ~= "number" then
-				-- still allow shovel of grown plants without height when hunting filtered seed
 				local filter = Settings.SeedFilter
 				if filter == "" and not Settings.DeleteAllPlants then
 					continue
@@ -907,6 +981,19 @@ local function collectPlant(plant)
 		return false
 	end
 	if plantIsGrowing(plant) then
+		return false
+	end
+	-- Never harvest keepers (tall bamboo / exempt) — CollectFruit removes them
+	local h = getPlantFeet(plant, { fresh = true })
+	if type(h) == "number" and h >= Settings.TargetHeight then
+		markKeeper(plant, h)
+		return false
+	end
+	if isKeeper(plant) then
+		return false
+	end
+	local seed = plant:GetAttribute("SeedName")
+	if seed and Settings.Exempted[seed] then
 		return false
 	end
 	local plantId = plant:GetAttribute("PlantId")
@@ -1326,7 +1413,7 @@ local function waitForBatchGrowth(trackedNames, clearCap)
 				growing += 1
 			else
 				ready += 1
-				local h = p:GetAttribute("Height")
+				local h = getPlantFeet(p, { fresh = true })
 				if type(h) == "number" and h >= Settings.TargetHeight then
 					markKeeper(p, h)
 				end
@@ -1335,23 +1422,31 @@ local function waitForBatchGrowth(trackedNames, clearCap)
 		return growing, ready, gone
 	end
 
+	local lastScan = 0
 	while State.Running and os.clock() < deadline do
 		-- Do NOT place a sprinkler during growth — that wastes lifetime.
 		-- Next plant wave will place one if needed.
 
 		local growing, ready, gone = growthStats()
+		if os.clock() - lastScan > 1.5 then
+			scanAndMarkKeepers()
+			lastScan = os.clock()
+		end
 		local remaining = math.max(0, math.ceil(deadline - os.clock()))
 		setStatus(string.format("Growing wave… ready %d · growing %d · %ds left", ready, growing, remaining))
 
 		if growing == 0 then
+			scanAndMarkKeepers()
 			-- Entire wave finished growing — do NOT shovel yet (caller clears)
 			return
 		end
 		if State.FoundKeeper and Settings.StopWhenFound then
+			scanAndMarkKeepers()
 			return
 		end
 		task.wait(0.25)
 	end
+	scanAndMarkKeepers()
 	setStatus("Growth wait timed out — clearing shorts…")
 end
 
@@ -1506,7 +1601,8 @@ local function runContinuousLoop()
 		end
 		doAutoSell()
 
-		-- Claim / harvest first (no sprinkler needed for this)
+		-- Claim / harvest first (never touch keepers / tall bamboo)
+		scanAndMarkKeepers()
 		local folder = getPlantsFolder()
 		if folder then
 			for _, plant in ipairs(folder:GetChildren()) do
@@ -1516,6 +1612,9 @@ local function runContinuousLoop()
 				local seed = plant:GetAttribute("SeedName")
 				local filter = Settings.SeedFilter
 				if filter ~= "" and seed ~= filter then
+					continue
+				end
+				if isKeeper(plant) then
 					continue
 				end
 				if not plantIsGrowing(plant) then
@@ -1563,6 +1662,9 @@ local function runContinuousLoop()
 					if filter ~= "" and plant:GetAttribute("SeedName") ~= filter then
 						continue
 					end
+					if isKeeper(plant) then
+						continue
+					end
 					if plantIsGrowing(plant) then
 						anyGrowing = true
 					else
@@ -1591,6 +1693,7 @@ local function startFarm()
 	State.Running = true
 	State.FoundKeeper = false
 	State.StartedAt = os.clock()
+	scanAndMarkKeepers()
 	setStatus("hunting…")
 	task.spawn(function()
 		if Settings.PlantMode == "Continuous" then
