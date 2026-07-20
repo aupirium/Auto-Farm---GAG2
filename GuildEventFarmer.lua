@@ -629,6 +629,81 @@ local function formatFeet(ft)
 	return string.format("%d ft", math.floor(ft + 0.5))
 end
 
+-- Seed tool names and plant SeedName sometimes differ ("Bamboo" vs "Bamboo Seed").
+local function normalizeSeedKey(s)
+	if type(s) ~= "string" then
+		return ""
+	end
+	s = s:gsub("^✓%s*", ""):gsub("^%s+", ""):gsub("%s+$", "")
+	s = s:gsub("%s+[Ss]eed$", "")
+	return string.lower(s)
+end
+
+local function getPlantSeedName(plant)
+	if not plant then
+		return nil
+	end
+	local s = plant:GetAttribute("SeedName")
+	if type(s) == "string" and s ~= "" then
+		return s
+	end
+	s = plant:GetAttribute("Seed")
+	if type(s) == "string" and s ~= "" then
+		return s
+	end
+	return nil
+end
+
+local function isExemptSeed(seed)
+	if type(seed) ~= "string" or seed == "" then
+		return false
+	end
+	if Settings.Exempted[seed] then
+		return true
+	end
+	local key = normalizeSeedKey(seed)
+	if key == "" then
+		return false
+	end
+	for name, on in pairs(Settings.Exempted) do
+		if on and normalizeSeedKey(name) == key then
+			return true
+		end
+	end
+	return false
+end
+
+local function isPlantExempt(plant)
+	return isExemptSeed(getPlantSeedName(plant))
+end
+
+local function setExemptName(name, on)
+	name = tostring(name or ""):gsub("^✓%s*", ""):gsub("^%s+", ""):gsub("%s+$", "")
+	if name == "" then
+		return
+	end
+	local key = normalizeSeedKey(name)
+	-- Drop any alias keys that mean the same plant
+	for k in pairs(Settings.Exempted) do
+		if normalizeSeedKey(k) == key then
+			Settings.Exempted[k] = nil
+		end
+	end
+	if on then
+		Settings.Exempted[name] = true
+		-- Also pin the live plot SeedName so purge matches for sure
+		local folder = getPlantsFolder()
+		if folder then
+			for _, p in ipairs(folder:GetChildren()) do
+				local seed = getPlantSeedName(p)
+				if seed and normalizeSeedKey(seed) == key then
+					Settings.Exempted[seed] = true
+				end
+			end
+		end
+	end
+end
+
 local function isKeeper(plant)
 	if not plant then
 		return false
@@ -636,12 +711,11 @@ local function isKeeper(plant)
 	if State.Keepers[plant.Name] then
 		return true
 	end
-	local h = getPlantFeet(plant, { fresh = true })
-	if type(h) == "number" and h >= Settings.TargetHeight then
+	if isPlantExempt(plant) then
 		return true
 	end
-	local seed = plant:GetAttribute("SeedName")
-	if seed and Settings.Exempted[seed] then
+	local h = getPlantFeet(plant, { fresh = true })
+	if type(h) == "number" and h >= Settings.TargetHeight then
 		return true
 	end
 	return false
@@ -657,26 +731,30 @@ local function markKeeper(plant, height)
 	height = height or getPlantFeet(plant, { fresh = true })
 	if type(height) ~= "number" or height < Settings.TargetHeight then
 		-- Exempt-only keepers still get tracked, but don't inflate "tall" count
-		local seed = plant:GetAttribute("SeedName")
-		if not (seed and Settings.Exempted[seed]) then
+		if not isPlantExempt(plant) then
 			return
 		end
 	end
 	State.Keepers[plant.Name] = true
 	State.Stats.keepers += 1
-	State.FoundKeeper = true
-	local seed = plant:GetAttribute("SeedName") or "?"
+	local seed = getPlantSeedName(plant) or "?"
+	local isTall = type(height) == "number" and height >= Settings.TargetHeight
+	if isTall then
+		State.FoundKeeper = true
+	end
 	local msg = string.format(
-		"**%s** hit **%s ft** (target %s)\nPlant: `%s`",
+		"**%s** %s (target %s)\nPlant: `%s`",
 		seed,
-		tostring(height),
+		isTall and ("hit **" .. tostring(height) .. " ft**") or "is exempt (never delete)",
 		tostring(Settings.TargetHeight),
 		plant.Name
 	)
-	setStatus(string.format("KEEPER: %s @ %s ft", seed, tostring(height)))
-	task.spawn(function()
-		sendWebhook("Keeper found", msg, 0xF0C24B)
-	end)
+	setStatus(isTall and string.format("KEEPER: %s @ %s ft", seed, tostring(height)) or ("EXEMPT: " .. seed .. " (protected)"))
+	if isTall then
+		task.spawn(function()
+			sendWebhook("Keeper found", msg, 0xF0C24B)
+		end)
+	end
 end
 
 -- Detect + register keepers from current plot (fixes bamboo with no Height attr)
@@ -871,15 +949,14 @@ local function shouldHuntPlant(plant)
 		return false
 	end
 	if Settings.DeleteAllPlants then
-		local seed = plant:GetAttribute("SeedName")
-		if seed and Settings.Exempted[seed] then
+		if isPlantExempt(plant) then
 			return false
 		end
 		return true
 	end
 	local filter = Settings.SeedFilter
 	if filter ~= "" then
-		return plant:GetAttribute("SeedName") == filter
+		return getPlantSeedName(plant) == filter
 	end
 	return true
 end
@@ -907,7 +984,7 @@ local function shouldRemovePlant(plant, opts)
 	if opts.waveOnly and not opts.waveOnly[plant.Name] then
 		return false
 	end
-	if opts.speciesOnly and plant:GetAttribute("SeedName") ~= opts.speciesOnly then
+	if opts.speciesOnly and getPlantSeedName(plant) ~= opts.speciesOnly then
 		return false
 	end
 	if not opts.force and not shouldHuntPlant(plant) then
@@ -934,6 +1011,9 @@ end
 ------------------------------------------------------------------------
 local function shovelPlant(plant)
 	if not plant or not plant.Parent then
+		return false
+	end
+	if isPlantExempt(plant) then
 		return false
 	end
 	local h = getPlantFeet(plant, { fresh = true })
@@ -1075,8 +1155,7 @@ local function collectPlant(plant)
 	if isKeeper(plant) then
 		return false
 	end
-	local seed = plant:GetAttribute("SeedName")
-	if seed and Settings.Exempted[seed] then
+	if isPlantExempt(plant) then
 		return false
 	end
 	local plantId = plant:GetAttribute("PlantId")
@@ -1840,15 +1919,19 @@ local function purgeSpecies(species)
 	local purgeAll = not species or species == ""
 	State.Purging = true
 	task.spawn(function()
-		setStatus(purgeAll and "PURGE all junk (keepers safe)…" or ("PURGE " .. species .. "…"))
+		setStatus(purgeAll and "PURGE all junk (exempt + tall kept)…" or ("PURGE " .. species .. "…"))
 		local folder = getPlantsFolder()
-		local total = 0
+		local total, skippedExempt = 0, 0
 		if folder then
 			for _, p in ipairs(folder:GetChildren()) do
-				local seed = p:GetAttribute("SeedName")
-				local match = purgeAll or seed == species
-				if match and not isKeeper(p) then
-					total += 1
+				local seed = getPlantSeedName(p)
+				local match = purgeAll or seed == species or (seed and normalizeSeedKey(seed) == normalizeSeedKey(species))
+				if match then
+					if isPlantExempt(p) or isKeeper(p) then
+						skippedExempt += 1
+					else
+						total += 1
+					end
 				end
 			end
 		end
@@ -1856,9 +1939,9 @@ local function purgeSpecies(species)
 		while folder and State.Purging do
 			local target = nil
 			for _, p in ipairs(folder:GetChildren()) do
-				local seed = p:GetAttribute("SeedName")
-				local match = purgeAll or seed == species
-				if match and not isKeeper(p) and not plantIsGrowing(p) then
+				local seed = getPlantSeedName(p)
+				local match = purgeAll or seed == species or (seed and normalizeSeedKey(seed) == normalizeSeedKey(species))
+				if match and not isKeeper(p) and not isPlantExempt(p) and not plantIsGrowing(p) then
 					target = p
 					break
 				end
@@ -1867,9 +1950,9 @@ local function purgeSpecies(species)
 				-- wait briefly for growers, or stop
 				local stillGrowing = false
 				for _, p in ipairs(folder:GetChildren()) do
-					local seed = p:GetAttribute("SeedName")
-					local match = purgeAll or seed == species
-					if match and not isKeeper(p) and plantIsGrowing(p) then
+					local seed = getPlantSeedName(p)
+					local match = purgeAll or seed == species or (seed and normalizeSeedKey(seed) == normalizeSeedKey(species))
+					if match and not isKeeper(p) and not isPlantExempt(p) and plantIsGrowing(p) then
 						stillGrowing = true
 						break
 					end
@@ -1883,16 +1966,16 @@ local function purgeSpecies(species)
 			end
 			if shovelPlant(target) then
 				done += 1
-				setStatus(string.format("PURGE %d/%d (keepers kept)", done, total))
+				setStatus(string.format("PURGE %d/%d (kept %d protected)", done, total, skippedExempt))
 			else
 				break
 			end
 		end
 		State.Purging = false
 		if purgeAll then
-			setStatus(string.format("PURGE done — removed %d plants (super/keepers kept)", done))
+			setStatus(string.format("PURGE done — removed %d · kept %d protected", done, skippedExempt))
 		else
-			setStatus(string.format("PURGE done — removed %d %s (keepers kept)", done, species))
+			setStatus(string.format("PURGE done — removed %d %s · kept %d protected", done, species, skippedExempt))
 		end
 	end)
 end
@@ -2719,31 +2802,31 @@ local function listExemptOptions()
 	return pool
 end
 
-local _, refreshExempt = makeDropdown(19, "Exempt (never delete)", function()
+local _, refreshExempt = makeDropdown(19, "Never delete", function()
 	local labeled = {}
 	for _, s in ipairs(listExemptOptions()) do
-		table.insert(labeled, (Settings.Exempted[s] and "✓ " or "") .. s)
+		table.insert(labeled, (isExemptSeed(s) and "✓  " or "○  ") .. s)
 	end
 	return labeled
 end, function()
 	local t = {}
-	for k in pairs(Settings.Exempted) do
-		table.insert(t, k)
+	for k, on in pairs(Settings.Exempted) do
+		if on then
+			table.insert(t, k)
+		end
 	end
 	table.sort(t)
-	return #t > 0 and table.concat(t, ", ") or ""
+	if #t == 0 then
+		return ""
+	end
+	return "✓ " .. table.concat(t, ", ")
 end, function(v)
-	local name = tostring(v or ""):gsub("^✓%s*", ""):gsub("^%s+", "")
+	local name = tostring(v or ""):gsub("^[✓○]%s*", ""):gsub("^%s+", ""):gsub("%s+$", "")
 	if name == "" then
-		Settings.Exempted = {}
-		return
+		return -- never wipe the whole list by accident
 	end
-	if Settings.Exempted[name] then
-		Settings.Exempted[name] = nil
-	else
-		Settings.Exempted[name] = true
-	end
-end, { allowEmpty = true, emptyLabel = "(none — pick to toggle)" })
+	setExemptName(name, not isExemptSeed(name))
+end, { allowEmpty = false, emptyLabel = "pick plants to protect" })
 
 section("Purge", 20)
 local purgeSpeciesName = ""
