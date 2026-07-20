@@ -1939,8 +1939,12 @@ local Theme = {
 	input = Color3.fromRGB(20, 24, 21),
 }
 
-local ROOT_W, ROOT_H = 700, 430
-local ROOT_H_MIN = 48
+local ROOT_W, ROOT_H = 720, 460
+local ROOT_H_MIN = 52
+local PAD = 12
+local GAP = 8
+local R = 12
+local R_SM = 8
 
 local function corner(parent, r)
 	local c = Instance.new("UICorner")
@@ -2001,52 +2005,43 @@ Gui.ResetOnSpawn = false
 Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 Gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
--- Single panel (no floating shadow)
+-- Single panel — even padding like the reference (PAD outer / GAP between)
 local Root = Instance.new("Frame")
 Root.Name = "Root"
 Root.Size = UDim2.fromOffset(ROOT_W, ROOT_H)
-Root.Position = UDim2.new(0, 20, 0.5, -ROOT_H / 2)
+Root.Position = UDim2.new(0, 18, 0.5, -ROOT_H / 2)
 Root.BackgroundColor3 = Theme.bg
 Root.BorderSizePixel = 0
 Root.ClipsDescendants = true
 Root.Parent = Gui
-corner(Root, 14)
-stroke(Root, Theme.stroke, 1, 0.4)
+corner(Root, R)
+stroke(Root, Theme.accentDim, 1.2, 0.45)
 
 local Header = Instance.new("Frame")
 Header.Name = "Header"
-Header.Size = UDim2.new(1, 0, 0, 48)
+Header.Size = UDim2.new(1, 0, 0, 52)
 Header.BackgroundColor3 = Theme.surface
 Header.BorderSizePixel = 0
 Header.Active = true
 Header.ZIndex = 2
 Header.Parent = Root
-corner(Header, 14)
+corner(Header, R)
 
 local HeaderFill = Instance.new("Frame")
-HeaderFill.Size = UDim2.new(1, 0, 0, 16)
-HeaderFill.Position = UDim2.new(0, 0, 1, -16)
+HeaderFill.Size = UDim2.new(1, 0, 0, 18)
+HeaderFill.Position = UDim2.new(0, 0, 1, -18)
 HeaderFill.BackgroundColor3 = Theme.surface
 HeaderFill.BorderSizePixel = 0
 HeaderFill.ZIndex = 2
 HeaderFill.Parent = Header
 
-local HeaderLine = Instance.new("Frame")
-HeaderLine.Size = UDim2.new(1, 0, 0, 1)
-HeaderLine.Position = UDim2.fromOffset(0, 47)
-HeaderLine.BackgroundColor3 = Theme.strokeSoft
-HeaderLine.BackgroundTransparency = 0.55
-HeaderLine.BorderSizePixel = 0
-HeaderLine.ZIndex = 3
-HeaderLine.Parent = Root
-
 local Title = mkLabel(Header, {
-	text = "Tallest Guild",
-	font = Enum.Font.GothamMedium,
-	size = 16,
+	text = "TALLEST GUILD",
+	font = Enum.Font.GothamBold,
+	size = 15,
 	color = Theme.text,
-	pos = UDim2.fromOffset(16, 8),
-	sizeU = UDim2.new(1, -100, 0, 20),
+	pos = UDim2.fromOffset(PAD, 10),
+	sizeU = UDim2.new(1, -100, 0, 18),
 	z = 4,
 })
 Title.Active = true
@@ -2056,7 +2051,7 @@ mkLabel(Header, {
 	font = Enum.Font.Gotham,
 	size = 11,
 	color = Theme.muted,
-	pos = UDim2.fromOffset(16, 28),
+	pos = UDim2.fromOffset(PAD, 30),
 	sizeU = UDim2.new(1, -100, 0, 14),
 	z = 4,
 })
@@ -2068,8 +2063,8 @@ mkLabel(Header, {
 	color = Theme.muted,
 	align = Enum.TextXAlignment.Right,
 	anchor = Vector2.new(1, 0.5),
-	pos = UDim2.new(1, -68, 0.5, 0),
-	sizeU = UDim2.fromOffset(36, 16),
+	pos = UDim2.new(1, -(PAD + 56), 0.5, 0),
+	sizeU = UDim2.fromOffset(34, 16),
 	z = 4,
 })
 
@@ -2077,16 +2072,18 @@ local function headerBtn(parent, text, xOff, fg)
 	local b = Instance.new("TextButton")
 	b.AnchorPoint = Vector2.new(1, 0.5)
 	b.Position = UDim2.new(1, xOff, 0.5, 0)
-	b.Size = UDim2.fromOffset(28, 28)
-	b.BackgroundTransparency = 1
+	b.Size = UDim2.fromOffset(26, 26)
+	b.BackgroundColor3 = Theme.card
 	b.BorderSizePixel = 0
 	b.Font = Enum.Font.GothamMedium
-	b.TextSize = 16
+	b.TextSize = 14
 	b.TextColor3 = fg or Theme.muted
 	b.Text = text
 	b.AutoButtonColor = false
 	b.ZIndex = 4
 	b.Parent = parent
+	corner(b, 7)
+	stroke(b, Theme.strokeSoft, 1, 0.45)
 	local base = fg or Theme.muted
 	b.MouseEnter:Connect(function()
 		b.TextColor3 = Theme.text
@@ -2097,44 +2094,45 @@ local function headerBtn(parent, text, xOff, fg)
 	return b
 end
 
-local MinBtn = headerBtn(Header, "–", -36)
-local CloseBtn = headerBtn(Header, "×", -8, Color3.fromRGB(190, 120, 120))
+local MinBtn = headerBtn(Header, "–", -(PAD + 28))
+local CloseBtn = headerBtn(Header, "×", -PAD, Color3.fromRGB(190, 120, 120))
 
+-- Content inset matches button inset (same PAD on all sides)
 local Body = Instance.new("Frame")
 Body.Name = "Body"
-Body.Position = UDim2.fromOffset(12, 54)
-Body.Size = UDim2.new(1, -24, 1, -106)
+Body.Position = UDim2.fromOffset(PAD, 52 + GAP)
+Body.Size = UDim2.new(1, -PAD * 2, 1, -(52 + GAP + 44 + PAD))
 Body.BackgroundTransparency = 1
 Body.ZIndex = 2
 Body.Parent = Root
 
 local Left = Instance.new("Frame")
-Left.Size = UDim2.new(0.48, -5, 1, 0)
+Left.Size = UDim2.new(0.5, -GAP / 2, 1, 0)
 Left.BackgroundTransparency = 1
 Left.Parent = Body
 
 local InvRow = Instance.new("Frame")
-InvRow.Size = UDim2.new(1, 0, 0, 46)
+InvRow.Size = UDim2.new(1, 0, 0, 48)
 InvRow.BackgroundTransparency = 1
 InvRow.Parent = Left
 
 local function invTile(parent, xScale, name)
 	local f = Instance.new("Frame")
-	f.Position = UDim2.fromScale(xScale, 0)
-	f.Size = UDim2.new(0.5, -4, 1, 0)
+	f.Position = UDim2.new(xScale, xScale > 0 and GAP / 2 or 0, 0, 0)
+	f.Size = UDim2.new(0.5, -GAP / 2, 1, 0)
 	f.BackgroundColor3 = Theme.card
 	f.BorderSizePixel = 0
 	f.Parent = parent
-	corner(f, 8)
-	stroke(f, Theme.strokeSoft, 1, 0.55)
+	corner(f, R_SM)
+	stroke(f, Theme.strokeSoft, 1, 0.5)
 	local value = mkLabel(f, {
 		text = "0",
-		font = Enum.Font.GothamMedium,
+		font = Enum.Font.GothamBold,
 		size = 16,
 		color = Theme.text,
 		align = Enum.TextXAlignment.Left,
-		pos = UDim2.fromOffset(10, 5),
-		sizeU = UDim2.new(1, -14, 0, 18),
+		pos = UDim2.fromOffset(10, 6),
+		sizeU = UDim2.new(1, -16, 0, 18),
 	})
 	local caption = mkLabel(f, {
 		text = name,
@@ -2142,8 +2140,8 @@ local function invTile(parent, xScale, name)
 		size = 10,
 		color = Theme.muted,
 		align = Enum.TextXAlignment.Left,
-		pos = UDim2.fromOffset(10, 24),
-		sizeU = UDim2.new(1, -14, 0, 14),
+		pos = UDim2.fromOffset(10, 26),
+		sizeU = UDim2.new(1, -16, 0, 14),
 		truncate = Enum.TextTruncate.AtEnd,
 	})
 	return value, caption
@@ -2153,14 +2151,14 @@ local SeedCountLabel, SeedCountCaption = invTile(InvRow, 0, "SEEDS LEFT")
 local SprinklerCountLabel, SprinklerCountCaption = invTile(InvRow, 0.5, "SPRINKLERS LEFT")
 
 local StatusRow = Instance.new("Frame")
-StatusRow.Position = UDim2.fromOffset(0, 52)
+StatusRow.Position = UDim2.fromOffset(0, 48 + GAP)
 StatusRow.Size = UDim2.new(1, 0, 0, 16)
 StatusRow.BackgroundTransparency = 1
 StatusRow.Parent = Left
 
 local StatusDot = Instance.new("Frame")
 StatusDot.Size = UDim2.fromOffset(6, 6)
-StatusDot.Position = UDim2.fromOffset(1, 5)
+StatusDot.Position = UDim2.fromOffset(2, 5)
 StatusDot.BackgroundColor3 = Theme.muted
 StatusDot.BorderSizePixel = 0
 StatusDot.Parent = StatusRow
@@ -2177,25 +2175,25 @@ local StatusLabel = mkLabel(StatusRow, {
 })
 
 local Progress = Instance.new("Frame")
-Progress.Position = UDim2.fromOffset(0, 72)
-Progress.Size = UDim2.new(1, 0, 0, 22)
+Progress.Position = UDim2.fromOffset(0, 48 + GAP + 16 + GAP)
+Progress.Size = UDim2.new(1, 0, 0, 24)
 Progress.BackgroundColor3 = Theme.card
 Progress.BorderSizePixel = 0
 Progress.Parent = Left
-corner(Progress, 6)
+corner(Progress, R_SM)
 
 local ProgressFill = Instance.new("Frame")
 ProgressFill.Size = UDim2.fromScale(0.12, 1)
-ProgressFill.BackgroundColor3 = Theme.accentDim
+ProgressFill.BackgroundColor3 = Theme.accent
 ProgressFill.BorderSizePixel = 0
 ProgressFill.Parent = Progress
-corner(ProgressFill, 6)
+corner(ProgressFill, R_SM)
 
 local ProgressLabel = mkLabel(Progress, {
 	text = "idle — 0 fired",
-	font = Enum.Font.GothamMedium,
+	font = Enum.Font.GothamBold,
 	size = 11,
-	color = Theme.text,
+	color = Color3.fromRGB(18, 24, 20),
 	align = Enum.TextXAlignment.Center,
 	sizeU = UDim2.fromScale(1, 1),
 	z = 2,
@@ -2206,20 +2204,22 @@ local PhaseLabel = mkLabel(Left, {
 	font = Enum.Font.Gotham,
 	size = 10,
 	color = Theme.muted,
-	pos = UDim2.fromOffset(0, 98),
+	pos = UDim2.fromOffset(0, 48 + GAP + 16 + GAP + 24 + 4),
 	sizeU = UDim2.new(1, 0, 0, 14),
 })
 
+local statsTop = 48 + GAP + 16 + GAP + 24 + 4 + 14 + GAP
 local StatsGrid = Instance.new("Frame")
-StatsGrid.Position = UDim2.fromOffset(0, 116)
-StatsGrid.Size = UDim2.new(1, 0, 0, 168)
+StatsGrid.Position = UDim2.fromOffset(0, statsTop)
+StatsGrid.Size = UDim2.new(1, 0, 1, -statsTop)
 StatsGrid.BackgroundTransparency = 1
 StatsGrid.Parent = Left
 
 local GridLayout = Instance.new("UIGridLayout")
-GridLayout.CellSize = UDim2.new(0.25, -4, 0.5, -4)
-GridLayout.CellPadding = UDim2.fromOffset(5, 5)
+GridLayout.CellSize = UDim2.new(0.25, -GAP * 0.75, 0.5, -GAP * 0.75)
+GridLayout.CellPadding = UDim2.fromOffset(GAP, GAP)
 GridLayout.SortOrder = Enum.SortOrder.LayoutOrder
+GridLayout.FillDirectionMaxCells = 4
 GridLayout.Parent = StatsGrid
 
 local StatValues = {}
@@ -2229,25 +2229,25 @@ local function addStat(order, key, caption, accent)
 	f.BorderSizePixel = 0
 	f.LayoutOrder = order
 	f.Parent = StatsGrid
-	corner(f, 8)
-	stroke(f, Theme.strokeSoft, 1, 0.6)
+	corner(f, R_SM)
+	stroke(f, Theme.strokeSoft, 1, 0.5)
 	local v = mkLabel(f, {
 		text = "0",
-		font = Enum.Font.GothamMedium,
+		font = Enum.Font.GothamBold,
 		size = 14,
 		color = accent and Theme.accent or Theme.text,
-		align = Enum.TextXAlignment.Left,
-		pos = UDim2.fromOffset(8, 10),
-		sizeU = UDim2.new(1, -12, 0, 18),
+		align = Enum.TextXAlignment.Center,
+		pos = UDim2.fromOffset(4, 10),
+		sizeU = UDim2.new(1, -8, 0, 18),
 	})
 	mkLabel(f, {
 		text = caption,
 		font = Enum.Font.Gotham,
 		size = 9,
 		color = Theme.muted,
-		align = Enum.TextXAlignment.Left,
-		pos = UDim2.fromOffset(8, 30),
-		sizeU = UDim2.new(1, -12, 0, 12),
+		align = Enum.TextXAlignment.Center,
+		pos = UDim2.fromOffset(4, 30),
+		sizeU = UDim2.new(1, -8, 0, 12),
 	})
 	StatValues[key] = v
 end
@@ -2262,17 +2262,17 @@ addStat(7, "sprinklers", "SPRINKLERS", false)
 addStat(8, "inPlot", "IN PLOT", false)
 
 local Right = Instance.new("Frame")
-Right.Position = UDim2.new(0.48, 5, 0, 0)
-Right.Size = UDim2.new(0.52, -5, 1, 0)
+Right.Position = UDim2.new(0.5, GAP / 2, 0, 0)
+Right.Size = UDim2.new(0.5, -GAP / 2, 1, 0)
 Right.BackgroundColor3 = Theme.surface
 Right.BorderSizePixel = 0
 Right.Parent = Body
-corner(Right, 10)
-stroke(Right, Theme.strokeSoft, 1, 0.55)
+corner(Right, R_SM)
+stroke(Right, Theme.strokeSoft, 1, 0.45)
 
 local Scroll = Instance.new("ScrollingFrame")
-Scroll.Position = UDim2.fromOffset(8, 8)
-Scroll.Size = UDim2.new(1, -16, 1, -16)
+Scroll.Position = UDim2.fromOffset(GAP, GAP)
+Scroll.Size = UDim2.new(1, -GAP * 2, 1, -GAP * 2)
 Scroll.BackgroundTransparency = 1
 Scroll.BorderSizePixel = 0
 Scroll.ScrollBarThickness = 3
@@ -2282,10 +2282,10 @@ Scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 Scroll.Parent = Right
 
 local List = Instance.new("UIListLayout")
-List.Padding = UDim.new(0, 5)
+List.Padding = UDim.new(0, GAP - 2)
 List.SortOrder = Enum.SortOrder.LayoutOrder
 List.Parent = Scroll
-pad(Scroll, 2, 6, 2, 4)
+pad(Scroll, 2, 4, 2, 4)
 
 local function section(text, order)
 	local f = Instance.new("Frame")
@@ -2293,13 +2293,20 @@ local function section(text, order)
 	f.Size = UDim2.new(1, 0, 0, 16)
 	f.LayoutOrder = order
 	f.Parent = Scroll
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.fromOffset(2, 11)
+	bar.Position = UDim2.fromOffset(0, 2)
+	bar.BackgroundColor3 = Theme.accent
+	bar.BorderSizePixel = 0
+	bar.Parent = f
+	corner(bar, 1)
 	mkLabel(f, {
 		text = string.upper(text),
-		font = Enum.Font.GothamMedium,
+		font = Enum.Font.GothamBold,
 		size = 10,
-		color = Theme.muted,
-		pos = UDim2.fromOffset(2, 0),
-		sizeU = UDim2.new(1, -2, 1, 0),
+		color = Theme.label,
+		pos = UDim2.fromOffset(8, 0),
+		sizeU = UDim2.new(1, -8, 1, 0),
 	})
 	return f
 end
@@ -2346,9 +2353,9 @@ local function makeToggle(order, text, get, set)
 	corner(knob, 7)
 	local function paint()
 		local on = get()
-		track.BackgroundColor3 = on and Theme.accentDim or Theme.cardSoft
+		track.BackgroundColor3 = on and Theme.accent or Theme.cardSoft
 		knob.Position = on and UDim2.fromOffset(19, 3) or UDim2.fromOffset(3, 3)
-		knob.BackgroundColor3 = on and Theme.text or Color3.fromRGB(180, 190, 182)
+		knob.BackgroundColor3 = on and Color3.fromRGB(16, 22, 18) or Color3.fromRGB(190, 198, 192)
 	end
 	paint()
 	track.MouseButton1Click:Connect(function()
@@ -2374,8 +2381,8 @@ local function makeNumber(order, text, get, set)
 	box.Text = tostring(get())
 	box.BorderSizePixel = 0
 	box.Parent = f
-	corner(box, 6)
-	stroke(box, Theme.strokeSoft, 1, 0.5)
+	corner(box, R_SM)
+	stroke(box, Theme.strokeSoft, 1, 0.45)
 	box.FocusLost:Connect(function()
 		local n = tonumber(box.Text)
 		if n then
@@ -2409,7 +2416,7 @@ local function makeDropdown(order, text, optionsFn, get, set, opts)
 	btn.BorderSizePixel = 0
 	btn.AutoButtonColor = false
 	btn.Parent = f
-	corner(btn, 7)
+	corner(btn, R_SM)
 	stroke(btn, Theme.strokeSoft, 1, 0.35)
 	pad(btn, 0, 0, 8, 20)
 
@@ -2469,7 +2476,7 @@ local function makeDropdown(order, text, optionsFn, get, set, opts)
 		menu.BorderSizePixel = 0
 		menu.ZIndex = 50
 		menu.Parent = Gui
-		corner(menu, 8)
+		corner(menu, R_SM)
 		stroke(menu, Theme.stroke, 1, 0.1)
 
 		local abs = btn.AbsolutePosition
@@ -2508,7 +2515,7 @@ local function makeDropdown(order, text, optionsFn, get, set, opts)
 			item.ZIndex = 52
 			item.AutoButtonColor = true
 			item.Parent = scroll
-			corner(item, 6)
+			corner(item, R_SM)
 			item.MouseButton1Click:Connect(function()
 				set(choice.value)
 				refresh()
@@ -2589,7 +2596,7 @@ local function makeTextInput(order, text, get, set, placeholder)
 	box.Text = get() or ""
 	box.BorderSizePixel = 0
 	box.Parent = f
-	corner(box, 7)
+	corner(box, R_SM)
 	stroke(box, Theme.strokeSoft, 1, 0.35)
 	box.FocusLost:Connect(function()
 		set(box.Text)
@@ -2764,35 +2771,54 @@ makeButton(25, "TEST WEBHOOK", Color3.fromRGB(48, 72, 96), function()
 	end)
 end)
 
--- Footer (tight — no dead gap under panels)
+-- Footer — same horizontal PAD as Body
 local Footer = Instance.new("Frame")
 Footer.AnchorPoint = Vector2.new(0, 1)
-Footer.Position = UDim2.new(0, 12, 1, -10)
-Footer.Size = UDim2.new(1, -24, 0, 40)
+Footer.Position = UDim2.new(0, PAD, 1, -PAD)
+Footer.Size = UDim2.new(1, -PAD * 2, 0, 36)
 Footer.BackgroundTransparency = 1
 Footer.Parent = Root
 
 local HuntBtn = Instance.new("TextButton")
-HuntBtn.Size = UDim2.new(1, 0, 0, 34)
+HuntBtn.Size = UDim2.fromScale(1, 1)
 HuntBtn.BackgroundColor3 = Theme.start
-HuntBtn.Font = Enum.Font.GothamMedium
+HuntBtn.Font = Enum.Font.GothamBold
 HuntBtn.TextSize = 13
 HuntBtn.TextColor3 = Theme.text
-HuntBtn.Text = "Start hunt"
+HuntBtn.Text = "START HUNT"
 HuntBtn.BorderSizePixel = 0
 HuntBtn.AutoButtonColor = false
 HuntBtn.Parent = Footer
-corner(HuntBtn, 8)
+corner(HuntBtn, R_SM)
+
+local Hint = mkLabel(Gui, {
+	text = "RightShift hide/show  |  X shut down",
+	font = Enum.Font.Gotham,
+	size = 11,
+	color = Color3.fromRGB(210, 220, 212),
+	align = Enum.TextXAlignment.Center,
+	sizeU = UDim2.fromOffset(ROOT_W, 16),
+})
+Hint.BackgroundTransparency = 1
+
+local function syncHint()
+	Hint.Position = UDim2.fromOffset(
+		Root.AbsolutePosition.X - Gui.AbsolutePosition.X,
+		Root.AbsolutePosition.Y - Gui.AbsolutePosition.Y + Root.AbsoluteSize.Y + 8
+	)
+	Hint.Visible = Root.Visible and not State.Minimized
+end
 
 local function refreshHuntBtn()
 	if State.Running then
-		HuntBtn.Text = "Stop hunt"
+		HuntBtn.Text = "STOP HUNT"
 		HuntBtn.BackgroundColor3 = Theme.stop
 	else
-		HuntBtn.Text = "Start hunt"
+		HuntBtn.Text = "START HUNT"
 		HuntBtn.BackgroundColor3 = Theme.start
 	end
 end
+
 
 State.UI = {
 	StatusLabel = StatusLabel,
@@ -2804,14 +2830,13 @@ local function applyMinimized()
 	if State.Minimized then
 		Body.Visible = false
 		Footer.Visible = false
-		HeaderLine.Visible = false
 		Root.Size = UDim2.fromOffset(ROOT_W, ROOT_H_MIN)
 	else
 		Body.Visible = true
 		Footer.Visible = true
-		HeaderLine.Visible = true
 		Root.Size = UDim2.fromOffset(ROOT_W, ROOT_H)
 	end
+	syncHint()
 end
 
 HuntBtn.MouseButton1Click:Connect(function()
