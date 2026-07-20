@@ -2096,14 +2096,16 @@ local CloseBtn = headerBtn("×", -PAD, Color3.fromRGB(210, 130, 130))
 local Body = Instance.new("Frame")
 Body.Name = "Body"
 Body.Position = UDim2.fromOffset(PAD, 54)
-Body.Size = UDim2.new(1, -PAD * 2, 1, -(54 + 48 + PAD))
+Body.Size = UDim2.new(1, -PAD * 2, 1, -(54 + PAD + 44 + PAD))
 Body.BackgroundTransparency = 1
+Body.ClipsDescendants = true
 Body.ZIndex = 2
 Body.Parent = Root
 
 local Left = Instance.new("Frame")
 Left.Size = UDim2.new(0.5, -GAP / 2, 1, 0)
 Left.BackgroundTransparency = 1
+Left.ClipsDescendants = true
 Left.Parent = Body
 
 local InvRow = Instance.new("Frame")
@@ -2207,51 +2209,61 @@ local StatsGrid = Instance.new("Frame")
 StatsGrid.Position = UDim2.fromOffset(0, statsTop)
 StatsGrid.Size = UDim2.new(1, 0, 1, -statsTop)
 StatsGrid.BackgroundTransparency = 1
+StatsGrid.ClipsDescendants = true
 StatsGrid.Parent = Left
 
-local GridLayout = Instance.new("UIGridLayout")
-GridLayout.CellSize = UDim2.new(0.25, -GAP * 0.75, 0.5, -GAP * 0.75)
-GridLayout.CellPadding = UDim2.fromOffset(GAP, GAP)
-GridLayout.SortOrder = Enum.SortOrder.LayoutOrder
-GridLayout.FillDirectionMaxCells = 4
-GridLayout.Parent = StatsGrid
-
 local StatValues = {}
-local function addStat(order, key, caption, accent)
-	local f = mkCard(StatsGrid, {
-		strokeColor = Theme.stroke,
-		strokeT = 0.55,
-	})
-	f.LayoutOrder = order
-	local v = mkLabel(f, {
-		text = "0",
-		font = Enum.Font.GothamBold,
-		size = 15,
-		color = accent and Theme.accent or Theme.text,
-		align = Enum.TextXAlignment.Center,
-		pos = UDim2.fromOffset(4, 12),
-		sizeU = UDim2.new(1, -8, 0, 20),
-	})
-	mkLabel(f, {
-		text = caption,
-		font = Enum.Font.GothamMedium,
-		size = 9,
-		color = Theme.muted,
-		align = Enum.TextXAlignment.Center,
-		pos = UDim2.fromOffset(4, 34),
-		sizeU = UDim2.new(1, -8, 0, 12),
-	})
-	StatValues[key] = v
+local function addStatRow(rowIndex, items)
+	local row = Instance.new("Frame")
+	row.BackgroundTransparency = 1
+	row.Size = UDim2.new(1, 0, 0.5, -GAP / 2)
+	row.Position = UDim2.new(0, 0, rowIndex * 0.5, rowIndex > 0 and GAP / 2 or 0)
+	row.Parent = StatsGrid
+
+	local n = #items
+	for i, item in ipairs(items) do
+		local f = Instance.new("Frame")
+		f.BackgroundColor3 = Theme.card
+		f.BorderSizePixel = 0
+		f.Size = UDim2.new(1 / n, -GAP * (n - 1) / n, 1, 0)
+		f.Position = UDim2.new((i - 1) / n, (i - 1) * GAP / n, 0, 0)
+		f.Parent = row
+		corner(f, R_SM)
+		stroke(f, Theme.stroke, 1, 0.55)
+		local v = mkLabel(f, {
+			text = "0",
+			font = Enum.Font.GothamBold,
+			size = 15,
+			color = item.accent and Theme.accent or Theme.text,
+			align = Enum.TextXAlignment.Center,
+			pos = UDim2.fromOffset(4, 12),
+			sizeU = UDim2.new(1, -8, 0, 20),
+		})
+		mkLabel(f, {
+			text = item.caption,
+			font = Enum.Font.GothamMedium,
+			size = 9,
+			color = Theme.muted,
+			align = Enum.TextXAlignment.Center,
+			pos = UDim2.fromOffset(4, 34),
+			sizeU = UDim2.new(1, -8, 0, 12),
+		})
+		StatValues[item.key] = v
+	end
 end
 
-addStat(1, "best", "BEST HEIGHT", true)
-addStat(2, "keepers", "KEEPERS", true)
-addStat(3, "removed", "REMOVED", false)
-addStat(4, "cycles", "CYCLES", false)
-addStat(5, "elapsed", "ELAPSED", false)
-addStat(6, "planted", "PLANTED", false)
-addStat(7, "sprinklers", "SPRINKLERS", false)
-addStat(8, "inPlot", "IN PLOT", false)
+addStatRow(0, {
+	{ key = "best", caption = "BEST HEIGHT", accent = true },
+	{ key = "keepers", caption = "KEEPERS", accent = true },
+	{ key = "removed", caption = "REMOVED" },
+	{ key = "cycles", caption = "CYCLES" },
+})
+addStatRow(1, {
+	{ key = "elapsed", caption = "ELAPSED" },
+	{ key = "planted", caption = "PLANTED" },
+	{ key = "sprinklers", caption = "SPRINKLERS" },
+	{ key = "inPlot", caption = "IN PLOT" },
+})
 
 local Right = mkCard(Body, {
 	pos = UDim2.new(0.5, GAP / 2, 0, 0),
