@@ -89,7 +89,7 @@ local State = {
 	EspFolder = nil,
 	EspLabels = {}, -- plant Name -> BillboardGui
 	EspCache = {}, -- plant Name -> { ft, at }
-	Stats = { planted = 0, shoveled = 0, claimed = 0, keepers = 0, sprinklers = 0, bestFt = 0, cycles = 0 },
+	Stats = { planted = 0, shoveled = 0, claimed = 0, removed = 0, keepers = 0, sprinklers = 0, bestFt = 0, cycles = 0 },
 	StartedAt = nil,
 	Minimized = false,
 	UI = nil, -- live widgets filled by buildUI
@@ -245,27 +245,41 @@ local function getEquippedTool()
 end
 
 local function findSeedTool(preferred)
+	preferred = preferred or Settings.SeedFilter
+	local locked = preferred and preferred ~= ""
+
 	local function scan(container)
 		if not container then
 			return nil
 		end
-		if preferred and preferred ~= "" then
+		if locked then
 			for _, t in ipairs(container:GetChildren()) do
 				if t:IsA("Tool") and t:GetAttribute("SeedTool") == preferred then
+					local count = t:GetAttribute("Count")
+					if type(count) ~= "number" or count > 0 then
+						return t
+					end
+				end
+			end
+			return nil -- never fall back to a different seed when one is picked
+		end
+		for _, t in ipairs(container:GetChildren()) do
+			if t:IsA("Tool") and t:GetAttribute("SeedTool") then
+				local count = t:GetAttribute("Count")
+				if type(count) ~= "number" or count > 0 then
 					return t
 				end
 			end
 		end
-		for _, t in ipairs(container:GetChildren()) do
-			if t:IsA("Tool") and t:GetAttribute("SeedTool") then
-				return t
-			end
-		end
 		return nil
 	end
+
 	local eq = getEquippedTool()
 	if eq and eq:GetAttribute("SeedTool") then
-		if not preferred or preferred == "" or eq:GetAttribute("SeedTool") == preferred then
+		local seed = eq:GetAttribute("SeedTool")
+		local count = eq:GetAttribute("Count")
+		local hasCount = type(count) ~= "number" or count > 0
+		if hasCount and ((locked and seed == preferred) or not locked) then
 			return eq
 		end
 	end
@@ -870,6 +884,51 @@ local function shouldHuntPlant(plant)
 	return true
 end
 
+local function bumpRemoved()
+	State.Stats.removed = (State.Stats.removed or 0) + 1
+end
+
+local function shouldRemovePlant(plant, opts)
+	opts = opts or {}
+	if not plant or not plant.Parent then
+		return false
+	end
+	if plantIsGrowing(plant) then
+		return false
+	end
+	local h = getPlantFeet(plant, { fresh = true })
+	if type(h) == "number" and h >= Settings.TargetHeight then
+		markKeeper(plant, h)
+		return false
+	end
+	if isKeeper(plant) then
+		return false
+	end
+	if opts.waveOnly and not opts.waveOnly[plant.Name] then
+		return false
+	end
+	if opts.speciesOnly and plant:GetAttribute("SeedName") ~= opts.speciesOnly then
+		return false
+	end
+	if not opts.force and not shouldHuntPlant(plant) then
+		return false
+	end
+	-- Wave shorts: if it was in this plant wave and isn't a keeper, remove it
+	if opts.waveOnly and opts.waveOnly[plant.Name] then
+		return true
+	end
+	if (not h or h <= 0) and not opts.force and not Settings.DeleteAllPlants then
+		local attrH = plant:GetAttribute("Height")
+		if type(attrH) ~= "number" then
+			local filter = Settings.SeedFilter
+			if filter == "" and not Settings.DeleteAllPlants then
+				return false
+			end
+		end
+	end
+	return true
+end
+
 ------------------------------------------------------------------------
 -- Actions
 ------------------------------------------------------------------------
@@ -922,6 +981,7 @@ local function shovelPlant(plant)
 	end
 
 	State.Stats.shoveled += 1
+	bumpRemoved()
 	return true
 end
 
@@ -931,49 +991,72 @@ local function clearUnqualified(opts)
 	if not folder then
 		return 0
 	end
-	-- Re-measure before shoveling so tall bamboo isn't misread as short
 	scanAndMarkKeepers()
 	local shovel = findShovel()
 	if shovel and shovel.Parent ~= LocalPlayer.Character then
 		equipTool(shovel)
 	end
-	local removed = 0
-	for _, plant in ipairs(folder:GetChildren()) do
+	local maxPasses = opts.passes or (opts.waveOnly and 6 or 3)
+	local totalRemoved = 0
+	for _pass = 1, maxPasses do
 		if not State.Running and not State.Purging then
 			break
 		end
-		if plantIsGrowing(plant) then
-			continue
+		local removed = 0
+		for _, plant in ipairs(folder:GetChildren()) do
+			if not State.Running and not State.Purging then
+				break
+			end
+			if shouldRemovePlant(plant, opts) and shovelPlant(plant) then
+				removed += 1
+			end
 		end
-		local h = getPlantFeet(plant, { fresh = true })
-		if type(h) == "number" and h >= Settings.TargetHeight then
-			markKeeper(plant, h)
-			continue
+		totalRemoved += removed
+		if removed == 0 then
+			break
 		end
-		if isKeeper(plant) then
-			continue
-		end
-		if opts.speciesOnly and plant:GetAttribute("SeedName") ~= opts.speciesOnly then
-			continue
-		end
-		if not opts.force and not shouldHuntPlant(plant) then
-			continue
-		end
-		-- Trees use Height attr; bamboo uses measured ft via getPlantFeet
-		if (not h or h <= 0) and not opts.force and not Settings.DeleteAllPlants then
-			local attrH = plant:GetAttribute("Height")
-			if type(attrH) ~= "number" then
-				local filter = Settings.SeedFilter
-				if filter == "" and not Settings.DeleteAllPlants then
-					continue
+		task.wait(0.12)
+	end
+	return totalRemoved
+end
+
+local function waitForWaveReady(trackedNames, timeout)
+	timeout = timeout or 10
+	local deadline = os.clock() + timeout
+	while State.Running and os.clock() < deadline do
+		local folder = getPlantsFolder()
+		local growing = 0
+		if folder then
+			for name in pairs(trackedNames) do
+				local p = folder:FindFirstChild(name)
+				if p and plantIsGrowing(p) then
+					growing += 1
 				end
 			end
 		end
-		if shovelPlant(plant) then
-			removed += 1
+		if growing == 0 then
+			return true
 		end
+		setStatus(string.format("Waiting for wave to finish growing… %d left", growing))
+		task.wait(0.25)
 	end
-	return removed
+	return false
+end
+
+local function clearWaveShorts(trackedNames)
+	if not trackedNames then
+		return 0
+	end
+	local n = 0
+	for _ in pairs(trackedNames) do
+		n += 1
+	end
+	if n == 0 then
+		return 0
+	end
+	waitForWaveReady(trackedNames, 12)
+	scanAndMarkKeepers()
+	return clearUnqualified({ waveOnly = trackedNames, passes = 8 })
 end
 
 local function collectPlant(plant)
@@ -1008,6 +1091,7 @@ local function collectPlant(plant)
 			if fruitId then
 				Networking.Garden.CollectFruit:Fire(plantId, fruitId)
 				State.Stats.claimed += 1
+				bumpRemoved()
 				any = true
 			end
 		end
@@ -1018,6 +1102,7 @@ local function collectPlant(plant)
 	-- Bamboo / single-crop style: harvest the plant itself
 	Networking.Garden.CollectFruit:Fire(plantId, "")
 	State.Stats.claimed += 1
+	bumpRemoved()
 	return true
 end
 
@@ -1463,6 +1548,8 @@ local function plantNameSet()
 end
 
 local function outOfSeeds()
+	-- If a seed is selected in the dropdown, only that seed counts.
+	-- Running out of it must stop the farm — never swap to another seed.
 	local tool = findSeedTool(Settings.SeedFilter)
 	if not tool then
 		return true
@@ -1472,6 +1559,15 @@ local function outOfSeeds()
 		return count <= 0
 	end
 	return false
+end
+
+local function selectedSeedLabel()
+	local filter = Settings.SeedFilter
+	if filter and filter ~= "" then
+		return filter
+	end
+	local tool = findSeedTool("")
+	return (tool and tool:GetAttribute("SeedTool")) or "seeds"
 end
 
 local function doAutoSell()
@@ -1512,12 +1608,10 @@ local function finishAndStop(reason)
 end
 
 local function runBatchLoop()
-	State.BatchId += 1
-	State.Stats.cycles += 1
 	setStatus("Batch mode started")
 	while State.Running do
 		if outOfSeeds() then
-			finishAndStop("Out of seeds — cleared leftovers, stopped")
+			finishAndStop("Out of " .. selectedSeedLabel() .. " — stopped")
 			return
 		end
 		doAutoSell()
@@ -1551,7 +1645,7 @@ local function runBatchLoop()
 		local planted, seedOrErr = plantWave(target)
 		if planted == 0 then
 			if seedOrErr == "No seed tool" or outOfSeeds() then
-				finishAndStop("Out of seeds — stopped")
+				finishAndStop("Out of " .. selectedSeedLabel() .. " — stopped")
 				return
 			end
 			if seedOrErr == "no sprinkler" or seedOrErr == "no sprinkler tool" or seedOrErr == "no sprinkler on plot" then
@@ -1581,7 +1675,11 @@ local function runBatchLoop()
 		waitForBatchGrowth(tracked, Settings.BatchClearCap)
 
 		setStatus(string.format("Wave grown — shoveling shorts (%d planted)…", appeared))
-		clearUnqualified()
+		local removed = clearWaveShorts(tracked)
+		setStatus(string.format("Shoveled %d shorts from wave", removed))
+
+		State.BatchId += 1
+		State.Stats.cycles += 1
 
 		if State.FoundKeeper and Settings.StopWhenFound then
 			finishAndStop("Keeper found — cleared junk, stopped")
@@ -1595,10 +1693,6 @@ end
 local function runContinuousLoop()
 	setStatus("Continuous mode (claim crops — no shovel)")
 	while State.Running do
-		if outOfSeeds() and not getPlantsFolder() then
-			finishAndStop("Out of seeds — stopped")
-			return
-		end
 		doAutoSell()
 
 		-- Claim / harvest first (never touch keepers / tall bamboo)
@@ -1624,38 +1718,11 @@ local function runContinuousLoop()
 			end
 		end
 
-		-- Place / require sprinkler only right before planting
-		if not outOfSeeds() then
-			if Settings.AutoSprinkler then
-				if not hasLiveSprinkler() then
-					setStatus("Placing sprinkler for planting…")
-					local ok, err = requireSprinklerForPlanting()
-					if not ok then
-						setStatus("Waiting for sprinkler… (" .. tostring(err) .. ")")
-						task.wait(1.25)
-						continue
-					end
-				end
-			elseif Settings.PlantInSprinklerRadiusOnly and not hasLiveSprinkler() then
-				setStatus("No sprinkler on plot — can't plant yet")
-				task.wait(1.25)
-				continue
-			end
-
-			if (Settings.AutoSprinkler or Settings.PlantInSprinklerRadiusOnly) and not hasLiveSprinkler() then
-				setStatus("Sprinkler missing — not planting")
-				task.wait(0.5)
-				continue
-			end
-			local planted = plantWave(Settings.MaxPerBatch)
-			if planted > 0 then
-				setStatus(string.format("Continuous — planted %d in radius…", planted))
-			else
-				setStatus("Continuous — claiming…")
-			end
-		else
-			setStatus("Continuous — out of seeds, claiming leftovers…")
+		-- Selected seed gone → claim leftovers of that seed, then stop (never swap seeds)
+		if outOfSeeds() then
+			setStatus("Out of " .. selectedSeedLabel() .. " — claiming leftovers…")
 			local anyGrowing = false
+			folder = getPlantsFolder()
 			if folder then
 				for _, plant in ipairs(folder:GetChildren()) do
 					local filter = Settings.SeedFilter
@@ -1674,11 +1741,48 @@ local function runContinuousLoop()
 				end
 			end
 			if not anyGrowing then
-				finishAndStop("Out of seeds — finished claims, stopped")
+				finishAndStop("Out of " .. selectedSeedLabel() .. " — stopped")
 				return
 			end
+			task.wait(0.35)
+			State.Stats.cycles += 1
+			continue
+		end
+
+		-- Place / require sprinkler only right before planting
+		if Settings.AutoSprinkler then
+			if not hasLiveSprinkler() then
+				setStatus("Placing sprinkler for planting…")
+				local ok, err = requireSprinklerForPlanting()
+				if not ok then
+					setStatus("Waiting for sprinkler… (" .. tostring(err) .. ")")
+					task.wait(1.25)
+					continue
+				end
+			end
+		elseif Settings.PlantInSprinklerRadiusOnly and not hasLiveSprinkler() then
+			setStatus("No sprinkler on plot — can't plant yet")
+			task.wait(1.25)
+			continue
+		end
+
+		if (Settings.AutoSprinkler or Settings.PlantInSprinklerRadiusOnly) and not hasLiveSprinkler() then
+			setStatus("Sprinkler missing — not planting")
+			task.wait(0.5)
+			continue
+		end
+		local planted = plantWave(Settings.MaxPerBatch)
+		if planted > 0 then
+			setStatus(string.format("Continuous — planted %d in radius…", planted))
+		else
+			if outOfSeeds() then
+				finishAndStop("Out of " .. selectedSeedLabel() .. " — stopped")
+				return
+			end
+			setStatus("Continuous — claiming…")
 		end
 		task.wait(0.2)
+		State.Stats.cycles += 1
 	end
 end
 
@@ -1693,6 +1797,16 @@ local function startFarm()
 	State.Running = true
 	State.FoundKeeper = false
 	State.StartedAt = os.clock()
+	State.Stats = {
+		planted = 0,
+		shoveled = 0,
+		claimed = 0,
+		removed = 0,
+		keepers = State.Stats.keepers or 0,
+		sprinklers = 0,
+		bestFt = State.Stats.bestFt or 0,
+		cycles = 0,
+	}
 	scanAndMarkKeepers()
 	setStatus("hunting…")
 	task.spawn(function()
@@ -1802,29 +1916,34 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------------------
--- UI  (tallest-guild style: stats left, settings right)
+-- UI
 ------------------------------------------------------------------------
 local Theme = {
-	bg = Color3.fromRGB(14, 16, 15),
-	panel = Color3.fromRGB(18, 22, 19),
-	card = Color3.fromRGB(22, 28, 24),
-	cardSoft = Color3.fromRGB(26, 34, 29),
-	stroke = Color3.fromRGB(48, 68, 54),
-	strokeSoft = Color3.fromRGB(38, 52, 42),
-	accent = Color3.fromRGB(78, 188, 98),
-	accentDim = Color3.fromRGB(42, 110, 62),
-	text = Color3.fromRGB(236, 242, 236),
-	muted = Color3.fromRGB(130, 148, 136),
-	label = Color3.fromRGB(188, 204, 192),
-	warn = Color3.fromRGB(255, 186, 55),
-	stop = Color3.fromRGB(168, 52, 48),
-	start = Color3.fromRGB(48, 128, 72),
-	input = Color3.fromRGB(16, 20, 17),
+	bg = Color3.fromRGB(8, 10, 9),
+	surface = Color3.fromRGB(14, 18, 15),
+	panel = Color3.fromRGB(18, 24, 20),
+	card = Color3.fromRGB(22, 30, 25),
+	cardSoft = Color3.fromRGB(28, 38, 32),
+	elevated = Color3.fromRGB(34, 46, 38),
+	stroke = Color3.fromRGB(52, 76, 60),
+	strokeSoft = Color3.fromRGB(40, 58, 48),
+	strokeGlow = Color3.fromRGB(72, 200, 110),
+	accent = Color3.fromRGB(58, 210, 108),
+	accentDim = Color3.fromRGB(36, 120, 72),
+	accentDeep = Color3.fromRGB(24, 80, 50),
+	text = Color3.fromRGB(248, 252, 249),
+	label = Color3.fromRGB(196, 212, 200),
+	muted = Color3.fromRGB(118, 138, 126),
+	warn = Color3.fromRGB(255, 196, 72),
+	stop = Color3.fromRGB(220, 68, 68),
+	start = Color3.fromRGB(42, 168, 96),
+	input = Color3.fromRGB(11, 15, 12),
+	shadow = Color3.fromRGB(0, 0, 0),
 }
 
 local function corner(parent, r)
 	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, r or 8)
+	c.CornerRadius = UDim.new(0, r or 12)
 	c.Parent = parent
 	return c
 end
@@ -1843,9 +1962,21 @@ local function stroke(parent, color, thickness, transparency)
 	local s = Instance.new("UIStroke")
 	s.Color = color or Theme.stroke
 	s.Thickness = thickness or 1
-	s.Transparency = transparency ~= nil and transparency or 0.25
+	s.Transparency = transparency ~= nil and transparency or 0.3
+	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
 	s.Parent = parent
 	return s
+end
+
+local function gradient(parent, c0, c1, rotation)
+	local g = Instance.new("UIGradient")
+	g.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, c0),
+		ColorSequenceKeypoint.new(1, c1),
+	})
+	g.Rotation = rotation or 90
+	g.Parent = parent
+	return g
 end
 
 local function mkLabel(parent, props)
@@ -1879,39 +2010,66 @@ Gui.ResetOnSpawn = false
 Gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 Gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
+local Shadow = Instance.new("Frame")
+Shadow.Name = "Shadow"
+Shadow.Size = UDim2.fromOffset(748, 498)
+Shadow.Position = UDim2.new(0, 14, 0.5, -229)
+Shadow.BackgroundColor3 = Theme.shadow
+Shadow.BackgroundTransparency = 0.55
+Shadow.BorderSizePixel = 0
+Shadow.ZIndex = 0
+Shadow.Parent = Gui
+corner(Shadow, 20)
+
 local Root = Instance.new("Frame")
 Root.Name = "Root"
-Root.Size = UDim2.fromOffset(720, 470)
-Root.Position = UDim2.new(0, 18, 0.5, -235)
+Root.Size = UDim2.fromOffset(740, 490)
+Root.Position = UDim2.new(0, 18, 0.5, -245)
 Root.BackgroundColor3 = Theme.bg
 Root.BorderSizePixel = 0
 Root.ClipsDescendants = true
+Root.ZIndex = 1
 Root.Parent = Gui
-corner(Root, 14)
-stroke(Root, Theme.stroke, 1.2, 0.15)
+corner(Root, 18)
+stroke(Root, Theme.strokeGlow, 1.4, 0.55)
+gradient(Root, Theme.surface, Theme.bg, 160)
+
+local AccentLine = Instance.new("Frame")
+AccentLine.Size = UDim2.new(1, 0, 0, 3)
+AccentLine.BackgroundColor3 = Theme.accent
+AccentLine.BorderSizePixel = 0
+AccentLine.ZIndex = 2
+AccentLine.Parent = Root
+gradient(AccentLine, Theme.accent, Theme.accentDeep, 0)
 
 -- Header
 local Header = Instance.new("Frame")
 Header.Name = "Header"
-Header.Size = UDim2.new(1, 0, 0, 52)
+Header.Size = UDim2.new(1, 0, 0, 58)
+Header.Position = UDim2.fromOffset(0, 3)
 Header.BackgroundColor3 = Theme.panel
+Header.BackgroundTransparency = 0.15
 Header.BorderSizePixel = 0
 Header.Active = true
+Header.ZIndex = 2
 Header.Parent = Root
+gradient(Header, Theme.panel, Theme.surface, 90)
 
 local Logo = Instance.new("Frame")
-Logo.Size = UDim2.fromOffset(30, 30)
-Logo.Position = UDim2.fromOffset(14, 11)
-Logo.BackgroundColor3 = Theme.accentDim
+Logo.Size = UDim2.fromOffset(36, 36)
+Logo.Position = UDim2.fromOffset(16, 11)
+Logo.BackgroundColor3 = Theme.accentDeep
 Logo.BorderSizePixel = 0
+Logo.ZIndex = 3
 Logo.Parent = Header
-corner(Logo, 8)
-stroke(Logo, Theme.accent, 1, 0.35)
+corner(Logo, 12)
+stroke(Logo, Theme.accent, 1.2, 0.2)
+gradient(Logo, Theme.accentDim, Theme.accentDeep, 135)
 mkLabel(Logo, {
 	text = "TG",
 	font = Enum.Font.GothamBold,
-	size = 11,
-	color = Theme.accent,
+	size = 13,
+	color = Theme.text,
 	align = Enum.TextXAlignment.Center,
 	sizeU = UDim2.fromScale(1, 1),
 })
@@ -1919,31 +2077,33 @@ mkLabel(Logo, {
 local Title = mkLabel(Header, {
 	text = "TALLEST GUILD",
 	font = Enum.Font.GothamBold,
-	size = 16,
+	size = 17,
 	color = Theme.text,
-	pos = UDim2.fromOffset(54, 8),
-	sizeU = UDim2.new(1, -180, 0, 20),
+	pos = UDim2.fromOffset(62, 10),
+	sizeU = UDim2.new(1, -190, 0, 22),
 })
 Title.Active = true
 
 mkLabel(Header, {
-	text = "height hunt · grow a garden 2",
-	font = Enum.Font.Gotham,
+	text = "height hunt  ·  grow a garden 2",
+	font = Enum.Font.GothamMedium,
 	size = 11,
 	color = Theme.muted,
-	pos = UDim2.fromOffset(54, 28),
-	sizeU = UDim2.new(1, -180, 0, 16),
+	pos = UDim2.fromOffset(62, 32),
+	sizeU = UDim2.new(1, -190, 0, 16),
 })
 
 local Ver = Instance.new("Frame")
 Ver.AnchorPoint = Vector2.new(1, 0.5)
-Ver.Position = UDim2.new(1, -108, 0.5, 0)
-Ver.Size = UDim2.fromOffset(40, 22)
+Ver.Position = UDim2.new(1, -114, 0.5, 0)
+Ver.Size = UDim2.fromOffset(44, 24)
 Ver.BackgroundColor3 = Theme.card
 Ver.BorderSizePixel = 0
+Ver.ZIndex = 3
 Ver.Parent = Header
-corner(Ver, 7)
-stroke(Ver, Theme.strokeSoft, 1, 0.3)
+corner(Ver, 10)
+stroke(Ver, Theme.strokeSoft, 1, 0.4)
+gradient(Ver, Theme.cardSoft, Theme.card, 90)
 mkLabel(Ver, {
 	text = "v1.1",
 	font = Enum.Font.GothamMedium,
@@ -1957,29 +2117,37 @@ local function roundBtn(parent, text, xOff, bg)
 	local b = Instance.new("TextButton")
 	b.AnchorPoint = Vector2.new(1, 0.5)
 	b.Position = UDim2.new(1, xOff, 0.5, 0)
-	b.Size = UDim2.fromOffset(26, 26)
+	b.Size = UDim2.fromOffset(28, 28)
 	b.BackgroundColor3 = bg or Theme.card
 	b.BorderSizePixel = 0
 	b.Font = Enum.Font.GothamBold
-	b.TextSize = 13
+	b.TextSize = 14
 	b.TextColor3 = Theme.text
 	b.Text = text
-	b.AutoButtonColor = true
+	b.AutoButtonColor = false
+	b.ZIndex = 3
 	b.Parent = parent
-	corner(b, 13)
+	corner(b, 14)
 	stroke(b, Theme.strokeSoft, 1, 0.35)
+	b.MouseEnter:Connect(function()
+		TweenService:Create(b, TweenInfo.new(0.15), { BackgroundColor3 = Theme.cardSoft }):Play()
+	end)
+	b.MouseLeave:Connect(function()
+		TweenService:Create(b, TweenInfo.new(0.15), { BackgroundColor3 = bg or Theme.card }):Play()
+	end)
 	return b
 end
 
-local HelpBtn = roundBtn(Header, "?", -72)
-local MinBtn = roundBtn(Header, "–", -42)
-local CloseBtn = roundBtn(Header, "×", -12, Color3.fromRGB(55, 28, 28))
+local HelpBtn = roundBtn(Header, "?", -78)
+local MinBtn = roundBtn(Header, "–", -46)
+local CloseBtn = roundBtn(Header, "×", -14, Color3.fromRGB(72, 32, 32))
 
 local Body = Instance.new("Frame")
 Body.Name = "Body"
-Body.Position = UDim2.fromOffset(12, 60)
-Body.Size = UDim2.new(1, -24, 1, -128)
+Body.Position = UDim2.fromOffset(14, 68)
+Body.Size = UDim2.new(1, -28, 1, -134)
 Body.BackgroundTransparency = 1
+Body.ZIndex = 2
 Body.Parent = Root
 
 -- Left: live stats
@@ -1996,20 +2164,28 @@ InvRow.Parent = Left
 local function invTile(parent, xScale, name)
 	local f = Instance.new("Frame")
 	f.Position = UDim2.fromScale(xScale, 0)
-	f.Size = UDim2.new(0.5, -4, 1, 0)
+	f.Size = UDim2.new(0.5, -5, 1, 0)
 	f.BackgroundColor3 = Theme.card
 	f.BorderSizePixel = 0
 	f.Parent = parent
-	corner(f, 10)
-	stroke(f, Theme.strokeSoft, 1, 0.2)
+	corner(f, 14)
+	stroke(f, Theme.strokeSoft, 1, 0.35)
+	gradient(f, Theme.cardSoft, Theme.card, 90)
+	local stripe = Instance.new("Frame")
+	stripe.Size = UDim2.new(0, 3, 1, -12)
+	stripe.Position = UDim2.fromOffset(8, 6)
+	stripe.BackgroundColor3 = Theme.accent
+	stripe.BorderSizePixel = 0
+	stripe.Parent = f
+	corner(stripe, 2)
 	local value = mkLabel(f, {
 		text = "0",
 		font = Enum.Font.GothamBold,
-		size = 18,
+		size = 20,
 		color = Theme.text,
 		align = Enum.TextXAlignment.Center,
-		pos = UDim2.fromOffset(6, 6),
-		sizeU = UDim2.new(1, -12, 0, 22),
+		pos = UDim2.fromOffset(6, 8),
+		sizeU = UDim2.new(1, -12, 0, 24),
 	})
 	local caption = mkLabel(f, {
 		text = name,
@@ -2017,7 +2193,7 @@ local function invTile(parent, xScale, name)
 		size = 10,
 		color = Theme.muted,
 		align = Enum.TextXAlignment.Center,
-		pos = UDim2.fromOffset(6, 28),
+		pos = UDim2.fromOffset(6, 32),
 		sizeU = UDim2.new(1, -12, 0, 18),
 		truncate = Enum.TextTruncate.AtEnd,
 	})
@@ -2026,11 +2202,9 @@ end
 
 local SeedCountLabel, SeedCountCaption = invTile(InvRow, 0, "SEEDS LEFT")
 local SprinklerCountLabel, SprinklerCountCaption = invTile(InvRow, 0.5, "SPRINKLERS LEFT")
-SeedCountLabel.Position = UDim2.fromOffset(6, 4)
-SprinklerCountLabel.Position = UDim2.fromOffset(6, 4)
 
 local StatusRow = Instance.new("Frame")
-StatusRow.Position = UDim2.fromOffset(0, 62)
+StatusRow.Position = UDim2.fromOffset(0, 66)
 StatusRow.Size = UDim2.new(1, 0, 0, 20)
 StatusRow.BackgroundTransparency = 1
 StatusRow.Parent = Left
@@ -2797,7 +2971,7 @@ local function refreshDashboard()
 	local s = State.Stats
 	StatValues.best.Text = tostring(math.floor(State.Stats.bestFt + 0.5))
 	StatValues.keepers.Text = tostring(s.keepers)
-	StatValues.removed.Text = tostring(s.shoveled)
+	StatValues.removed.Text = tostring(s.removed or (s.shoveled + s.claimed))
 	StatValues.cycles.Text = tostring(s.cycles)
 	StatValues.planted.Text = tostring(s.planted)
 	StatValues.sprinklers.Text = tostring(s.sprinklers)
