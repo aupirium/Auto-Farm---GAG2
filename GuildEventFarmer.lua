@@ -1963,12 +1963,17 @@ local function pad(parent, t, b, l, r)
 	return p
 end
 
-local function stroke(parent, color, thickness, transparency)
+local function stroke(parent, color, thickness, transparency, borderPos)
 	local s = Instance.new("UIStroke")
 	s.Color = color or Theme.stroke
 	s.Thickness = thickness or 1
 	s.Transparency = transparency ~= nil and transparency or 0.35
 	s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+	s.LineJoinMode = Enum.LineJoinMode.Round
+	-- Inner avoids ClipsDescendants eating the top/left edge of the ring.
+	pcall(function()
+		s.BorderStrokePosition = borderPos or Enum.BorderStrokePosition.Inner
+	end)
 	s.Parent = parent
 	return s
 end
@@ -2028,10 +2033,11 @@ Root.Position = UDim2.new(0, 16, 0.5, -ROOT_H / 2)
 Root.BackgroundColor3 = Theme.bg
 Root.BackgroundTransparency = 0.08
 Root.BorderSizePixel = 0
-Root.ClipsDescendants = true
+-- Keep false so the accent ring is never clipped on any edge.
+Root.ClipsDescendants = false
 Root.Parent = Gui
 corner(Root, R)
-stroke(Root, Theme.accent, 1.5, 0.35)
+stroke(Root, Theme.accent, 2, 0.2, Enum.BorderStrokePosition.Inner)
 
 local Header = Instance.new("Frame")
 Header.Name = "Header"
@@ -2295,23 +2301,15 @@ pad(Scroll, 4, 8, 6, 6)
 local function section(text, order)
 	local f = Instance.new("Frame")
 	f.BackgroundTransparency = 1
-	f.Size = UDim2.new(1, 0, 0, 16)
+	f.Size = UDim2.new(1, 0, 0, 14)
 	f.LayoutOrder = order
 	f.Parent = Scroll
-	local bar = Instance.new("Frame")
-	bar.Size = UDim2.fromOffset(3, 12)
-	bar.Position = UDim2.fromOffset(0, 2)
-	bar.BackgroundColor3 = Theme.accent
-	bar.BorderSizePixel = 0
-	bar.Parent = f
-	corner(bar, 2)
 	mkLabel(f, {
-		text = string.upper(text),
-		font = Enum.Font.GothamBold,
+		text = text,
+		font = Enum.Font.GothamMedium,
 		size = 11,
-		color = Theme.label,
-		pos = UDim2.fromOffset(10, 0),
-		sizeU = UDim2.new(1, -10, 1, 0),
+		color = Theme.muted,
+		sizeU = UDim2.fromScale(1, 1),
 	})
 	return f
 end
@@ -2561,17 +2559,19 @@ local function makeDropdown(order, text, optionsFn, get, set, opts)
 end
 
 local function makeButton(order, text, color, callback)
-	local f = rowFrame(order, 32)
+	local f = rowFrame(order, 30)
 	local btn = Instance.new("TextButton")
 	btn.Size = UDim2.fromScale(1, 1)
 	btn.BackgroundColor3 = color
-	btn.Font = Enum.Font.GothamBold
+	btn.Font = Enum.Font.GothamMedium
 	btn.TextSize = 12
 	btn.TextColor3 = Theme.text
 	btn.Text = text
 	btn.BorderSizePixel = 0
+	btn.AutoButtonColor = false
 	btn.Parent = f
 	corner(btn, R_SM)
+	stroke(btn, Theme.strokeSoft, 1, 0.45)
 	btn.MouseButton1Click:Connect(callback)
 	return f
 end
@@ -2747,31 +2747,24 @@ end, { allowEmpty = true, emptyLabel = "(none — pick to toggle)" })
 
 section("Purge", 20)
 local purgeSpeciesName = ""
-local _, refreshPurge = makeDropdown(21, "Purge species", listPlantSpecies, function()
+local _, refreshPurge = makeDropdown(21, "Species", listPlantSpecies, function()
 	return purgeSpeciesName
 end, function(v)
 	purgeSpeciesName = v
 end, {
 	allowEmpty = true,
-	emptyLabel = "(auto / any = all junk)",
+	emptyLabel = "(all junk)",
 })
-makeButton(22, "PURGE (keep tall / exempt)", Theme.stop, function()
+makeButton(22, "Purge", Color3.fromRGB(72, 38, 38), function()
 	purgeSpecies(purgeSpeciesName)
 end)
 
 section("Webhook", 23)
-local _, webhookBox = makeTextInput(24, "Discord webhook URL", function()
+makeTextInput(24, "Discord URL", function()
 	return Settings.WebhookUrl
 end, function(v)
 	Settings.WebhookUrl = v
-end, "https://discord.com/api/webhooks/...")
-makeButton(25, "TEST WEBHOOK", Color3.fromRGB(48, 72, 96), function()
-	setStatus("Testing webhook…")
-	task.spawn(function()
-		local ok, err = sendWebhook("Webhook test", "Tallest Guild is connected.", 0x4A90D9)
-		setStatus(ok and "Webhook OK" or ("Webhook failed: " .. tostring(err)))
-	end)
-end)
+end, "discord.com/api/webhooks/…")
 
 -- Footer
 local Footer = Instance.new("Frame")
