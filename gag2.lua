@@ -6076,8 +6076,6 @@ function doStartupWalk()
     end)
 end
 
-end
-
 function teleportToHomeServer(placeId, jobId, maxAttempts)
     placeId = tonumber(placeId)
     jobId = jobId and tostring(jobId) or nil
